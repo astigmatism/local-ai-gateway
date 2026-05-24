@@ -7,3 +7,11 @@ dist/
 coverage/
 storage/uploads/*
 !storage/uploads/.gitkeep
+
+# Never commit generated TLS certificates or private keys.
+*.key
+*.pem
+*.crt
+*.csr
+*.p12
+*.pfx

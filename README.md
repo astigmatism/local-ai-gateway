@@ -68,6 +68,19 @@ Bear Castle AI gateway VM
 
 The backend serves the frontend in production from `dist/client` and exposes APIs under `/api/*`. The unauthenticated public API surface is intentionally small: login users, login, and `/health`. Conversation, status/GPU, transcription, LLM generation, and user-management APIs require authentication.
 
+## HTTPS/domain hosting quick start
+
+For internet exposure on an owned domain such as `gateway.msdos.games` or `gateway.crazyerics.com`, use a TLS-terminating reverse proxy in front of the Node app. The recommended setup is:
+
+```text
+Browser -> HTTPS :443 -> Caddy or Nginx on the gateway VM -> http://127.0.0.1:3000 -> Bear Castle AI
+```
+
+Do not run Node directly on port 443 and do not expose Ollama, `local-ai-llm`, `local-ai-voice`, STT, or monitor endpoints directly. Keep the app process private with `HOST=127.0.0.1` and `PORT=3000`, open/forward only TCP `80` and `443`, and terminate HTTPS with Caddy or Nginx/Certbot.
+
+The detailed command-oriented guide is in [`docs/HTTPS_DEPLOYMENT.md`](docs/HTTPS_DEPLOYMENT.md). It covers DNS records, router/NAT forwarding, UFW, Caddy automatic HTTPS, Nginx + Certbot, self-signed certificates for lab use, secure cookies, microphone recording over HTTPS, validation commands, and troubleshooting.
+
+
 ## 3. Existing service dependencies
 
 Default service URLs are configured in `.env`:
@@ -182,11 +195,15 @@ cp .env.example .env
 nano .env
 ```
 
-At minimum, update the database URL:
+At minimum, update the database URL and decide where Node should listen:
 
 ```env
 DATABASE_URL=postgresql://local_ai_gateway:change_me@localhost:5432/local_ai_gateway
+HOST=127.0.0.1
+PORT=3000
 ```
+
+For HTTPS hosting behind Caddy or Nginx, keep `HOST=127.0.0.1` so the Node app is reachable only from the local reverse proxy. For temporary LAN-only testing without a reverse proxy, you may use `HOST=0.0.0.0`, but do not expose that port to the public internet.
 
 Generate strong authentication values before starting the production app:
 
@@ -208,13 +225,14 @@ SESSION_COOKIE_SECURE=true
 SESSION_COOKIE_SAME_SITE=lax
 AUTH_TRUST_PROXY=true
 CSRF_ENABLED=true
+SECURITY_HEADERS_ENABLED=true
 ```
 
 Passwords must be at least 8 characters. `INITIAL_ADMIN_PASSWORD` and `NEW_USER_DEFAULT_PASSWORD` must also be at least 8 characters. Failed-login cooldown starts after 3 failed attempts and lasts 5 minutes by default. These authentication policy values can be changed through the environment variables above.
 
 `NODE_ENV` defaults to `production` in this application. That means `npm run db:seed` intentionally fails when these values are missing or still set to `change_this...` placeholders. If you see `Invalid production authentication configuration`, edit `.env`, replace the placeholder auth values, and run the seed command again.
 
-For local development over plain HTTP, set `SESSION_COOKIE_SECURE=false`. For HTTPS production, keep `SESSION_COOKIE_SECURE=true`; secure cookies require HTTPS at the browser.
+For local development over plain HTTP, set `SESSION_COOKIE_SECURE=false`. For HTTPS production, keep `SESSION_COOKIE_SECURE=true`; secure cookies require HTTPS at the browser. When the app is behind Caddy or Nginx, keep `AUTH_TRUST_PROXY=true` so Express understands the proxy's HTTPS headers.
 
 Review these service defaults:
 
@@ -671,10 +689,11 @@ This is expected if a monitor endpoint is temporarily unavailable. Chat and tran
 
 ### Port 3000 is unavailable
 
-Change `PORT` in `.env`, rebuild/restart, and open the new port in the firewall:
+Change `PORT` in `.env`, rebuild/restart, and update the reverse-proxy upstream. For HTTPS hosting, keep `HOST=127.0.0.1` and do not open the Node port publicly:
 
 ```bash
-sudo ufw allow <new-port>/tcp
+# Only for trusted LAN testing, not public HTTPS hosting:
+# sudo ufw allow <new-port>/tcp
 scripts/restart.sh
 ```
 
@@ -684,6 +703,7 @@ scripts/restart.sh
 | --- | --- | --- |
 | `NODE_ENV` | `production` | Runtime mode. Production serves the built frontend and enforces production auth configuration validation. |
 | `PORT` | `3000` | Gateway HTTP port. |
+| `HOST` | `0.0.0.0` | HTTP bind address. Use `127.0.0.1` behind Caddy/Nginx so only the reverse proxy can reach Node. |
 | `APP_NAME` | `Bear Castle AI` | Display/runtime app name. |
 | `DATABASE_URL` | PostgreSQL local URL | Prisma database connection string. |
 | `AUTH_ENABLED` | `true` | Authentication is expected to remain enabled; production refuses `false`. |

@@ -31,6 +31,7 @@ const optionalSecret = z.string().trim().optional();
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('production'),
   PORT: z.coerce.number().int().positive().default(3000),
+  HOST: z.string().trim().min(1).default('0.0.0.0'),
   APP_NAME: z.string().min(1).default('Bear Castle AI'),
   DATABASE_URL: z.string().min(1),
   APP_DEFAULT_USER_NAME: z.string().min(1).default('Eric'),
@@ -208,6 +209,7 @@ export const config = {
   nodeEnv: env.NODE_ENV,
   isProduction: env.NODE_ENV === 'production',
   port: env.PORT,
+  host: env.HOST,
   appName: env.APP_NAME,
   databaseUrl: env.DATABASE_URL,
   defaultUserName: 'Eric',

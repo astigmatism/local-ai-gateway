@@ -1,0 +1,21 @@
+# Bear Castle AI Caddy reverse proxy example.
+# Copy to /etc/caddy/Caddyfile, replace gateway.msdos.games with your hostname,
+# and keep the Node app listening only on HOST=127.0.0.1 PORT=3000.
+#
+# Alternate hostname example: gateway.crazyerics.com
+
+gateway.msdos.games {
+    encode zstd gzip
+
+    # Bear Castle AI defaults MAX_AUDIO_UPLOAD_MB to 50, so this proxy limit leaves room
+    # for multipart overhead while still rejecting unusually large uploads before Node.
+    request_body {
+        max_size 60MB
+    }
+
+    reverse_proxy 127.0.0.1:3000 {
+        header_up Host {host}
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}

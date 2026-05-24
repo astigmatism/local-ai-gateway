@@ -1,0 +1,37 @@
+# Bear Castle AI Nginx reverse proxy example.
+# Copy to /etc/nginx/sites-available/bear-castle-ai, replace gateway.msdos.games
+# with your chosen hostname, then enable it from /etc/nginx/sites-enabled/.
+#
+# This initial HTTP server block is suitable before running:
+#   sudo certbot --nginx -d gateway.msdos.games
+# Certbot will add the HTTPS listen directives, certificate paths, and HTTP-to-HTTPS
+# redirect when certificate issuance succeeds.
+#
+# Alternate hostname example: gateway.crazyerics.com
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name gateway.msdos.games;
+
+    client_max_body_size 60M;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # The current app does not use WebSockets or server-sent events, so no
+        # Upgrade-specific proxy settings are required.
+
+        # Local LLM and STT calls can take time on large prompts/audio snippets.
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 600s;
+    }
+}

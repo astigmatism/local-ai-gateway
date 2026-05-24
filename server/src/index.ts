@@ -13,9 +13,10 @@ const server = createServer(app);
 
 telemetryService.start();
 
-server.listen(config.port, '0.0.0.0', () => {
+server.listen(config.port, config.host, () => {
   logger.info(
     {
+      host: config.host,
       port: config.port,
       nodeEnv: config.nodeEnv,
       llmBaseUrl: config.llm.baseUrl,
