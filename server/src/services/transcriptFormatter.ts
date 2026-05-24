@@ -1,0 +1,145 @@
+import { config } from '../config/env.js';
+import { logger } from '../config/logger.js';
+import { generateWithLlm } from './llmClient.js';
+
+export interface TranscriptFormattingMetadata {
+  enabled: boolean;
+  applied: boolean;
+  model?: string;
+  rawTranscriptLength: number;
+  formattedTranscriptLength?: number;
+  skippedReason?: 'disabled' | 'empty' | 'too_long' | 'empty_formatter_response';
+  failed?: boolean;
+  error?: string;
+  formattedAt?: string;
+}
+
+export interface TranscriptFormattingResult {
+  transcript: string;
+  metadata: TranscriptFormattingMetadata;
+}
+
+const buildTranscriptFormattingPrompt = (transcript: string) =>
+  [
+    'You are a transcript formatter. Restore punctuation, capitalization, paragraph breaks, and readable sentence boundaries in the transcript below. Do not add facts. Do not remove meaning. Do not summarize. Do not answer the transcript. Return only the cleaned transcript text.',
+    '',
+    'Important:',
+    '- Do not respond conversationally.',
+    '- Do not add explanations.',
+    '- Do not wrap the transcript in Markdown.',
+    '- Do not change names, numbers, commands, code, URLs, or technical terms unless obvious speech recognition spacing/capitalization needs correction.',
+    '- If the transcript is too short, return the original with only obvious capitalization or punctuation fixes.',
+    '',
+    'Transcript:',
+    transcript
+  ].join('\n');
+
+const unwrapAccidentalFence = (value: string) => {
+  const trimmed = value.trim();
+  const fenceMatch = trimmed.match(/^```(?:text|txt|transcript|markdown|md)?\s*\n([\s\S]*?)\n```$/i);
+  return fenceMatch?.[1]?.trim() ?? trimmed;
+};
+
+export const maybeFormatTranscript = async (rawTranscript: string): Promise<TranscriptFormattingResult> => {
+  const trimmed = rawTranscript.trim();
+  const rawTranscriptLength = trimmed.length;
+
+  if (!config.transcriptFormatting.enabled) {
+    return {
+      transcript: rawTranscript,
+      metadata: {
+        enabled: false,
+        applied: false,
+        rawTranscriptLength,
+        skippedReason: 'disabled'
+      }
+    };
+  }
+
+  if (!trimmed) {
+    return {
+      transcript: rawTranscript,
+      metadata: {
+        enabled: true,
+        applied: false,
+        rawTranscriptLength,
+        skippedReason: 'empty'
+      }
+    };
+  }
+
+  if (trimmed.length > config.transcriptFormatting.maxChars) {
+    logger.warn(
+      {
+        rawTranscriptLength,
+        maxChars: config.transcriptFormatting.maxChars
+      },
+      'Transcript formatting skipped because transcript exceeded configured maximum length'
+    );
+
+    return {
+      transcript: rawTranscript,
+      metadata: {
+        enabled: true,
+        applied: false,
+        model: config.transcriptFormatting.model,
+        rawTranscriptLength,
+        skippedReason: 'too_long'
+      }
+    };
+  }
+
+  try {
+    const result = await generateWithLlm(buildTranscriptFormattingPrompt(trimmed), {
+      model: config.transcriptFormatting.model,
+      timeoutMs: config.transcriptFormatting.timeoutMs
+    });
+    const formattedTranscript = unwrapAccidentalFence(result.content);
+
+    if (!formattedTranscript) {
+      return {
+        transcript: rawTranscript,
+        metadata: {
+          enabled: true,
+          applied: false,
+          model: config.transcriptFormatting.model,
+          rawTranscriptLength,
+          skippedReason: 'empty_formatter_response'
+        }
+      };
+    }
+
+    return {
+      transcript: formattedTranscript,
+      metadata: {
+        enabled: true,
+        applied: true,
+        model: config.transcriptFormatting.model,
+        rawTranscriptLength,
+        formattedTranscriptLength: formattedTranscript.length,
+        formattedAt: new Date().toISOString()
+      }
+    };
+  } catch (error) {
+    logger.warn(
+      {
+        errorMessage: error instanceof Error ? error.message : 'Unknown transcript formatting error',
+        rawTranscriptLength,
+        model: config.transcriptFormatting.model
+      },
+      'Transcript formatting failed; using raw voice transcript'
+    );
+
+    return {
+      transcript: rawTranscript,
+      metadata: {
+        enabled: true,
+        applied: false,
+        model: config.transcriptFormatting.model,
+        rawTranscriptLength,
+        failed: true,
+        error: error instanceof Error ? error.message : 'Unknown transcript formatting error'
+      }
+    };
+  }
+};

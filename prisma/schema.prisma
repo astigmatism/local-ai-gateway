@@ -1,0 +1,102 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MessageRole {
+  user
+  assistant
+  system
+}
+
+model User {
+  id                           String         @id @default(uuid()) @db.Uuid
+  displayName                  String         @map("display_name")
+  loginName                    String         @unique @map("login_name")
+  passwordHash                 String?        @map("password_hash")
+  isAdmin                      Boolean        @default(false) @map("is_admin")
+  mustChangePassword           Boolean        @default(true) @map("must_change_password")
+  isActive                     Boolean        @default(true) @map("is_active")
+  failedLoginCount             Int            @default(0) @map("failed_login_count")
+  failedLoginWindowStartedAt   DateTime?      @map("failed_login_window_started_at")
+  lockedUntil                  DateTime?      @map("locked_until")
+  lastLoginAt                  DateTime?      @map("last_login_at")
+  passwordChangedAt            DateTime?      @map("password_changed_at")
+  deletedAt                    DateTime?      @map("deleted_at")
+  createdAt                    DateTime       @default(now()) @map("created_at")
+  updatedAt                    DateTime       @updatedAt @map("updated_at")
+  conversations                Conversation[]
+  audioSnippets                AudioSnippet[]
+  sessions                     AuthSession[]
+
+  @@index([displayName])
+  @@index([isActive, deletedAt])
+  @@map("users")
+}
+
+model AuthSession {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  tokenHash      String   @unique @map("token_hash")
+  csrfTokenHash  String   @map("csrf_token_hash")
+  expiresAt      DateTime @map("expires_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  lastSeenAt     DateTime @default(now()) @map("last_seen_at")
+  userAgent      String?  @map("user_agent")
+  ipAddress      String?  @map("ip_address")
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("auth_sessions")
+}
+
+model Conversation {
+  id            String         @id @default(uuid()) @db.Uuid
+  userId        String         @map("user_id") @db.Uuid
+  title         String         @default("New conversation")
+  archived      Boolean        @default(false)
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages      Message[]
+  audioSnippets AudioSnippet[]
+
+  @@index([userId, updatedAt])
+  @@index([archived])
+  @@map("conversations")
+}
+
+model Message {
+  id             String       @id @default(uuid()) @db.Uuid
+  conversationId String       @map("conversation_id") @db.Uuid
+  role           MessageRole
+  content        String
+  metadata       Json?
+  createdAt      DateTime     @default(now()) @map("created_at")
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
+
+model AudioSnippet {
+  id               String        @id @default(uuid()) @db.Uuid
+  userId           String        @map("user_id") @db.Uuid
+  conversationId   String?       @map("conversation_id") @db.Uuid
+  originalFilename String?       @map("original_filename")
+  mimeType         String?       @map("mime_type")
+  transcript       String
+  sttMetadata      Json?         @map("stt_metadata")
+  createdAt        DateTime      @default(now()) @map("created_at")
+  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation     Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([conversationId, createdAt])
+  @@map("audio_snippets")
+}
