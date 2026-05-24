@@ -19,6 +19,11 @@ const commaList = z.preprocess((value) => {
     .filter(Boolean);
 }, z.array(z.string()).default([]));
 
+const httpsRedirectStatusCodeSchema = z.coerce
+  .number()
+  .pipe(z.union([z.literal(301), z.literal(308)]))
+  .default(308);
+
 const sameSiteSchema = z
   .string()
   .trim()
@@ -61,6 +66,9 @@ const envSchema = z.object({
   ADMIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(30),
   CORS_ALLOWED_ORIGINS: commaList,
   SECURITY_HEADERS_ENABLED: booleanFromString.default(true),
+  HTTPS_REDIRECT_ENABLED: booleanFromString.default(false),
+  HTTPS_REDIRECT_ALLOWED_HOSTS: commaList,
+  HTTPS_REDIRECT_STATUS_CODE: httpsRedirectStatusCodeSchema,
 
   LLM_BASE_URL: z.string().url().default('http://192.168.1.5:11434'),
   LLM_MONITOR_BASE_URL: z.string().url().default('http://192.168.1.5:8000'),
@@ -255,6 +263,11 @@ export const config = {
   },
   securityHeaders: {
     enabled: env.SECURITY_HEADERS_ENABLED
+  },
+  httpsRedirect: {
+    enabled: env.HTTPS_REDIRECT_ENABLED,
+    allowedHosts: env.HTTPS_REDIRECT_ALLOWED_HOSTS,
+    statusCode: env.HTTPS_REDIRECT_STATUS_CODE
   },
   llm: {
     baseUrl: stripTrailingSlash(env.LLM_BASE_URL),

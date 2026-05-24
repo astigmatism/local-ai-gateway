@@ -47,6 +47,28 @@ const applyPermissionsPolicyHeader: RequestHandler = (_req, res, next) => {
   next();
 };
 
+const redirectHttpToHttps: RequestHandler = (req, res, next) => {
+  if (!config.httpsRedirect.enabled) {
+    next();
+    return;
+  }
+
+  if (req.secure) {
+    next();
+    return;
+  }
+
+  const host = req.hostname.toLowerCase();
+  const allowedHosts = config.httpsRedirect.allowedHosts.map((allowedHost) => allowedHost.toLowerCase());
+
+  if (allowedHosts.length > 0 && !allowedHosts.includes(host)) {
+    next();
+    return;
+  }
+
+  res.redirect(config.httpsRedirect.statusCode, `https://${req.get('host') ?? host}${req.originalUrl}`);
+};
+
 const corsOptions = () => ({
   credentials: true,
   origin(origin: string | undefined, callback: (error: Error | null, allow?: boolean) => void) {
@@ -69,6 +91,8 @@ export const createApp = () => {
 
   app.disable('x-powered-by');
   if (config.auth.trustProxy) app.set('trust proxy', 1);
+  app.use(redirectHttpToHttps);
+
   if (config.securityHeaders.enabled) {
     app.use(helmet(helmetConfig()));
     app.use(applyPermissionsPolicyHeader);
