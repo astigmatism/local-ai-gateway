@@ -65,4 +65,38 @@ describe('api client authentication errors', () => {
     await expect(api.me()).rejects.toBeInstanceOf(ApiClientError);
     expect(unauthorizedHandler).toHaveBeenCalledOnce();
   });
+
+  it('does not treat a stale must-change-password success response as a completed password update', async () => {
+    const { api } = await loadApi();
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          user: {
+            id: '00000000-0000-0000-0000-000000000001',
+            displayName: 'Eric',
+            loginName: 'eric',
+            isAdmin: true,
+            mustChangePassword: true
+          },
+          mustChangePassword: true,
+          csrfToken: 'next-csrf-token',
+          passwordPolicy: { minLength: 8 }
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        }
+      )
+    );
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    await expect(api.changePassword('old-password', 'new-password', 'new-password')).rejects.toMatchObject({
+      status: 500,
+      code: 'PASSWORD_CHANGE_NOT_COMPLETED'
+    });
+  });
 });

@@ -48,8 +48,11 @@ if command -v pm2 >/dev/null 2>&1; then
   pm2 stop "$APP_NAME" >/dev/null 2>&1 || true
 fi
 
+echo "Generating Prisma client before reset/bootstrap..."
+npx prisma generate
+
 echo "Resetting database with Prisma..."
-npx prisma migrate reset --force
+npx prisma migrate reset --force --skip-seed
 
 echo "Re-applying deployed migrations to confirm clean state..."
 npx prisma migrate deploy
@@ -60,9 +63,6 @@ npm run db:seed
 echo "Clearing uploaded audio files..."
 mkdir -p storage/uploads
 find storage/uploads -type f ! -name ".gitkeep" -delete
-
-echo "Regenerating Prisma client..."
-npx prisma generate
 
 echo "Restarting PM2 app if available..."
 if command -v pm2 >/dev/null 2>&1; then

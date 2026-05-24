@@ -736,6 +736,13 @@ export const App = () => {
     api.setCsrfToken(token);
     setAuthUser(user);
     setPasswordPolicy(nextPasswordPolicy);
+
+    if (user.mustChangePassword) {
+      setMustChangePassword(true);
+      setError('Password update did not complete. The account is still marked as requiring a password change.');
+      return;
+    }
+
     setMustChangePassword(false);
     setShowPasswordChange(false);
     setError(null);

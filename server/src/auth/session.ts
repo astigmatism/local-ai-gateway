@@ -32,6 +32,7 @@ const createOpaqueToken = () => crypto.randomBytes(32).toString('base64url');
 const sessionTtlMs = () => config.session.ttlHours * 60 * 60 * 1000;
 const sessionExpiresAt = () => new Date(Date.now() + sessionTtlMs());
 let warnedAboutInsecureSessionCookie = false;
+let warnedAboutInsecureSameSiteNone = false;
 
 const serializeCookie = (
   name: string,
@@ -108,13 +109,33 @@ export const shouldUseSecureSessionCookie = (req: SessionCookieRequest) => {
   return requestIsSecure;
 };
 
+export const sessionCookieOptionsForRequest = (req: SessionCookieRequest) => {
+  const secure = shouldUseSecureSessionCookie(req);
+  const sameSite = config.session.sameSite === 'none' && !secure ? 'lax' : config.session.sameSite;
+
+  if (config.session.sameSite === 'none' && !secure && !warnedAboutInsecureSameSiteNone) {
+    warnedAboutInsecureSameSiteNone = true;
+    logger.warn(
+      {
+        host: req.get('host'),
+        forwardedProto: req.get('x-forwarded-proto')
+      },
+      'SESSION_COOKIE_SAME_SITE=none requires a Secure cookie. Falling back to SameSite=Lax for this local HTTP request so the browser can store the session cookie.'
+    );
+  }
+
+  return { secure, sameSite };
+};
+
 const setSessionCookie = (req: Request, res: Response, token: string, expiresAt: Date) => {
+  const cookieOptions = sessionCookieOptionsForRequest(req);
+
   res.setHeader(
     'Set-Cookie',
     serializeCookie(config.session.cookieName, token, {
       httpOnly: true,
-      secure: shouldUseSecureSessionCookie(req),
-      sameSite: config.session.sameSite,
+      secure: cookieOptions.secure,
+      sameSite: cookieOptions.sameSite,
       path: '/',
       maxAgeSeconds: Math.floor((expiresAt.getTime() - Date.now()) / 1000),
       expires: expiresAt
@@ -123,12 +144,14 @@ const setSessionCookie = (req: Request, res: Response, token: string, expiresAt:
 };
 
 export const clearSessionCookie = (req: Request, res: Response) => {
+  const cookieOptions = sessionCookieOptionsForRequest(req);
+
   res.setHeader(
     'Set-Cookie',
     serializeCookie(config.session.cookieName, '', {
       httpOnly: true,
-      secure: shouldUseSecureSessionCookie(req),
-      sameSite: config.session.sameSite,
+      secure: cookieOptions.secure,
+      sameSite: cookieOptions.sameSite,
       path: '/',
       maxAgeSeconds: 0,
       expires: new Date(0)

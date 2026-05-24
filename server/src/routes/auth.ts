@@ -8,7 +8,8 @@ import { ApiError } from '../errors/apiError.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { csrfProtection } from '../auth/csrf.js';
 import { toAuthenticatedUser, toSafeLoginUser } from '../auth/identity.js';
-import { hashPassword, validateNewPassword, verifyPassword } from '../auth/password.js';
+import { verifyPassword } from '../auth/password.js';
+import { changeOwnPassword } from '../auth/passwordChange.js';
 import { createRateLimiter } from '../auth/rateLimit.js';
 import {
   clearSessionCookie,
@@ -189,38 +190,15 @@ authRouter.post(
   passwordChangeRateLimiter,
   asyncHandler(async (req, res) => {
     const body = changePasswordSchema.parse(req.body ?? {});
-    const user = await prisma.user.findUniqueOrThrow({ where: { id: req.auth!.user.id } });
-
-    if (!user.passwordHash) {
-      throw new ApiError(400, 'Current password cannot be verified.', 'PASSWORD_NOT_SET');
-    }
-
-    const currentPasswordMatches = await verifyPassword(user.passwordHash, body.currentPassword);
-    if (!currentPasswordMatches) {
-      throw new ApiError(400, 'Current password is incorrect.', 'CURRENT_PASSWORD_INCORRECT');
-    }
-
-    await validateNewPassword({
-      currentPasswordHash: user.passwordHash,
+    const updatedUser = await changeOwnPassword({
+      userId: req.auth!.user.id,
+      currentPassword: body.currentPassword,
       newPassword: body.newPassword,
       confirmPassword: body.confirmPassword
     });
 
-    const passwordHash = await hashPassword(body.newPassword);
-    const updatedUser = await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        passwordHash,
-        mustChangePassword: false,
-        passwordChangedAt: new Date(),
-        failedLoginCount: 0,
-        failedLoginWindowStartedAt: null,
-        lockedUntil: null
-      }
-    });
-
     const csrfToken = await rotateCsrfToken(req.auth!.sessionId);
-    logger.info({ userId: user.id, displayName: user.displayName }, 'User changed password');
+    logger.info({ userId: updatedUser.id, displayName: updatedUser.displayName }, 'User changed password');
 
     res.json({
       user: toAuthenticatedUser(updatedUser),

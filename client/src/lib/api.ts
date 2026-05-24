@@ -140,6 +140,15 @@ export const api = {
       { handleUnauthorized: false }
     );
     csrfToken = response.csrfToken;
+
+    if (response.mustChangePassword || response.user.mustChangePassword) {
+      throw new ApiClientError(
+        'Password update did not complete. The account is still marked as requiring a password change.',
+        500,
+        'PASSWORD_CHANGE_NOT_COMPLETED'
+      );
+    }
+
     return response;
   },
 
