@@ -1,17 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  getBrowserAudioRecordingEnvironment,
+  getMicrophoneRecordingSupportError,
+  mapMicrophoneStartError,
+  microphoneRecordingErrors,
+  selectSupportedAudioMimeType
+} from '../lib/audioRecording.js';
 
 interface UseAudioRecorderOptions {
   onRecordingComplete: (blob: Blob) => void;
   onError: (message: string) => void;
 }
 
-const preferredMimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/wav'];
-
 export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecorderOptions) => {
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
+  const recordingFailedRef = useRef(false);
 
   const cleanup = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -22,23 +28,30 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
   }, []);
 
   const startRecording = useCallback(async () => {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      onError('This browser does not expose microphone recording APIs.');
+    const environment = getBrowserAudioRecordingEnvironment();
+    const supportError = getMicrophoneRecordingSupportError(environment);
+
+    if (supportError) {
+      onError(supportError);
       return;
     }
 
-    if (typeof MediaRecorder === 'undefined') {
-      onError('This browser does not support MediaRecorder.');
+    const getUserMedia = environment?.mediaDevices?.getUserMedia?.bind(environment.mediaDevices);
+    const MediaRecorderCtor = environment?.MediaRecorder;
+
+    if (!getUserMedia || typeof MediaRecorderCtor !== 'function') {
+      onError(microphoneRecordingErrors.unsupportedBrowser);
       return;
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordingFailedRef.current = false;
+      const stream = await getUserMedia({ audio: true });
       streamRef.current = stream;
       chunksRef.current = [];
 
-      const mimeType = preferredMimeTypes.find((type) => MediaRecorder.isTypeSupported(type));
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      const mimeType = selectSupportedAudioMimeType(MediaRecorderCtor);
+      const recorder = new MediaRecorderCtor(stream, mimeType ? { mimeType } : undefined);
       mediaRecorderRef.current = recorder;
 
       recorder.ondataavailable = (event) => {
@@ -47,14 +60,20 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
         }
       };
 
-      recorder.onerror = () => {
-        onError('Browser recording failed. Check microphone permission and try again.');
+      recorder.onerror = (event) => {
+        recordingFailedRef.current = true;
+        const recorderError = (event as Event & { error?: unknown }).error;
+        onError(recorderError ? mapMicrophoneStartError(recorderError) : microphoneRecordingErrors.recordingFailed);
         cleanup();
       };
 
       recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        const recordingFailed = recordingFailedRef.current;
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || mimeType || 'audio/webm' });
         cleanup();
+
+        if (recordingFailed) return;
+
         if (blob.size > 0) {
           onRecordingComplete(blob);
         } else {
@@ -66,7 +85,7 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
       setIsRecording(true);
     } catch (error) {
       cleanup();
-      onError(error instanceof Error ? error.message : 'Could not start microphone recording.');
+      onError(mapMicrophoneStartError(error, environment));
     }
   }, [cleanup, onError, onRecordingComplete]);
 

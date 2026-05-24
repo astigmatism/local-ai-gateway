@@ -1,6 +1,7 @@
 import compression from 'compression';
 import cors from 'cors';
 import express from 'express';
+import type { RequestHandler } from 'express';
 import fs from 'node:fs';
 import helmet from 'helmet';
 import pinoHttpModule from 'pino-http';
@@ -19,7 +20,9 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { csrfProtection } from './auth/csrf.js';
 import { requireAdmin, requireAuth, requirePasswordChangeCompleted } from './auth/session.js';
 
-const helmetConfig = () => ({
+export const permissionsPolicyHeaderValue = 'microphone=(self), camera=(), geolocation=()';
+
+export const helmetConfig = () => ({
   contentSecurityPolicy: {
     useDefaults: true,
     directives: {
@@ -38,6 +41,11 @@ const helmetConfig = () => ({
   crossOriginEmbedderPolicy: false,
   referrerPolicy: { policy: 'no-referrer' as const }
 });
+
+const applyPermissionsPolicyHeader: RequestHandler = (_req, res, next) => {
+  res.setHeader('Permissions-Policy', permissionsPolicyHeaderValue);
+  next();
+};
 
 const corsOptions = () => ({
   credentials: true,
@@ -61,7 +69,10 @@ export const createApp = () => {
 
   app.disable('x-powered-by');
   if (config.auth.trustProxy) app.set('trust proxy', 1);
-  if (config.securityHeaders.enabled) app.use(helmet(helmetConfig()));
+  if (config.securityHeaders.enabled) {
+    app.use(helmet(helmetConfig()));
+    app.use(applyPermissionsPolicyHeader);
+  }
   app.use(compression());
 
   if (!config.isProduction || config.cors.allowedOrigins.length > 0) {

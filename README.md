@@ -47,7 +47,7 @@ Core features:
 ```text
 Browser
   |
-  | HTTPS/HTTP only to gateway VM
+  | HTTPS to gateway VM, or localhost/loopback HTTP for local testing
   v
 Bear Castle AI gateway VM
   - React/Vite static frontend
@@ -112,6 +112,8 @@ sudo ufw allow 3000/tcp
 ```
 
 For internet exposure, prefer exposing only 80/443 through a reverse proxy and avoid opening the gateway port directly to the public internet.
+
+Chrome and other modern browsers expose microphone recording APIs only in a secure context. Use HTTPS for LAN hostnames, LAN IPs, and any domain-based access. Plain HTTP microphone recording is suitable only for `localhost` or loopback local testing.
 
 ## 6. Install Node.js 24
 
@@ -655,7 +657,9 @@ curl http://192.168.1.8:8000/health
 curl -X POST -F "file=@/path/to/audio-file.m4a" http://192.168.1.8:8000/transcribe
 ```
 
-Check browser microphone permission. The web app uses `MediaRecorder`, so it should be opened from `localhost`, an IP address allowed by the browser, or a trusted HTTPS origin depending on browser policy.
+Check browser microphone permission and the page origin. The web app uses `MediaRecorder` and `navigator.mediaDevices.getUserMedia`, which Chrome exposes only from HTTPS or from `localhost`/loopback local testing. If you open Bear Castle AI by LAN IP or hostname over plain HTTP, Chrome may hide microphone APIs and the app will show: `Microphone recording requires HTTPS or localhost.`
+
+When exposing Bear Castle AI beyond local loopback testing, terminate TLS at Nginx, Caddy, Traefik, or another reverse proxy. Keep `local-ai-llm` and `local-ai-voice` private on the internal network; expose only the gateway through HTTPS. If a reverse proxy sets `Permissions-Policy`, make sure it allows same-origin microphone access, for example `microphone=(self)`, and does not send `microphone=()`.
 
 ### Browser records but transcript is empty
 
