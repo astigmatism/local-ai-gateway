@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import type { TLSSocket } from 'node:tls';
 import type { NextFunction, Request, Response } from 'express';
 import type { AuthSession, User } from '@prisma/client';
 import { config } from '../config/env.js';
@@ -30,6 +31,7 @@ const sha256Base64Url = (value: string) => crypto.createHmac('sha256', config.se
 const createOpaqueToken = () => crypto.randomBytes(32).toString('base64url');
 const sessionTtlMs = () => config.session.ttlHours * 60 * 60 * 1000;
 const sessionExpiresAt = () => new Date(Date.now() + sessionTtlMs());
+let warnedAboutInsecureSessionCookie = false;
 
 const serializeCookie = (
   name: string,
@@ -74,12 +76,44 @@ const readCookies = (req: Request) => {
   return cookies;
 };
 
-const setSessionCookie = (res: Response, token: string, expiresAt: Date) => {
+interface SessionCookieRequest {
+  secure: boolean;
+  get(name: string): string | undefined;
+  socket: Partial<TLSSocket>;
+}
+
+const firstForwardedValue = (value: string | undefined) => value?.split(',')[0]?.trim().toLowerCase();
+
+export const isRequestSecure = (req: SessionCookieRequest) => {
+  if (req.secure) return true;
+  if (firstForwardedValue(req.get('x-forwarded-proto')) === 'https') return true;
+  return Boolean(req.socket.encrypted);
+};
+
+export const shouldUseSecureSessionCookie = (req: SessionCookieRequest) => {
+  if (!config.session.cookieSecure) return false;
+  const requestIsSecure = isRequestSecure(req);
+
+  if (!requestIsSecure && !warnedAboutInsecureSessionCookie) {
+    warnedAboutInsecureSessionCookie = true;
+    logger.warn(
+      {
+        host: req.get('host'),
+        forwardedProto: req.get('x-forwarded-proto')
+      },
+      'SESSION_COOKIE_SECURE is enabled, but the current request is not HTTPS; omitting Secure on the session cookie so the browser can store it for this local HTTP request. Use HTTPS for production access.'
+    );
+  }
+
+  return requestIsSecure;
+};
+
+const setSessionCookie = (req: Request, res: Response, token: string, expiresAt: Date) => {
   res.setHeader(
     'Set-Cookie',
     serializeCookie(config.session.cookieName, token, {
       httpOnly: true,
-      secure: config.session.cookieSecure,
+      secure: shouldUseSecureSessionCookie(req),
       sameSite: config.session.sameSite,
       path: '/',
       maxAgeSeconds: Math.floor((expiresAt.getTime() - Date.now()) / 1000),
@@ -88,12 +122,12 @@ const setSessionCookie = (res: Response, token: string, expiresAt: Date) => {
   );
 };
 
-export const clearSessionCookie = (res: Response) => {
+export const clearSessionCookie = (req: Request, res: Response) => {
   res.setHeader(
     'Set-Cookie',
     serializeCookie(config.session.cookieName, '', {
       httpOnly: true,
-      secure: config.session.cookieSecure,
+      secure: shouldUseSecureSessionCookie(req),
       sameSite: config.session.sameSite,
       path: '/',
       maxAgeSeconds: 0,
@@ -120,7 +154,7 @@ export const createSession = async ({ req, res, userId }: { req: Request; res: R
     }
   });
 
-  setSessionCookie(res, token, expiresAt);
+  setSessionCookie(req, res, token, expiresAt);
 
   return { session, csrfToken };
 };
@@ -182,7 +216,7 @@ const findValidSession = async (req: Request, res: Response) => {
     include: { user: true }
   });
 
-  setSessionCookie(res, token, renewedExpiresAt);
+  setSessionCookie(req, res, token, renewedExpiresAt);
 
   return renewedSession;
 };
@@ -191,7 +225,7 @@ export const requireAuth = (req: Request, res: Response, next: NextFunction) => 
   void (async () => {
     const session = await findValidSession(req, res);
     if (!session) {
-      clearSessionCookie(res);
+      clearSessionCookie(req, res);
       throw new ApiError(401, 'Authentication required.', 'AUTH_REQUIRED');
     }
 

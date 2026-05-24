@@ -12,6 +12,9 @@ interface PasswordChangeScreenProps {
 }
 
 const errorMessage = (error: unknown) => {
+  if (error instanceof ApiClientError && error.status === 401) {
+    return 'Your sign-in session was not available, so your password was not changed. Sign in again and retry. If this repeats over local HTTP, check the session cookie security setting.';
+  }
   if (error instanceof ApiClientError) return error.message;
   if (error instanceof Error) return error.message;
   return 'Unexpected error.';

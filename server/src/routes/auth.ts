@@ -177,7 +177,7 @@ authRouter.post(
       await destroySession(req.auth.sessionId);
       logger.info({ userId: req.auth.user.id, displayName: req.auth.user.displayName }, 'User logged out');
     }
-    clearSessionCookie(res);
+    clearSessionCookie(req, res);
     res.json({ ok: true });
   })
 );

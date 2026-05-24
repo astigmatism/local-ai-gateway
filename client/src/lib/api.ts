@@ -17,6 +17,10 @@ interface ApiErrorShape {
   };
 }
 
+interface RequestOptions {
+  handleUnauthorized?: boolean;
+}
+
 export class ApiClientError extends Error {
   public readonly status: number;
   public readonly code?: string;
@@ -34,13 +38,13 @@ export class ApiClientError extends Error {
 let csrfToken: string | null = null;
 let unauthorizedHandler: (() => void) | null = null;
 
-const parseJson = async <T>(response: Response): Promise<T> => {
+const parseJson = async <T>(response: Response, options: RequestOptions = {}): Promise<T> => {
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
 
   if (!response.ok) {
     const errorData = data as ApiErrorShape | null;
-    if (response.status === 401) unauthorizedHandler?.();
+    if (response.status === 401 && options.handleUnauthorized !== false) unauthorizedHandler?.();
     throw new ApiClientError(
       errorData?.error?.message || `Request failed with HTTP ${response.status}`,
       response.status,
@@ -54,7 +58,7 @@ const parseJson = async <T>(response: Response): Promise<T> => {
 
 const isMutatingMethod = (method: string) => ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase());
 
-const request = async <T>(path: string, init: RequestInit = {}) => {
+const request = async <T>(path: string, init: RequestInit = {}, options: RequestOptions = {}) => {
   const method = init.method ?? 'GET';
   const headers = new Headers(init.headers);
 
@@ -68,18 +72,28 @@ const request = async <T>(path: string, init: RequestInit = {}) => {
       method,
       headers,
       credentials: 'include'
-    })
+    }),
+    options
   );
 };
 
-const jsonRequest = async <T>(path: string, method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown) =>
-  request<T>(path, {
-    method,
-    headers: {
-      'Content-Type': 'application/json'
+const jsonRequest = async <T>(
+  path: string,
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+  body?: unknown,
+  options: RequestOptions = {}
+) =>
+  request<T>(
+    path,
+    {
+      method,
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: body === undefined ? undefined : JSON.stringify(body)
     },
-    body: body === undefined ? undefined : JSON.stringify(body)
-  });
+    options
+  );
 
 export const api = {
   setCsrfToken(token: string | null) {
@@ -115,11 +129,16 @@ export const api = {
   },
 
   async changePassword(currentPassword: string, newPassword: string, confirmPassword: string) {
-    const response = await jsonRequest<AuthResponse>('/api/auth/change-password', 'POST', {
-      currentPassword,
-      newPassword,
-      confirmPassword
-    });
+    const response = await jsonRequest<AuthResponse>(
+      '/api/auth/change-password',
+      'POST',
+      {
+        currentPassword,
+        newPassword,
+        confirmPassword
+      },
+      { handleUnauthorized: false }
+    );
     csrfToken = response.csrfToken;
     return response;
   },

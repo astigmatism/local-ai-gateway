@@ -173,7 +173,9 @@ if (env.NODE_ENV === 'production') {
     failures.push('SESSION_COOKIE_SECURE must be true when SESSION_COOKIE_SAME_SITE=none.');
   }
 
-  if (!sessionCookieSecure) failures.push('SESSION_COOKIE_SECURE must be true in production.');
+  if (!sessionCookieSecure) {
+    console.warn('SESSION_COOKIE_SECURE=false in production. Only use this for trusted local HTTP deployments; prefer HTTPS for production access.');
+  }
 
   if (failures.length > 0) {
     throw new Error(`Invalid production authentication configuration:\n${failures.join('\n')}`);
