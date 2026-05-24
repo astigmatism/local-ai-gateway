@@ -80,7 +80,7 @@ const readCookies = (req: Request) => {
 interface SessionCookieRequest {
   secure: boolean;
   get(name: string): string | undefined;
-  socket: Partial<TLSSocket>;
+  socket: any;
 }
 
 const firstForwardedValue = (value: string | undefined) => value?.split(',')[0]?.trim().toLowerCase();
