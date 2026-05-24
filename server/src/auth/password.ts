@@ -69,11 +69,9 @@ export const verifyPassword = async (passwordHash: string | null | undefined, pa
 };
 
 export const validateNewPassword = async ({
-  currentPasswordHash,
   newPassword,
   confirmPassword
 }: {
-  currentPasswordHash: string;
   newPassword: string;
   confirmPassword: string;
 }) => {
@@ -91,13 +89,5 @@ export const validateNewPassword = async ({
       `New password must be at least ${config.auth.minPasswordLength} characters long.`,
       'PASSWORD_TOO_SHORT'
     );
-  }
-
-  if (config.auth.defaultPasswordBlocklist.includes(newPassword)) {
-    throw new ApiError(400, 'New password cannot be the configured default password.', 'PASSWORD_IS_DEFAULT');
-  }
-
-  if (await verifyPassword(currentPasswordHash, newPassword)) {
-    throw new ApiError(400, 'New password must be different from the current password.', 'PASSWORD_REUSED');
   }
 };

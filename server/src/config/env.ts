@@ -216,7 +216,6 @@ export const config = {
     minPasswordLength: env.AUTH_MIN_PASSWORD_LENGTH,
     initialAdminPassword,
     newUserDefaultPassword,
-    defaultPasswordBlocklist: Array.from(new Set([initialAdminPassword, newUserDefaultPassword])),
     maxFailedLoginAttempts: env.AUTH_MAX_FAILED_LOGIN_ATTEMPTS,
     lockoutWindowMinutes: env.AUTH_LOCKOUT_WINDOW_MINUTES,
     lockoutDurationMinutes: env.AUTH_LOCKOUT_DURATION_MINUTES,

@@ -24,7 +24,9 @@ interface LoadPasswordChangeOptions {
   persistedUser?: Record<string, unknown> | null;
   currentPasswordMatches?: boolean;
   newPasswordMatchesPersistedHash?: boolean;
-  currentPasswordStillMatchesPersistedHash?: boolean;
+  generatedPasswordHash?: string;
+  currentPlaintext?: string;
+  newPlaintext?: string;
 }
 
 const loadPasswordChange = async ({
@@ -32,18 +34,19 @@ const loadPasswordChange = async ({
   persistedUser = changedUser,
   currentPasswordMatches = true,
   newPasswordMatchesPersistedHash = true,
-  currentPasswordStillMatchesPersistedHash = false
+  generatedPasswordHash = 'hashed-new',
+  currentPlaintext = 'current-password',
+  newPlaintext = 'new-password'
 }: LoadPasswordChangeOptions = {}) => {
   vi.resetModules();
 
   const findUnique = vi.fn().mockResolvedValueOnce(initialUser).mockResolvedValueOnce(persistedUser);
   const update = vi.fn().mockResolvedValue({ ...changedUser, ...(persistedUser ?? {}) });
-  const hashPassword = vi.fn(async () => 'hashed-new');
+  const hashPassword = vi.fn(async () => generatedPasswordHash);
   const validateNewPassword = vi.fn(async () => undefined);
   const verifyPassword = vi.fn(async (hash: string | null | undefined, password: string) => {
-    if (hash === 'hashed-current' && password === 'current-password') return currentPasswordMatches;
-    if (hash === 'hashed-new' && password === 'new-password') return newPasswordMatchesPersistedHash;
-    if (hash === 'hashed-new' && password === 'current-password') return currentPasswordStillMatchesPersistedHash;
+    if (hash === 'hashed-current' && password === currentPlaintext) return currentPasswordMatches;
+    if (hash === generatedPasswordHash && password === newPlaintext) return newPasswordMatchesPersistedHash;
     return false;
   });
 
@@ -87,7 +90,6 @@ describe('changeOwnPassword', () => {
     ).resolves.toMatchObject({ id: activeUser.id, passwordHash: 'hashed-new', mustChangePassword: false });
 
     expect(validateNewPassword).toHaveBeenCalledWith({
-      currentPasswordHash: 'hashed-current',
       newPassword: 'new-password',
       confirmPassword: 'new-password'
     });
@@ -102,8 +104,38 @@ describe('changeOwnPassword', () => {
         lockedUntil: null
       })
     });
+    expect(verifyPassword).toHaveBeenCalledWith('hashed-current', 'current-password');
     expect(verifyPassword).toHaveBeenCalledWith('hashed-new', 'new-password');
-    expect(verifyPassword).toHaveBeenCalledWith('hashed-new', 'current-password');
+  });
+
+  it('allows first-login setup to complete when the new password is the same as the current password', async () => {
+    const samePassword = 'initial-admin-password';
+    const { changeOwnPassword, update, hashPassword, verifyPassword } = await loadPasswordChange({
+      persistedUser: { ...changedUser, passwordHash: 'hashed-same-password' },
+      generatedPasswordHash: 'hashed-same-password',
+      currentPlaintext: samePassword,
+      newPlaintext: samePassword
+    });
+
+    await expect(
+      changeOwnPassword({
+        userId: activeUser.id,
+        currentPassword: samePassword,
+        newPassword: samePassword,
+        confirmPassword: samePassword
+      })
+    ).resolves.toMatchObject({ id: activeUser.id, passwordHash: 'hashed-same-password', mustChangePassword: false });
+
+    expect(hashPassword).toHaveBeenCalledWith(samePassword);
+    expect(update).toHaveBeenCalledWith({
+      where: { id: activeUser.id },
+      data: expect.objectContaining({
+        passwordHash: 'hashed-same-password',
+        mustChangePassword: false
+      })
+    });
+    expect(verifyPassword).toHaveBeenCalledWith('hashed-current', samePassword);
+    expect(verifyPassword).toHaveBeenCalledWith('hashed-same-password', samePassword);
   });
 
   it('rejects a wrong current password without updating the database', async () => {
@@ -123,6 +155,21 @@ describe('changeOwnPassword', () => {
 
   it('does not return success when the database readback still requires a password change', async () => {
     const { changeOwnPassword } = await loadPasswordChange({ persistedUser: { ...changedUser, mustChangePassword: true } });
+
+    await expect(
+      changeOwnPassword({
+        userId: activeUser.id,
+        currentPassword: 'current-password',
+        newPassword: 'new-password',
+        confirmPassword: 'new-password'
+      })
+    ).rejects.toMatchObject({ statusCode: 500, code: 'PASSWORD_UPDATE_NOT_VERIFIED' });
+  });
+
+  it('does not return success when the persisted hash is not the generated password hash', async () => {
+    const { changeOwnPassword } = await loadPasswordChange({
+      persistedUser: { ...changedUser, passwordHash: 'hashed-stale-password' }
+    });
 
     await expect(
       changeOwnPassword({

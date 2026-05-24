@@ -35,7 +35,6 @@ export const changeOwnPassword = async ({
   }
 
   await validateNewPassword({
-    currentPasswordHash: user.passwordHash,
     newPassword,
     confirmPassword
   });
@@ -54,13 +53,16 @@ export const changeOwnPassword = async ({
   });
 
   const persistedUser = await prisma.user.findUnique({ where: { id: user.id } });
-  if (!persistedUser?.passwordHash || persistedUser.mustChangePassword) {
+  if (
+    !persistedUser?.passwordHash ||
+    persistedUser.mustChangePassword ||
+    persistedUser.passwordHash !== passwordHash
+  ) {
     throw passwordPersistenceError();
   }
 
   const persistedNewPasswordMatches = await verifyPassword(persistedUser.passwordHash, newPassword);
-  const persistedCurrentPasswordStillMatches = await verifyPassword(persistedUser.passwordHash, currentPassword);
-  if (!persistedNewPasswordMatches || persistedCurrentPasswordStillMatches) {
+  if (!persistedNewPasswordMatches) {
     throw passwordPersistenceError();
   }
 
