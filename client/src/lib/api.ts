@@ -3,6 +3,7 @@ import type {
   AuthResponse,
   Conversation,
   ConversationSummary,
+  GenerateConversationTitleResponse,
   LoginUser,
   SendMessageResponse,
   StatusResponse,
@@ -245,6 +246,14 @@ export const api = {
 
   async sendMessage(conversationId: string, content: string) {
     return jsonRequest<SendMessageResponse>(`/api/conversations/${conversationId}/messages`, 'POST', { content });
+  },
+
+  async generateConversationTitle(conversationId: string, source = 'first-message') {
+    return jsonRequest<GenerateConversationTitleResponse>(
+      `/api/conversations/${conversationId}/generate-title`,
+      'POST',
+      { source }
+    );
   },
 
   async speakText(text: string, options: SpeakTextOptions = {}) {

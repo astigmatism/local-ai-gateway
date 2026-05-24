@@ -93,10 +93,24 @@ export interface StatusResponse {
   generated_at: string;
 }
 
+export interface ConversationTitleGenerationResult {
+  needed: boolean;
+  generated?: boolean;
+  fallbackUsed?: boolean;
+  reason?: string;
+  model?: string;
+}
+
 export interface SendMessageResponse {
   userMessage: Message;
   assistantMessage: Message;
   conversation: ConversationSummary;
+  titleGeneration?: ConversationTitleGenerationResult;
+}
+
+export interface GenerateConversationTitleResponse {
+  conversation: ConversationSummary;
+  titleGeneration: ConversationTitleGenerationResult;
 }
 
 export interface TranscribeResponse {

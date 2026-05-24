@@ -322,6 +322,9 @@ export const App = () => {
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const composerNoticeTimerRef = useRef<number | null>(null);
+  const titleGenerationFramesRef = useRef<Map<string, number>>(new Map());
+  const titleGenerationTimersRef = useRef<Map<string, number>>(new Map());
+  const titleGenerationInFlightRef = useRef<Set<string>>(new Set());
   const [authLoading, setAuthLoading] = useState(true);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [passwordPolicy, setPasswordPolicy] = useState<PasswordPolicy>(defaultPasswordPolicy);
@@ -346,7 +349,34 @@ export const App = () => {
 
   const activeUserId = authUser?.id ?? null;
 
+  const cancelScheduledTitleGeneration = useCallback((conversationId: string) => {
+    const frameId = titleGenerationFramesRef.current.get(conversationId);
+    if (frameId !== undefined) {
+      window.cancelAnimationFrame(frameId);
+      titleGenerationFramesRef.current.delete(conversationId);
+    }
+
+    const timerId = titleGenerationTimersRef.current.get(conversationId);
+    if (timerId !== undefined) {
+      window.clearTimeout(timerId);
+      titleGenerationTimersRef.current.delete(conversationId);
+    }
+  }, []);
+
+  const clearScheduledTitleGenerations = useCallback(() => {
+    for (const frameId of titleGenerationFramesRef.current.values()) {
+      window.cancelAnimationFrame(frameId);
+    }
+    titleGenerationFramesRef.current.clear();
+
+    for (const timerId of titleGenerationTimersRef.current.values()) {
+      window.clearTimeout(timerId);
+    }
+    titleGenerationTimersRef.current.clear();
+  }, []);
+
   const resetConversationState = useCallback(() => {
+    clearScheduledTitleGenerations();
     setConversations([]);
     setActiveConversationId(null);
     setActiveConversation(null);
@@ -355,7 +385,7 @@ export const App = () => {
     setDraft('');
     setStatus(null);
     setError(null);
-  }, []);
+  }, [clearScheduledTitleGenerations]);
 
   const handleUnauthenticated = useCallback(() => {
     api.setCsrfToken(null);
@@ -464,8 +494,9 @@ export const App = () => {
   useEffect(
     () => () => {
       if (composerNoticeTimerRef.current) window.clearTimeout(composerNoticeTimerRef.current);
+      clearScheduledTitleGenerations();
     },
-    []
+    [clearScheduledTitleGenerations]
   );
 
   const showComposerNotice = useCallback((message: string) => {
@@ -687,6 +718,69 @@ export const App = () => {
     }
   }, []);
 
+  const applyConversationTitleUpdate = useCallback((conversation: ConversationSummary) => {
+    setConversations((current) =>
+      current.some((item) => item.id === conversation.id) ? upsertConversationSummary(current, conversation) : current
+    );
+
+    setActiveConversation((current) =>
+      current?.id === conversation.id ? createConversationFromSummary(conversation, current.messages, current) : current
+    );
+
+    setOptimisticConversation((current) =>
+      current?.id === conversation.id ? createConversationFromSummary(conversation, current.messages, current) : current
+    );
+  }, []);
+
+  const runDeferredTitleGeneration = useCallback(
+    async (conversationId: string) => {
+      if (titleGenerationInFlightRef.current.has(conversationId)) return;
+      titleGenerationInFlightRef.current.add(conversationId);
+
+      try {
+        const response = await api.generateConversationTitle(conversationId);
+        applyConversationTitleUpdate(response.conversation);
+      } catch (titleError) {
+        if (
+          titleError instanceof ApiClientError &&
+          (titleError.status === 401 ||
+            titleError.status === 403 ||
+            titleError.status === 404 ||
+            titleError.status === 429)
+        ) {
+          return;
+        }
+      } finally {
+        titleGenerationInFlightRef.current.delete(conversationId);
+      }
+    },
+    [applyConversationTitleUpdate]
+  );
+
+  const scheduleDeferredTitleGeneration = useCallback(
+    (conversationId: string) => {
+      if (
+        titleGenerationInFlightRef.current.has(conversationId) ||
+        titleGenerationFramesRef.current.has(conversationId) ||
+        titleGenerationTimersRef.current.has(conversationId)
+      ) {
+        return;
+      }
+
+      const frameId = window.requestAnimationFrame(() => {
+        titleGenerationFramesRef.current.delete(conversationId);
+        const timerId = window.setTimeout(() => {
+          titleGenerationTimersRef.current.delete(conversationId);
+          void runDeferredTitleGeneration(conversationId);
+        }, 0);
+        titleGenerationTimersRef.current.set(conversationId, timerId);
+      });
+
+      titleGenerationFramesRef.current.set(conversationId, frameId);
+    },
+    [runDeferredTitleGeneration]
+  );
+
   useEffect(() => {
     if (!activeUserId || mustChangePassword) {
       setConversations([]);
@@ -777,6 +871,7 @@ export const App = () => {
 
       setDeletingConversationId(conversation.id);
       setError(null);
+      cancelScheduledTitleGeneration(conversation.id);
 
       try {
         await api.deleteConversation(activeUserId, conversation.id);
@@ -796,7 +891,14 @@ export const App = () => {
         setDeletingConversationId(null);
       }
     },
-    [activeConversationId, activeUserId, deletingConversationId, loadConversations, optimisticConversation]
+    [
+      activeConversationId,
+      activeUserId,
+      cancelScheduledTitleGeneration,
+      deletingConversationId,
+      loadConversations,
+      optimisticConversation
+    ]
   );
 
   const handleReusePrompt = useCallback(
@@ -884,6 +986,10 @@ export const App = () => {
       setOptimisticMessages([]);
       setOptimisticConversation(null);
       setConversations((current) => upsertConversationSummary(current, response.conversation));
+
+      if (response.titleGeneration?.needed) {
+        scheduleDeferredTitleGeneration(response.conversation.id);
+      }
     } catch (sendError) {
       const savedUserMessage = savedUserMessageFromError(sendError);
       const failedConversationId = savedUserMessage?.conversationId ?? conversationId ?? optimisticConversationId;
@@ -971,7 +1077,8 @@ export const App = () => {
     draft,
     isSending,
     loadConversation,
-    loadConversations
+    loadConversations,
+    scheduleDeferredTitleGeneration
   ]);
 
   const handleRecordingComplete = useCallback(

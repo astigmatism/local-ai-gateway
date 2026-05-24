@@ -6,27 +6,70 @@ const genericConversationTitles = new Set([
   'new conversation',
   'untitled conversation',
   'untitled',
+  'conversation',
   'new chat'
 ]);
+
+const modelChatterTitlePatterns = [
+  /^sure\b/i,
+  /^here(?:'s| is)\b.*\btitle\b/i,
+  /^the\s+title\s+is\b/i,
+  /^a\s+(?:good|concise|short)\s+title\b/i,
+  /^i\s+(?:would|would\s+suggest|suggest)\s+(?:title|calling)\b/i
+];
 
 export interface ConversationTitleResult {
   title: string;
   generated: boolean;
   fallbackUsed: boolean;
-  reason?: 'disabled' | 'empty_prompt' | 'empty_model_response' | 'llm_failed';
+  reason?: 'disabled' | 'empty_prompt' | 'empty_model_response' | 'invalid_model_response' | 'llm_failed';
   model?: string;
 }
 
+export interface ConversationTitleEligibilityInput {
+  title: string | null | undefined;
+  messageCount: number;
+  firstUserPrompt?: string | null;
+  titleGenerationEnabled?: boolean;
+}
+
+const normalizeTitleForComparison = (title: string) => title.replace(/\s+/g, ' ').trim().toLowerCase();
+
 export const isGenericConversationTitle = (title: string | null | undefined) => {
-  const normalized = title?.replace(/\s+/g, ' ').trim().toLowerCase() ?? '';
+  const normalized = normalizeTitleForComparison(title ?? '');
   return !normalized || genericConversationTitles.has(normalized);
 };
 
-export const buildConversationTitlePrompt = (firstUserPrompt: string) =>
-  [
+export const isPlaceholderConversationTitle = (
+  title: string | null | undefined,
+  firstUserPrompt?: string | null
+) => {
+  if (isGenericConversationTitle(title)) return true;
+  if (!title || !firstUserPrompt?.trim()) return false;
+
+  const normalizedTitle = normalizeTitleForComparison(title);
+  const fallbackTitle = normalizeTitleForComparison(makeFallbackConversationTitle(firstUserPrompt));
+  return normalizedTitle === fallbackTitle;
+};
+
+export const conversationNeedsGeneratedTitle = ({
+  title,
+  messageCount,
+  firstUserPrompt,
+  titleGenerationEnabled = config.conversationTitle.enabled
+}: ConversationTitleEligibilityInput) => {
+  if (!titleGenerationEnabled) return false;
+  if (messageCount > 2) return false;
+  return isPlaceholderConversationTitle(title, firstUserPrompt);
+};
+
+export const buildConversationTitlePrompt = (firstUserPrompt: string, firstAssistantResponse?: string | null) => {
+  const trimmedAssistantResponse = firstAssistantResponse?.trim();
+
+  return [
     'You create concise titles for AI chat conversations.',
     '',
-    "Given the user's first message, create a short, descriptive title for the conversation.",
+    "Given the user's first message and, if available, the assistant's first response, create a short, descriptive title for the conversation.",
     '',
     'Rules:',
     '- Return only the title.',
@@ -47,11 +90,22 @@ export const buildConversationTitlePrompt = (firstUserPrompt: string) =>
     '- GPU Health Dashboard Layout',
     '',
     'User message:',
-    firstUserPrompt
+    firstUserPrompt,
+    '',
+    'Assistant response:',
+    trimmedAssistantResponse || '(not available)'
   ].join('\n');
+};
+
+const stripThinkingBlocks = (value: string) =>
+  value
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    .replace(/<think>[\s\S]*$/gi, '')
+    .replace(/<thinking>[\s\S]*$/gi, '');
 
 const unwrapAccidentalFence = (value: string) => {
-  const trimmed = value.trim();
+  const trimmed = stripThinkingBlocks(value).trim();
   const fenceMatch = trimmed.match(/^```(?:text|txt|title|markdown|md)?\s*\n([\s\S]*?)\n```$/i);
   return fenceMatch?.[1]?.trim() ?? trimmed;
 };
@@ -91,6 +145,8 @@ const trimTitleToMaxLength = (title: string, maxLength: number) => {
     .trim();
 };
 
+const isModelChatterTitle = (title: string) => modelChatterTitlePatterns.some((pattern) => pattern.test(title));
+
 export const sanitizeConversationTitle = (rawTitle: string, maxLength = config.conversationTitle.maxLength) => {
   let title = unwrapAccidentalFence(rawTitle)
     .replace(/^\s*(?:conversation\s+title|title)\s*:\s*/i, '')
@@ -111,6 +167,8 @@ export const sanitizeConversationTitle = (rawTitle: string, maxLength = config.c
 
   title = trimTitleToMaxLength(title, maxLength);
   title = stripSurroundingQuotes(title).trim();
+
+  if (!title || isModelChatterTitle(title)) return '';
 
   return title;
 };
@@ -138,8 +196,12 @@ export const makeFallbackConversationTitle = (
   return sanitizeConversationTitle(title, maxLength) || 'New Conversation';
 };
 
-export const generateConversationTitle = async (firstUserPrompt: string): Promise<ConversationTitleResult> => {
+export const generateConversationTitle = async (
+  firstUserPrompt: string,
+  firstAssistantResponse?: string | null
+): Promise<ConversationTitleResult> => {
   const trimmedPrompt = firstUserPrompt.trim();
+  const trimmedAssistantResponse = firstAssistantResponse?.trim();
   const fallbackTitle = makeFallbackConversationTitle(trimmedPrompt);
 
   if (!trimmedPrompt) {
@@ -161,9 +223,10 @@ export const generateConversationTitle = async (firstUserPrompt: string): Promis
   }
 
   const promptInput = trimmedPrompt.slice(0, config.conversationTitle.maxPromptChars);
+  const assistantInput = trimmedAssistantResponse?.slice(0, config.conversationTitle.maxPromptChars);
 
   try {
-    const result = await generateWithLlm(buildConversationTitlePrompt(promptInput), {
+    const result = await generateWithLlm(buildConversationTitlePrompt(promptInput, assistantInput), {
       model: config.conversationTitle.model,
       timeoutMs: config.conversationTitle.timeoutMs
     });
@@ -174,7 +237,7 @@ export const generateConversationTitle = async (firstUserPrompt: string): Promis
         title: fallbackTitle,
         generated: false,
         fallbackUsed: true,
-        reason: 'empty_model_response',
+        reason: result.content.trim() ? 'invalid_model_response' : 'empty_model_response',
         model: config.conversationTitle.model
       };
     }
@@ -191,6 +254,7 @@ export const generateConversationTitle = async (firstUserPrompt: string): Promis
         errorMessage: error instanceof Error ? error.message : 'Unknown title generation error',
         model: config.conversationTitle.model,
         promptLength: trimmedPrompt.length,
+        assistantResponseLength: trimmedAssistantResponse?.length ?? 0,
         maxPromptChars: config.conversationTitle.maxPromptChars
       },
       'Conversation title generation failed; using fallback title'
