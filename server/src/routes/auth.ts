@@ -49,6 +49,7 @@ const lockoutDurationMs = () => config.auth.lockoutDurationMinutes * 60 * 1000;
 
 const genericInvalidLogin = () => new ApiError(401, 'Invalid username or password.', 'INVALID_CREDENTIALS');
 const genericLockout = () => new ApiError(429, 'Too many failed attempts. Try again later.', 'ACCOUNT_LOCKED');
+const passwordPolicy = () => ({ minLength: config.auth.minPasswordLength });
 
 const isAccountLocked = (user: Pick<User, 'lockedUntil'>) => Boolean(user.lockedUntil && user.lockedUntil > new Date());
 
@@ -145,7 +146,8 @@ authRouter.post(
     res.json({
       user: toAuthenticatedUser(refreshedUser),
       mustChangePassword: refreshedUser.mustChangePassword,
-      csrfToken
+      csrfToken,
+      passwordPolicy: passwordPolicy()
     });
   })
 );
@@ -160,7 +162,8 @@ authRouter.get(
     res.json({
       user: toAuthenticatedUser(user),
       mustChangePassword: user.mustChangePassword,
-      csrfToken
+      csrfToken,
+      passwordPolicy: passwordPolicy()
     });
   })
 );
@@ -222,7 +225,8 @@ authRouter.post(
     res.json({
       user: toAuthenticatedUser(updatedUser),
       mustChangePassword: updatedUser.mustChangePassword,
-      csrfToken
+      csrfToken,
+      passwordPolicy: passwordPolicy()
     });
   })
 );

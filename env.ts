@@ -46,16 +46,16 @@ const envSchema = z.object({
   AUTH_ENABLED: booleanFromString.default(true),
   INITIAL_ADMIN_PASSWORD: optionalSecret,
   NEW_USER_DEFAULT_PASSWORD: optionalSecret,
-  AUTH_MIN_PASSWORD_LENGTH: integerFromEnv(12),
+  AUTH_MIN_PASSWORD_LENGTH: integerFromEnv(8).pipe(z.number().int().min(8)),
   SESSION_SECRET: optionalSecret,
   SESSION_COOKIE_NAME: z.string().trim().min(1).default('bear_castle_ai_session'),
   SESSION_TTL_HOURS: z.coerce.number().int().positive().default(12),
   SESSION_COOKIE_SECURE: booleanFromString.optional(),
   SESSION_COOKIE_SAME_SITE: sameSiteSchema,
   AUTH_TRUST_PROXY: booleanFromString.default(true),
-  AUTH_MAX_FAILED_LOGIN_ATTEMPTS: z.coerce.number().int().positive().default(5),
-  AUTH_LOCKOUT_WINDOW_MINUTES: z.coerce.number().int().positive().default(15),
-  AUTH_LOCKOUT_DURATION_MINUTES: z.coerce.number().int().positive().default(15),
+  AUTH_MAX_FAILED_LOGIN_ATTEMPTS: z.coerce.number().int().positive().default(3),
+  AUTH_LOCKOUT_WINDOW_MINUTES: z.coerce.number().int().positive().default(5),
+  AUTH_LOCKOUT_DURATION_MINUTES: z.coerce.number().int().positive().default(5),
   AUTH_LOGIN_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(900000),
   AUTH_LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
   CSRF_ENABLED: booleanFromString.default(true),
@@ -127,7 +127,13 @@ const placeholderValues = new Set([
   'eric'
 ]);
 
-const isObviousPlaceholder = (value: string | undefined) => {
+const isMissingOrPlaceholder = (value: string | undefined) => {
+  if (!value) return true;
+  const normalized = value.trim().toLowerCase();
+  return placeholderValues.has(normalized) || normalized.includes('change_this');
+};
+
+const isWeakSessionSecret = (value: string | undefined) => {
   if (!value) return true;
   const normalized = value.trim().toLowerCase();
   return normalized.length < 16 || placeholderValues.has(normalized) || normalized.includes('change_this');
@@ -139,23 +145,33 @@ const requireAuthSecret = (name: string, value: string | undefined) => {
   throw new Error(`${name} must be set. Copy .env.example to .env and configure authentication secrets before starting Bear Castle AI.`);
 };
 
-const configuredMinPasswordLength = Math.max(12, env.AUTH_MIN_PASSWORD_LENGTH);
-if (env.AUTH_MIN_PASSWORD_LENGTH < 12) {
-  console.warn('AUTH_MIN_PASSWORD_LENGTH was set below 12; using 12 to preserve the required security floor.');
-}
-
 const sessionCookieSecure = env.SESSION_COOKIE_SECURE ?? (env.NODE_ENV === 'production');
+
+const configuredAuthPasswords: Array<[string, string | undefined]> = [
+  ['INITIAL_ADMIN_PASSWORD', env.INITIAL_ADMIN_PASSWORD],
+  ['NEW_USER_DEFAULT_PASSWORD', env.NEW_USER_DEFAULT_PASSWORD]
+];
+
+const authPasswordLengthFailures = configuredAuthPasswords.flatMap(([name, value]) =>
+  value && value.length < env.AUTH_MIN_PASSWORD_LENGTH
+    ? [`${name} must be at least ${env.AUTH_MIN_PASSWORD_LENGTH} characters.`]
+    : []
+);
+
+if (authPasswordLengthFailures.length > 0) {
+  throw new Error(`Invalid authentication password configuration:\n${authPasswordLengthFailures.join('\n')}`);
+}
 
 if (env.NODE_ENV === 'production') {
   const failures: string[] = [];
   if (!env.AUTH_ENABLED) failures.push('AUTH_ENABLED must remain true in production.');
-  if (isObviousPlaceholder(env.INITIAL_ADMIN_PASSWORD)) {
-    failures.push('INITIAL_ADMIN_PASSWORD must be set to a strong non-placeholder value.');
+  if (isMissingOrPlaceholder(env.INITIAL_ADMIN_PASSWORD)) {
+    failures.push('INITIAL_ADMIN_PASSWORD must be set to a non-placeholder value.');
   }
-  if (isObviousPlaceholder(env.NEW_USER_DEFAULT_PASSWORD)) {
-    failures.push('NEW_USER_DEFAULT_PASSWORD must be set to a strong non-placeholder value.');
+  if (isMissingOrPlaceholder(env.NEW_USER_DEFAULT_PASSWORD)) {
+    failures.push('NEW_USER_DEFAULT_PASSWORD must be set to a non-placeholder value.');
   }
-  if (isObviousPlaceholder(env.SESSION_SECRET)) {
+  if (isWeakSessionSecret(env.SESSION_SECRET)) {
     failures.push('SESSION_SECRET must be set to a long random non-placeholder value.');
   }
   if (env.INITIAL_ADMIN_PASSWORD && env.NEW_USER_DEFAULT_PASSWORD && env.INITIAL_ADMIN_PASSWORD === env.NEW_USER_DEFAULT_PASSWORD) {
@@ -179,12 +195,14 @@ if (env.NODE_ENV === 'production') {
   }
   for (const [name, value] of [
     ['INITIAL_ADMIN_PASSWORD', env.INITIAL_ADMIN_PASSWORD],
-    ['NEW_USER_DEFAULT_PASSWORD', env.NEW_USER_DEFAULT_PASSWORD],
-    ['SESSION_SECRET', env.SESSION_SECRET]
+    ['NEW_USER_DEFAULT_PASSWORD', env.NEW_USER_DEFAULT_PASSWORD]
   ] as const) {
-    if (value && isObviousPlaceholder(value) && env.NODE_ENV !== 'test') {
+    if (value && isMissingOrPlaceholder(value) && env.NODE_ENV !== 'test') {
       console.warn(`${name} appears to be a placeholder. Change it before exposing Bear Castle AI beyond local development.`);
     }
+  }
+  if (env.SESSION_SECRET && isWeakSessionSecret(env.SESSION_SECRET) && env.NODE_ENV !== 'test') {
+    console.warn('SESSION_SECRET appears weak or placeholder. Change it before exposing Bear Castle AI beyond local development.');
   }
 }
 
@@ -201,7 +219,7 @@ export const config = {
   defaultUserName: 'Eric',
   auth: {
     enabled: env.AUTH_ENABLED,
-    minPasswordLength: configuredMinPasswordLength,
+    minPasswordLength: env.AUTH_MIN_PASSWORD_LENGTH,
     initialAdminPassword,
     newUserDefaultPassword,
     defaultPasswordBlocklist: Array.from(new Set([initialAdminPassword, newUserDefaultPassword])),

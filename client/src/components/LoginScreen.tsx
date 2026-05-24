@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { api, ApiClientError } from '../lib/api.js';
-import type { AuthUser, LoginUser } from '../lib/types.js';
+import type { AuthUser, LoginUser, PasswordPolicy } from '../lib/types.js';
 
 interface LoginScreenProps {
-  onAuthenticated: (user: AuthUser, mustChangePassword: boolean, csrfToken: string) => void;
+  onAuthenticated: (user: AuthUser, mustChangePassword: boolean, csrfToken: string, passwordPolicy: PasswordPolicy) => void;
 }
 
 const errorMessage = (error: unknown) => {
@@ -66,7 +66,7 @@ export const LoginScreen = ({ onAuthenticated }: LoginScreenProps) => {
     setError(null);
     try {
       const response = await api.login(selectedUserId, password);
-      onAuthenticated(response.user, response.mustChangePassword, response.csrfToken);
+      onAuthenticated(response.user, response.mustChangePassword, response.csrfToken, response.passwordPolicy);
     } catch (loginError) {
       setPassword('');
       setError(errorMessage(loginError));

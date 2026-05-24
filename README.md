@@ -198,12 +198,17 @@ Set all of these to non-placeholder values before running `npm run db:seed` or s
 INITIAL_ADMIN_PASSWORD=<strong initial Eric password>
 NEW_USER_DEFAULT_PASSWORD=<strong temporary password for new users>
 SESSION_SECRET=<long random value from openssl rand -base64 48>
-AUTH_MIN_PASSWORD_LENGTH=12
+AUTH_MIN_PASSWORD_LENGTH=8
+AUTH_MAX_FAILED_LOGIN_ATTEMPTS=3
+AUTH_LOCKOUT_WINDOW_MINUTES=5
+AUTH_LOCKOUT_DURATION_MINUTES=5
 SESSION_COOKIE_SECURE=true
 SESSION_COOKIE_SAME_SITE=lax
 AUTH_TRUST_PROXY=true
 CSRF_ENABLED=true
 ```
+
+Passwords must be at least 8 characters. `INITIAL_ADMIN_PASSWORD` and `NEW_USER_DEFAULT_PASSWORD` must also be at least 8 characters. Failed-login cooldown starts after 3 failed attempts and lasts 5 minutes by default. These authentication policy values can be changed through the environment variables above.
 
 `NODE_ENV` defaults to `production` in this application. That means `npm run db:seed` intentionally fails when these values are missing or still set to `change_this...` placeholders. If you see `Invalid production authentication configuration`, edit `.env`, replace the placeholder auth values, and run the seed command again.
 
@@ -503,7 +508,7 @@ Authentication behavior:
 - Passwords are stored as salted scrypt hashes, never plaintext.
 - Sessions are opaque random tokens in HTTP-only cookies; only HMAC token hashes are stored in the database.
 - Authenticated mutating API requests require the `X-CSRF-Token` token managed by the frontend.
-- Too many failed login attempts lock the account temporarily.
+- Three failed login attempts lock the account for a 5-minute cooldown by default.
 - Chat, voice transcription, GPU/health, conversations, and admin APIs require authentication.
 - Regular users can access only their own conversations and messages.
 
@@ -584,10 +589,10 @@ npm run db:migrate
 
 ### Auth seed fails with `AUTH_MIN_PASSWORD_LENGTH: Too small`
 
-Set `AUTH_MIN_PASSWORD_LENGTH=12` in `.env`, or remove the line entirely to use the built-in default. Blank values such as `AUTH_MIN_PASSWORD_LENGTH=` and smaller values such as `8` are treated as misconfiguration. Current builds preserve the security floor by using 12 even if a smaller value is supplied, but keeping `.env` explicit avoids confusion:
+Set `AUTH_MIN_PASSWORD_LENGTH=8` in `.env`, or remove the line entirely to use the built-in default. Values smaller than `8` are treated as misconfiguration:
 
 ```env
-AUTH_MIN_PASSWORD_LENGTH=12
+AUTH_MIN_PASSWORD_LENGTH=8
 ```
 
 Then rerun:
@@ -678,18 +683,18 @@ scripts/restart.sh
 | `APP_NAME` | `Bear Castle AI` | Display/runtime app name. |
 | `DATABASE_URL` | PostgreSQL local URL | Prisma database connection string. |
 | `AUTH_ENABLED` | `true` | Authentication is expected to remain enabled; production refuses `false`. |
-| `INITIAL_ADMIN_PASSWORD` | none in production | Initial Eric password used when Eric is created or missing a password hash. Must be changed after first login. |
-| `NEW_USER_DEFAULT_PASSWORD` | none in production | Temporary password assigned to new/reset users. Users must change it on next login. |
-| `AUTH_MIN_PASSWORD_LENGTH` | `12` | Minimum accepted new password length. |
+| `INITIAL_ADMIN_PASSWORD` | none in production | Initial Eric password used when Eric is created or missing a password hash. Must be at least 8 characters and changed after first login. |
+| `NEW_USER_DEFAULT_PASSWORD` | none in production | Temporary password assigned to new/reset users. Must be at least 8 characters; users must change it on next login. |
+| `AUTH_MIN_PASSWORD_LENGTH` | `8` | Minimum accepted new password length. |
 | `SESSION_SECRET` | none in production | Long random secret used to HMAC session and CSRF tokens before database storage. |
 | `SESSION_COOKIE_NAME` | `bear_castle_ai_session` | HTTP-only session cookie name. |
 | `SESSION_TTL_HOURS` | `12` | Sliding session lifetime in hours. |
 | `SESSION_COOKIE_SECURE` | `true` in production | Adds the Secure cookie flag. Requires HTTPS in browsers. |
 | `SESSION_COOKIE_SAME_SITE` | `lax` | Session cookie SameSite value: `lax`, `strict`, or `none`. |
 | `AUTH_TRUST_PROXY` | `true` | Enables Express trust proxy when behind TLS-terminating reverse proxy. |
-| `AUTH_MAX_FAILED_LOGIN_ATTEMPTS` | `5` | Failed attempts before lockout within the configured window. |
-| `AUTH_LOCKOUT_WINDOW_MINUTES` | `15` | Failed-login counting window. |
-| `AUTH_LOCKOUT_DURATION_MINUTES` | `15` | Account lockout duration after too many failures. |
+| `AUTH_MAX_FAILED_LOGIN_ATTEMPTS` | `3` | Failed attempts before lockout within the configured window. |
+| `AUTH_LOCKOUT_WINDOW_MINUTES` | `5` | Failed-login counting window. |
+| `AUTH_LOCKOUT_DURATION_MINUTES` | `5` | Account lockout duration after too many failures. |
 | `AUTH_LOGIN_RATE_LIMIT_WINDOW_MS` | `900000` | IP rate-limit window for login attempts. |
 | `AUTH_LOGIN_RATE_LIMIT_MAX` | `20` | Max login attempts per IP per window. |
 | `CSRF_ENABLED` | `true` | Requires CSRF tokens for authenticated mutating API requests. |

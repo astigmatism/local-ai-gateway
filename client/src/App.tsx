@@ -11,7 +11,7 @@ import { TopBar } from './components/TopBar.js';
 import { useAudioRecorder } from './hooks/useAudioRecorder.js';
 import { api, ApiClientError } from './lib/api.js';
 import { appendTranscript } from './lib/transcripts.js';
-import type { AuthUser, Conversation, ConversationSummary, GatewayStatus, Message } from './lib/types.js';
+import type { AuthUser, Conversation, ConversationSummary, GatewayStatus, Message, PasswordPolicy } from './lib/types.js';
 
 const layoutStorageKeys = {
   leftColumnWidth: 'bearCastleAi.layout.leftColumnWidth',
@@ -26,6 +26,7 @@ const collapsedHealthPaneHeight = 52;
 const defaultLeftColumnWidth = 300;
 const defaultHealthPaneHeight = 190;
 const defaultComposerPaneHeight = 220;
+const defaultPasswordPolicy: PasswordPolicy = { minLength: 8 };
 
 interface WorkspaceLayout {
   leftColumnWidth: number;
@@ -323,6 +324,7 @@ export const App = () => {
   const composerNoticeTimerRef = useRef<number | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [passwordPolicy, setPasswordPolicy] = useState<PasswordPolicy>(defaultPasswordPolicy);
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [showPasswordChange, setShowPasswordChange] = useState(false);
   const [showUserManagement, setShowUserManagement] = useState(false);
@@ -358,6 +360,7 @@ export const App = () => {
   const handleUnauthenticated = useCallback(() => {
     api.setCsrfToken(null);
     setAuthUser(null);
+    setPasswordPolicy(defaultPasswordPolicy);
     setMustChangePassword(false);
     setShowPasswordChange(false);
     setShowUserManagement(false);
@@ -411,6 +414,7 @@ export const App = () => {
         const response = await api.me();
         if (cancelled) return;
         setAuthUser(response.user);
+        setPasswordPolicy(response.passwordPolicy);
         setMustChangePassword(response.mustChangePassword);
       } catch (authError) {
         if (!cancelled && !(authError instanceof ApiClientError && authError.status === 401)) {
@@ -713,18 +717,25 @@ export const App = () => {
     return () => window.clearInterval(timer);
   }, [authUser, mustChangePassword, refreshStatus]);
 
-  const handleAuthenticated = (user: AuthUser, passwordChangeRequired: boolean, token: string) => {
+  const handleAuthenticated = (
+    user: AuthUser,
+    passwordChangeRequired: boolean,
+    token: string,
+    nextPasswordPolicy: PasswordPolicy
+  ) => {
     api.setCsrfToken(token);
     setAuthUser(user);
+    setPasswordPolicy(nextPasswordPolicy);
     setMustChangePassword(passwordChangeRequired);
     setShowPasswordChange(false);
     setShowUserManagement(false);
     resetConversationState();
   };
 
-  const handlePasswordChanged = (user: AuthUser, token: string) => {
+  const handlePasswordChanged = (user: AuthUser, token: string, nextPasswordPolicy: PasswordPolicy) => {
     api.setCsrfToken(token);
     setAuthUser(user);
+    setPasswordPolicy(nextPasswordPolicy);
     setMustChangePassword(false);
     setShowPasswordChange(false);
     setError(null);
@@ -999,7 +1010,14 @@ export const App = () => {
   }
 
   if (mustChangePassword) {
-    return <PasswordChangeScreen user={authUser} required onChanged={handlePasswordChanged} />;
+    return (
+      <PasswordChangeScreen
+        user={authUser}
+        passwordPolicy={passwordPolicy}
+        required
+        onChanged={handlePasswordChanged}
+      />
+    );
   }
 
   return (
@@ -1112,6 +1130,7 @@ export const App = () => {
         <div className="modal-backdrop" role="presentation">
           <PasswordChangeScreen
             user={authUser}
+            passwordPolicy={passwordPolicy}
             onChanged={handlePasswordChanged}
             onCancel={() => setShowPasswordChange(false)}
           />

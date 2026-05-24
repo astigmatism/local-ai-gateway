@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { api, ApiClientError } from '../lib/api.js';
-import type { AuthUser } from '../lib/types.js';
+import type { AuthUser, PasswordPolicy } from '../lib/types.js';
 
 interface PasswordChangeScreenProps {
   user: AuthUser;
+  passwordPolicy: PasswordPolicy;
   required?: boolean;
-  onChanged: (user: AuthUser, csrfToken: string) => void;
+  onChanged: (user: AuthUser, csrfToken: string, passwordPolicy: PasswordPolicy) => void;
   onCancel?: () => void;
 }
 
@@ -16,20 +17,38 @@ const errorMessage = (error: unknown) => {
   return 'Unexpected error.';
 };
 
-export const PasswordChangeScreen = ({ user, required = false, onChanged, onCancel }: PasswordChangeScreenProps) => {
+export const PasswordChangeScreen = ({
+  user,
+  passwordPolicy,
+  required = false,
+  onChanged,
+  onCancel
+}: PasswordChangeScreenProps) => {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const minPasswordLength = passwordPolicy.minLength;
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+
+    if (newPassword.length < minPasswordLength) {
+      setError(`New password must be at least ${minPasswordLength} characters long.`);
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setError('New passwords do not match.');
+      return;
+    }
+
     setSubmitting(true);
     setError(null);
     try {
       const response = await api.changePassword(currentPassword, newPassword, confirmPassword);
-      onChanged(response.user, response.csrfToken);
+      onChanged(response.user, response.csrfToken, response.passwordPolicy);
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
@@ -78,7 +97,12 @@ export const PasswordChangeScreen = ({ user, required = false, onChanged, onCanc
             value={newPassword}
             onChange={(event) => setNewPassword(event.target.value)}
             autoComplete="new-password"
+            minLength={minPasswordLength}
+            aria-describedby="new-password-requirements"
           />
+          <p className="auth-help" id="new-password-requirements">
+            New password must be at least {minPasswordLength} characters.
+          </p>
 
           <label className="field-label" htmlFor="confirm-password">
             Confirm new password
@@ -89,6 +113,7 @@ export const PasswordChangeScreen = ({ user, required = false, onChanged, onCanc
             value={confirmPassword}
             onChange={(event) => setConfirmPassword(event.target.value)}
             autoComplete="new-password"
+            minLength={minPasswordLength}
           />
 
           {error && (
@@ -106,7 +131,13 @@ export const PasswordChangeScreen = ({ user, required = false, onChanged, onCanc
             <button
               className="primary-button"
               type="submit"
-              disabled={!currentPassword || !newPassword || !confirmPassword || submitting}
+              disabled={
+                !currentPassword ||
+                newPassword.length < minPasswordLength ||
+                !confirmPassword ||
+                newPassword !== confirmPassword ||
+                submitting
+              }
             >
               {submitting ? 'Saving...' : 'Save password'}
             </button>

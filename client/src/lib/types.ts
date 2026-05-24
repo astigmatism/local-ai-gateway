@@ -29,6 +29,10 @@ export interface AuthUser {
   mustChangePassword: boolean;
 }
 
+export interface PasswordPolicy {
+  minLength: number;
+}
+
 export interface AdminUser extends AuthUser {
   isActive: boolean;
   lockedUntil: string | null;
@@ -105,4 +109,5 @@ export interface AuthResponse {
   user: AuthUser;
   mustChangePassword: boolean;
   csrfToken: string;
+  passwordPolicy: PasswordPolicy;
 }
