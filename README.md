@@ -3,7 +3,7 @@
 Bear Castle AI is a lightweight browser application for a local AI lab. It runs on a gateway VM and provides a ChatGPT-like UI for two existing local AI service VMs:
 
 - `local-ai-llm` at `192.168.1.5`, running Ollama with `qwen3:30b`
-- `local-ai-voice` at `192.168.1.8`, running faster-whisper speech-to-text
+- `local-ai-voice` at `192.168.1.8`, running faster-whisper speech-to-text and Kokoro ONNX text-to-speech
 
 The browser talks only to this gateway. The gateway backend calls the LLM, voice/STT, health, and GPU telemetry APIs on the internal network.
 
@@ -36,6 +36,7 @@ Core features:
 - Browser voice snippet recording with MediaRecorder
 - Audio forwarding to `local-ai-voice /transcribe`
 - Transcript append-to-input behavior before sending
+- Manual text-to-speech playback for user prompts and assistant responses through `local-ai-voice /speak`
 - Optional local-LLM transcript punctuation/paragraph cleanup for unformatted STT output
 - Markdown-rendered assistant responses
 - Cached health/GPU telemetry for both AI VMs after login
@@ -62,11 +63,12 @@ Bear Castle AI gateway VM
   |                   http://192.168.1.5:8000/gpu
   |
   +--> local-ai-voice http://192.168.1.8:8000/transcribe
+                      http://192.168.1.8:8000/speak
                       http://192.168.1.8:8000/health
                       http://192.168.1.8:8000/gpu
 ```
 
-The backend serves the frontend in production from `dist/client` and exposes APIs under `/api/*`. The unauthenticated public API surface is intentionally small: login users, login, and `/health`. Conversation, status/GPU, transcription, LLM generation, and user-management APIs require authentication.
+The backend serves the frontend in production from `dist/client` and exposes APIs under `/api/*`. The unauthenticated public API surface is intentionally small: login users, login, and `/health`. Conversation, status/GPU, transcription, text-to-speech, LLM generation, and user-management APIs require authentication.
 
 ## HTTPS/domain hosting quick start
 
@@ -90,9 +92,11 @@ LLM_BASE_URL=http://192.168.1.5:11434
 LLM_MONITOR_BASE_URL=http://192.168.1.5:8000
 LLM_MODEL=qwen3:30b
 VOICE_BASE_URL=http://192.168.1.8:8000
+TTS_DEFAULT_VOICE=af_heart
+TTS_DEFAULT_SPEED=1.0
 ```
 
-These are defaults only. Change them in `.env` if the service IPs or ports change.
+These are defaults only. Change them in `.env` if the service IPs, ports, voice, or speaking speed change.
 
 ## 4. Gateway VM requirements
 
@@ -242,6 +246,20 @@ LLM_MONITOR_BASE_URL=http://192.168.1.5:8000
 LLM_MODEL=qwen3:30b
 VOICE_BASE_URL=http://192.168.1.8:8000
 ```
+
+Text-to-speech uses the same `local-ai-voice` base URL. The browser never calls `local-ai-voice` directly; it calls the authenticated gateway endpoint, and the gateway posts multipart form data to `POST /speak` on the voice VM. Speech never plays automatically. Users click the speaker icon beside a user prompt or assistant response to generate and play audio. Defaults are `af_heart` and speed `1.0`:
+
+```env
+TTS_ENABLED=true
+TTS_DEFAULT_VOICE=af_heart
+TTS_DEFAULT_SPEED=1.0
+TTS_TIMEOUT_MS=120000
+TTS_MAX_TEXT_CHARS=12000
+TTS_RATE_LIMIT_WINDOW_MS=60000
+TTS_RATE_LIMIT_MAX=20
+```
+
+If `TTS_ENABLED=false`, the gateway rejects text-to-speech requests. `TTS_MAX_TEXT_CHARS` limits expensive requests and should stay reasonable for the voice VM.
 
 If the voice/STT service returns a raw unpunctuated transcript, the gateway can optionally ask the configured local Ollama model to restore punctuation, capitalization, sentence boundaries, and paragraph breaks before appending the transcript to the input box. This is disabled by default to preserve the direct STT behavior and avoid an extra LLM call. Enable it only when needed:
 
@@ -488,13 +506,24 @@ curl -X POST \
   http://192.168.1.8:8000/transcribe
 ```
 
+Voice text-to-speech test:
+
+```bash
+curl -X POST \
+  -F "text=Hello from Bear Castle AI." \
+  -F "voice=af_heart" \
+  -F "speed=1.0" \
+  http://192.168.1.8:8000/speak \
+  --output test.wav
+```
+
 Gateway unauthenticated health test:
 
 ```bash
 curl http://localhost:3000/health
 ```
 
-`/api/status`, conversation, transcription, and LLM generation endpoints now require a logged-in session and CSRF token for mutating requests. Use the browser UI for normal validation.
+`/api/status`, conversation, transcription, text-to-speech, and LLM generation endpoints now require a logged-in session and CSRF token for mutating requests. Use the browser UI for normal validation.
 
 ## 20. Security and Internet Exposure
 
@@ -529,7 +558,7 @@ Authentication behavior:
 - Sessions are opaque random tokens in HTTP-only cookies; only HMAC token hashes are stored in the database.
 - Authenticated mutating API requests require the `X-CSRF-Token` token managed by the frontend.
 - Three failed login attempts lock the account for a 5-minute cooldown by default.
-- Chat, voice transcription, GPU/health, conversations, and admin APIs require authentication.
+- Chat, voice transcription, text-to-speech, GPU/health, conversations, and admin APIs require authentication.
 - Regular users can access only their own conversations and messages.
 
 ## 21. Troubleshooting

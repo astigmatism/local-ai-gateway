@@ -659,6 +659,23 @@ textarea {
   border-color: rgba(248, 113, 113, 0.28);
 }
 
+.message-action-button.loading,
+.message-action-button.playing {
+  color: var(--accent);
+  background: rgba(143, 180, 255, 0.1);
+  border-color: rgba(143, 180, 255, 0.24);
+}
+
+.message-action-button.loading svg {
+  animation: message-action-spin 0.9s linear infinite;
+}
+
+@keyframes message-action-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .message-action-button svg {
   width: 16px;
   height: 16px;

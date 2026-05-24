@@ -49,6 +49,23 @@ export interface VoiceTranscriptionResult {
   metadata: Record<string, unknown>;
 }
 
+export interface VoiceSpeechOptions {
+  text: string;
+  voice: string;
+  speed: number;
+  timeoutMs?: number;
+}
+
+export interface VoiceSpeechResult {
+  audio: Buffer;
+  contentType: string;
+  headers: {
+    engine?: string;
+    voice?: string;
+    speed?: string;
+  };
+}
+
 const axiosErrorMessage = (error: unknown) => {
   if (axios.isAxiosError(error)) {
     if (error.response) {
@@ -61,6 +78,122 @@ const axiosErrorMessage = (error: unknown) => {
   }
 
   return error instanceof Error ? error.message : 'unknown error';
+};
+
+const readHeader = (headers: unknown, name: string) => {
+  if (!headers || typeof headers !== 'object') return undefined;
+
+  const maybeGetter = headers as { get?: (headerName: string) => unknown };
+  if (typeof maybeGetter.get === 'function') {
+    const value = maybeGetter.get(name);
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value)) return value.join(', ');
+    if (value !== undefined && value !== null) return String(value);
+  }
+
+  const record = headers as Record<string, unknown>;
+  const value = record[name.toLowerCase()] ?? record[name];
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.join(', ');
+  if (value !== undefined && value !== null) return String(value);
+  return undefined;
+};
+
+const ttsErrorStatusCode = (error: unknown) => {
+  if (!axios.isAxiosError(error)) return 500;
+  if (error.code === 'ECONNABORTED') return 504;
+  if (error.response) return error.response.status >= 500 ? 503 : 502;
+  return 503;
+};
+
+const ttsErrorCode = (error: unknown) => {
+  if (!axios.isAxiosError(error)) return 'TTS_REQUEST_FAILED';
+  if (error.code === 'ECONNABORTED') return 'TTS_TIMEOUT';
+  if (error.response) return 'TTS_SERVICE_FAILED';
+  return 'TTS_SERVICE_UNAVAILABLE';
+};
+
+const ttsErrorMessage = (error: unknown, timeoutMs: number) => {
+  if (axios.isAxiosError(error)) {
+    if (error.code === 'ECONNABORTED') {
+      return `Voice text-to-speech timed out after ${timeoutMs} ms.`;
+    }
+    if (error.response) {
+      return `Voice text-to-speech failed with HTTP ${error.response.status}.`;
+    }
+    return 'Voice text-to-speech service is unavailable.';
+  }
+
+  return 'Voice text-to-speech failed.';
+};
+
+export const speakText = async ({ text, voice, speed, timeoutMs = config.tts.timeoutMs }: VoiceSpeechOptions) => {
+  const form = new FormData();
+  form.append('text', text);
+  form.append('voice', voice);
+  form.append('speed', String(speed));
+
+  try {
+    const response = await axios.post(`${config.voice.baseUrl}/speak`, form, {
+      headers: form.getHeaders(),
+      timeout: timeoutMs,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+      responseType: 'arraybuffer',
+      validateStatus: (status) => status >= 200 && status < 300
+    });
+
+    const audio = Buffer.isBuffer(response.data) ? response.data : Buffer.from(response.data);
+
+    if (audio.byteLength === 0) {
+      throw new ApiError(502, 'Voice text-to-speech returned empty audio.', 'TTS_EMPTY_AUDIO');
+    }
+
+    const contentType = readHeader(response.headers, 'content-type') || 'audio/wav';
+    const headers = {
+      engine: readHeader(response.headers, 'x-tts-engine'),
+      voice: readHeader(response.headers, 'x-tts-voice'),
+      speed: readHeader(response.headers, 'x-tts-speed')
+    };
+
+    logger.info(
+      {
+        textLength: text.length,
+        voice,
+        speed,
+        audioBytes: audio.byteLength,
+        contentType,
+        ttsEngine: headers.engine
+      },
+      'Voice text-to-speech completed'
+    );
+
+    return {
+      audio,
+      contentType,
+      headers
+    } satisfies VoiceSpeechResult;
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+
+    const message = ttsErrorMessage(error, timeoutMs);
+    logger.error(
+      {
+        errorMessage: message,
+        errorCode: axios.isAxiosError(error) ? error.code : undefined,
+        responseStatus: axios.isAxiosError(error) ? error.response?.status : undefined,
+        voiceBaseUrl: config.voice.baseUrl,
+        textLength: text.length,
+        voice,
+        speed
+      },
+      'Voice text-to-speech request failed'
+    );
+
+    throw new ApiError(ttsErrorStatusCode(error), message, ttsErrorCode(error));
+  }
 };
 
 export const transcribeAudio = async (

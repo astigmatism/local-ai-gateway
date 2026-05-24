@@ -149,3 +149,71 @@ describe('api client authentication errors', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('api client text-to-speech requests', () => {
+  it('requests speech audio through the gateway with CSRF and returns the WAV blob', async () => {
+    const { api } = await loadApi();
+    const audioBlob = new Blob(['RIFF'], { type: 'audio/wav' });
+    const fetchMock = vi.fn(async () =>
+      new Response(audioBlob, {
+        status: 200,
+        headers: {
+          'Content-Type': 'audio/wav'
+        }
+      })
+    );
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    const result = await api.speakText('Hello from Bear Castle AI.', { voice: 'af_heart', speed: 1 });
+
+    expect(result.type).toBe('audio/wav');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/speak',
+      expect.objectContaining({
+        credentials: 'include',
+        method: 'POST'
+      })
+    );
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-token');
+    expect(new Headers(init.headers).get('Content-Type')).toBe('application/json');
+    expect(JSON.parse(init.body as string)).toEqual({
+      text: 'Hello from Bear Castle AI.',
+      voice: 'af_heart',
+      speed: 1
+    });
+  });
+
+  it('surfaces JSON errors from the speech endpoint', async () => {
+    const { api } = await loadApi();
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 'TTS_TEXT_TOO_LONG',
+              message: 'Text is too long to speak.'
+            }
+          }),
+          {
+            status: 400,
+            headers: {
+              'Content-Type': 'application/json'
+            }
+          }
+        )
+    );
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    await expect(api.speakText('too long')).rejects.toMatchObject({
+      status: 400,
+      code: 'TTS_TEXT_TOO_LONG',
+      message: 'Text is too long to speak.'
+    });
+  });
+});

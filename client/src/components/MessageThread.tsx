@@ -1,4 +1,6 @@
 import { useEffect, useRef } from 'react';
+import { useTextToSpeechPlayback } from '../hooks/useTextToSpeechPlayback.js';
+import type { TextToSpeechMessageState } from '../hooks/useTextToSpeechPlayback.js';
 import type { Conversation, Message } from '../lib/types.js';
 import { MarkdownMessageContent } from './MarkdownMessageContent.js';
 import { MessageActions } from './MessageActions.js';
@@ -48,6 +50,8 @@ const canCopyMessage = (message: Message) => {
   return message.role === 'assistant' || message.role === 'user';
 };
 
+const canSpeakMessage = (message: Message) => canCopyMessage(message);
+
 const canReusePrompt = (message: Message) =>
   message.role === 'user' && message.content.trim().length > 0 && deliveryStatus(message) !== 'thinking';
 
@@ -84,12 +88,20 @@ const MessageContent = ({ message }: { message: Message }) => {
 
 const MessageBubble = ({
   message,
-  onReusePrompt
+  onReusePrompt,
+  onSpeakMessage,
+  getMessageSpeechState,
+  speechError
 }: {
   message: Message;
   onReusePrompt: (content: string) => void;
+  onSpeakMessage: (messageId: string, content: string) => void;
+  getMessageSpeechState: (messageId: string) => TextToSpeechMessageState;
+  speechError: { messageId: string; message: string } | null;
 }) => {
   const status = deliveryStatus(message);
+  const canSpeak = canSpeakMessage(message);
+  const speechState = canSpeak ? getMessageSpeechState(message.id) : 'idle';
 
   return (
     <div className={`message-row ${message.role} ${status ? status : ''}`}>
@@ -106,7 +118,11 @@ const MessageBubble = ({
           role={message.role}
           content={message.content}
           canCopy={canCopyMessage(message)}
+          canSpeak={canSpeak}
+          speechState={speechState}
+          speechError={speechError?.messageId === message.id ? speechError.message : null}
           canReusePrompt={canReusePrompt(message)}
+          onSpeak={() => onSpeakMessage(message.id, message.content)}
           onReusePrompt={onReusePrompt}
         />
       </div>
@@ -118,6 +134,7 @@ export const MessageThread = ({ conversation, loading, onReusePrompt }: MessageT
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const lastMessageId = conversation?.messages.at(-1)?.id;
   const messageCount = conversation?.messages.filter((message) => deliveryStatus(message) !== 'thinking').length ?? 0;
+  const { speakMessage, getMessageSpeechState, speechError } = useTextToSpeechPlayback(conversation?.id ?? null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -154,7 +171,14 @@ export const MessageThread = ({ conversation, loading, onReusePrompt }: MessageT
       )}
 
       {conversation.messages.map((message) => (
-        <MessageBubble key={message.id} message={message} onReusePrompt={onReusePrompt} />
+        <MessageBubble
+          key={message.id}
+          message={message}
+          onReusePrompt={onReusePrompt}
+          onSpeakMessage={(messageId, content) => void speakMessage(messageId, content)}
+          getMessageSpeechState={getMessageSpeechState}
+          speechError={speechError}
+        />
       ))}
 
       <div ref={bottomRef} />

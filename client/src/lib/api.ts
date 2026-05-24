@@ -21,6 +21,12 @@ interface RequestOptions {
   handleUnauthorized?: boolean;
 }
 
+interface SpeakTextOptions {
+  voice?: string;
+  speed?: number;
+  signal?: AbortSignal;
+}
+
 export class ApiClientError extends Error {
   public readonly status: number;
   public readonly code?: string;
@@ -56,6 +62,30 @@ const parseJson = async <T>(response: Response, options: RequestOptions = {}): P
   return data as T;
 };
 
+const parseBlob = async (response: Response, options: RequestOptions = {}): Promise<Blob> => {
+  if (response.ok) return response.blob();
+
+  const text = await response.text();
+  let errorData: ApiErrorShape | null = null;
+
+  if (text) {
+    try {
+      errorData = JSON.parse(text) as ApiErrorShape;
+    } catch {
+      errorData = null;
+    }
+  }
+
+  if (response.status === 401 && options.handleUnauthorized !== false) unauthorizedHandler?.();
+
+  throw new ApiClientError(
+    errorData?.error?.message || text || `Request failed with HTTP ${response.status}`,
+    response.status,
+    errorData?.error?.code,
+    errorData?.error?.details
+  );
+};
+
 const isMutatingMethod = (method: string) => ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase());
 
 const request = async <T>(path: string, init: RequestInit = {}, options: RequestOptions = {}) => {
@@ -67,6 +97,25 @@ const request = async <T>(path: string, init: RequestInit = {}, options: Request
   }
 
   return parseJson<T>(
+    await fetch(path, {
+      ...init,
+      method,
+      headers,
+      credentials: 'include'
+    }),
+    options
+  );
+};
+
+const requestBlob = async (path: string, init: RequestInit = {}, options: RequestOptions = {}) => {
+  const method = init.method ?? 'GET';
+  const headers = new Headers(init.headers);
+
+  if (isMutatingMethod(method) && csrfToken) {
+    headers.set('X-CSRF-Token', csrfToken);
+  }
+
+  return parseBlob(
     await fetch(path, {
       ...init,
       method,
@@ -196,6 +245,21 @@ export const api = {
 
   async sendMessage(conversationId: string, content: string) {
     return jsonRequest<SendMessageResponse>(`/api/conversations/${conversationId}/messages`, 'POST', { content });
+  },
+
+  async speakText(text: string, options: SpeakTextOptions = {}) {
+    return requestBlob('/api/speak', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        text,
+        voice: options.voice,
+        speed: options.speed
+      }),
+      signal: options.signal
+    });
   },
 
   async transcribeAudio(file: Blob, options: { userId?: string; conversationId?: string }) {

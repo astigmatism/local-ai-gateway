@@ -62,6 +62,8 @@ const envSchema = z.object({
   CHAT_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
   TRANSCRIBE_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60000),
   TRANSCRIBE_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
+  TTS_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60000),
+  TTS_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
   ADMIN_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60000),
   ADMIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(30),
   CORS_ALLOWED_ORIGINS: commaList,
@@ -77,6 +79,12 @@ const envSchema = z.object({
 
   VOICE_BASE_URL: z.string().url().default('http://192.168.1.8:8000'),
   VOICE_TIMEOUT_MS: z.coerce.number().int().positive().default(300000),
+
+  TTS_ENABLED: booleanFromString.default(true),
+  TTS_DEFAULT_VOICE: z.string().trim().min(1).default('af_heart'),
+  TTS_DEFAULT_SPEED: z.coerce.number().min(0.5).max(2).default(1.0),
+  TTS_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
+  TTS_MAX_TEXT_CHARS: z.coerce.number().int().positive().default(12000),
 
   TRANSCRIPT_FORMATTING_ENABLED: booleanFromString.default(false),
   TRANSCRIPT_FORMATTING_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
@@ -253,6 +261,10 @@ export const config = {
       windowMs: env.TRANSCRIBE_RATE_LIMIT_WINDOW_MS,
       max: env.TRANSCRIBE_RATE_LIMIT_MAX
     },
+    tts: {
+      windowMs: env.TTS_RATE_LIMIT_WINDOW_MS,
+      max: env.TTS_RATE_LIMIT_MAX
+    },
     admin: {
       windowMs: env.ADMIN_RATE_LIMIT_WINDOW_MS,
       max: env.ADMIN_RATE_LIMIT_MAX
@@ -278,6 +290,13 @@ export const config = {
   voice: {
     baseUrl: stripTrailingSlash(env.VOICE_BASE_URL),
     timeoutMs: env.VOICE_TIMEOUT_MS
+  },
+  tts: {
+    enabled: env.TTS_ENABLED,
+    defaultVoice: env.TTS_DEFAULT_VOICE,
+    defaultSpeed: env.TTS_DEFAULT_SPEED,
+    timeoutMs: env.TTS_TIMEOUT_MS,
+    maxTextChars: env.TTS_MAX_TEXT_CHARS
   },
   transcriptFormatting: {
     enabled: env.TRANSCRIPT_FORMATTING_ENABLED,

@@ -13,6 +13,7 @@ import { adminUsersRouter } from './routes/adminUsers.js';
 import { authRouter } from './routes/auth.js';
 import { conversationsRouter } from './routes/conversations.js';
 import { llmRouter } from './routes/llm.js';
+import { speakRouter } from './routes/speak.js';
 import { statusRouter } from './routes/status.js';
 import { transcribeRouter } from './routes/transcribe.js';
 import { usersRouter } from './routes/users.js';
@@ -135,6 +136,7 @@ export const createApp = () => {
   app.use('/api', requirePasswordChangeCompleted, conversationsRouter);
   app.use('/api/status', requirePasswordChangeCompleted, statusRouter);
   app.use('/api/transcribe', requirePasswordChangeCompleted, transcribeRouter);
+  app.use('/api/speak', requirePasswordChangeCompleted, speakRouter);
   app.use('/api/llm', requirePasswordChangeCompleted, llmRouter);
 
   if (config.isProduction && fs.existsSync(config.clientDistPath)) {
