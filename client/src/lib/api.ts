@@ -77,6 +77,16 @@ const request = async <T>(path: string, init: RequestInit = {}, options: Request
   );
 };
 
+const assertPasswordChangeCompleted = (response: AuthResponse) => {
+  if (response.mustChangePassword || response.user.mustChangePassword) {
+    throw new ApiClientError(
+      'Password update did not complete. The account is still marked as requiring a password change.',
+      500,
+      'PASSWORD_CHANGE_NOT_COMPLETED'
+    );
+  }
+};
+
 const jsonRequest = async <T>(
   path: string,
   method: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
@@ -140,16 +150,13 @@ export const api = {
       { handleUnauthorized: false }
     );
     csrfToken = response.csrfToken;
+    assertPasswordChangeCompleted(response);
 
-    if (response.mustChangePassword || response.user.mustChangePassword) {
-      throw new ApiClientError(
-        'Password update did not complete. The account is still marked as requiring a password change.',
-        500,
-        'PASSWORD_CHANGE_NOT_COMPLETED'
-      );
-    }
+    const verifiedResponse = await request<AuthResponse>('/api/auth/me', {}, { handleUnauthorized: false });
+    csrfToken = verifiedResponse.csrfToken;
+    assertPasswordChangeCompleted(verifiedResponse);
 
-    return response;
+    return verifiedResponse;
   },
 
   async listAdminUsers() {

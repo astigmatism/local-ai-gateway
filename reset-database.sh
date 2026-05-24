@@ -24,6 +24,7 @@ if [[ "${1:-}" != "--yes" ]]; then
   echo "  - Drop all application tables/data"
   echo "  - Re-apply Prisma migrations"
   echo "  - Recreate the default/admin user using .env"
+  echo "  - Build the current source into dist before any PM2 restart"
   echo "  - Clear uploaded audio files under storage/uploads"
   echo "  - Restart the PM2 app if PM2 is available"
   echo
@@ -59,6 +60,9 @@ npx prisma migrate deploy
 
 echo "Running seed/bootstrap..."
 npm run db:seed
+
+echo "Building current source before restarting PM2..."
+npm run build
 
 echo "Clearing uploaded audio files..."
 mkdir -p storage/uploads

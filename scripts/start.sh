@@ -13,9 +13,8 @@ if [ ! -d node_modules ]; then
   fi
 fi
 
-if [ ! -f dist/server/index.js ] || [ ! -f dist/client/index.html ]; then
-  npm run build
-fi
+echo "Building current source before starting PM2..."
+npm run build
 
 if pm2 describe "$APP_NAME" >/dev/null 2>&1; then
   pm2 restart "$APP_NAME" --update-env

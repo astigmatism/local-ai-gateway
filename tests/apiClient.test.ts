@@ -16,6 +16,28 @@ const authRequiredResponse = () =>
     }
   );
 
+const authResponse = ({ mustChangePassword, csrfToken }: { mustChangePassword: boolean; csrfToken: string }) =>
+  new Response(
+    JSON.stringify({
+      user: {
+        id: '11111111-1111-4111-8111-111111111111',
+        displayName: 'Eric',
+        loginName: 'eric',
+        isAdmin: true,
+        mustChangePassword
+      },
+      mustChangePassword,
+      csrfToken,
+      passwordPolicy: { minLength: 8 }
+    }),
+    {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    }
+  );
+
 const loadApi = async () => {
   vi.resetModules();
   return import('../client/src/lib/api.js');
@@ -68,28 +90,7 @@ describe('api client authentication errors', () => {
 
   it('does not treat a stale must-change-password success response as a completed password update', async () => {
     const { api } = await loadApi();
-    const fetchMock = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          user: {
-            id: '00000000-0000-0000-0000-000000000001',
-            displayName: 'Eric',
-            loginName: 'eric',
-            isAdmin: true,
-            mustChangePassword: true
-          },
-          mustChangePassword: true,
-          csrfToken: 'next-csrf-token',
-          passwordPolicy: { minLength: 8 }
-        }),
-        {
-          status: 200,
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        }
-      )
-    );
+    const fetchMock = vi.fn(async () => authResponse({ mustChangePassword: true, csrfToken: 'next-csrf-token' }));
 
     vi.stubGlobal('fetch', fetchMock);
     api.setCsrfToken('csrf-token');
@@ -98,5 +99,53 @@ describe('api client authentication errors', () => {
       status: 500,
       code: 'PASSWORD_CHANGE_NOT_COMPLETED'
     });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('verifies completed password changes against the persisted auth state before resolving', async () => {
+    const { api } = await loadApi();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(authResponse({ mustChangePassword: false, csrfToken: 'changed-csrf-token' }))
+      .mockResolvedValueOnce(authResponse({ mustChangePassword: false, csrfToken: 'verified-csrf-token' }));
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    const response = await api.changePassword('same-password', 'same-password', 'same-password');
+
+    expect(response.mustChangePassword).toBe(false);
+    expect(response.user.mustChangePassword).toBe(false);
+    expect(response.csrfToken).toBe('verified-csrf-token');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/auth/change-password',
+      expect.objectContaining({ credentials: 'include', method: 'POST' })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/auth/me',
+      expect.objectContaining({ credentials: 'include', method: 'GET' })
+    );
+  });
+
+  it('does not close the password-change flow when the follow-up auth state still requires a password change', async () => {
+    const { api } = await loadApi();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(authResponse({ mustChangePassword: false, csrfToken: 'changed-csrf-token' }))
+      .mockResolvedValueOnce(authResponse({ mustChangePassword: true, csrfToken: 'verified-csrf-token' }));
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    await expect(api.changePassword('same-password', 'same-password', 'same-password')).rejects.toMatchObject({
+      status: 500,
+      code: 'PASSWORD_CHANGE_NOT_COMPLETED'
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
