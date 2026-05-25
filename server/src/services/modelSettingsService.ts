@@ -1,4 +1,5 @@
 import axios from 'axios';
+import type { Readable } from 'node:stream';
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { ApiError } from '../errors/apiError.js';
@@ -16,6 +17,7 @@ export interface ModelRuntimeInfo {
   sizeVram?: number;
   contextLength?: number;
   expiresAt?: string;
+  digest?: string;
   details?: Record<string, unknown>;
   source?: 'health' | 'ollamaPs' | 'combined';
 }
@@ -24,8 +26,10 @@ export interface AvailableModelInfo {
   name: string;
   size?: number;
   modifiedAt?: string;
+  digest?: string;
   details?: {
     family?: string;
+    families?: string[];
     format?: string;
     parameterSize?: string;
     quantization?: string;
@@ -34,16 +38,44 @@ export interface AvailableModelInfo {
   source?: 'health' | 'ollamaTags' | 'combined';
 }
 
+export interface DiskStorageInfo {
+  path?: string;
+  filesystem?: string;
+  usedBytes?: number;
+  availableBytes?: number;
+  totalBytes?: number;
+  usedPercent?: number;
+  ollamaModelsBytes?: number;
+}
+
+export interface ModelStorageSummary {
+  installedModelBytes: number;
+  installedModelCount: number;
+  disk: DiskStorageInfo | null;
+  lowSpace: boolean | null;
+  warning?: string;
+}
+
+export interface ModelCatalogCapability {
+  mode: 'manual';
+  stableApiAvailable: false;
+  libraryUrl: string;
+  message: string;
+}
+
 export interface ModelManagementStatus {
   defaultModel: string | null;
   defaultModelSource: 'local-ai-llm' | 'gateway-fallback';
   defaultModelLoaded: boolean | null;
   loadedModels: ModelRuntimeInfo[];
   availableModels: AvailableModelInfo[];
+  storage: ModelStorageSummary;
+  catalog: ModelCatalogCapability;
   source: {
     health: ModelSourceStatus;
     ollamaTags: ModelSourceStatus;
     ollamaPs: ModelSourceStatus;
+    storage: ModelSourceStatus;
   };
   generatedAt: string;
 }
@@ -53,13 +85,61 @@ export interface ModelLoadOptions {
   makeDefault: boolean;
 }
 
+export interface ModelDetailsSummary {
+  name: string;
+  size?: number;
+  digest?: string;
+  modifiedAt?: string;
+  format?: string;
+  family?: string;
+  families?: string[];
+  parameterSize?: string;
+  quantization?: string;
+  contextLength?: number;
+  capabilities?: string[];
+  license?: string;
+  template?: string;
+  system?: string;
+  modelfile?: string;
+  parameters?: string;
+  modelInfo?: Record<string, unknown>;
+}
+
+export interface ModelDetailsResponse {
+  model: string;
+  summary: ModelDetailsSummary;
+  raw: Record<string, unknown>;
+  generatedAt: string;
+}
+
+export type ModelPullEventType = 'progress' | 'complete' | 'error';
+
+export interface ModelPullProgressEvent {
+  type: ModelPullEventType;
+  model: string;
+  status: string;
+  completedBytes?: number;
+  totalBytes?: number;
+  percent?: number;
+  error?: string;
+  raw?: Record<string, unknown>;
+  generatedAt: string;
+}
+
+export interface ModelPullReservation {
+  model: string;
+  startedAt: string;
+}
+
 const statusCacheTtlMs = 30_000;
-const statusRequestTimeoutMs = Math.min(30_000, config.llm.timeoutMs);
+const statusRequestTimeoutMs = config.modelManagement.discoveryTimeoutMs;
 const chatDefaultLookupTimeoutMs = Math.min(5_000, config.llm.timeoutMs);
 
 let runtimeDefaultModel = config.llm.model;
 let statusCache: { status: ModelManagementStatus; cachedAt: number } | null = null;
 let modelLoadInFlight: { model: string; startedAt: string } | null = null;
+const modelPullsInFlight = new Map<string, { startedAt: string }>();
+const modelDeletesInFlight = new Map<string, { startedAt: string }>();
 
 const modelNamePattern =
   /^(?:[A-Za-z0-9][A-Za-z0-9._-]*\/){0,2}[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?$/u;
@@ -94,6 +174,13 @@ const cleanBoolean = (value: unknown) => {
   return undefined;
 };
 
+const cleanStringArray = (value: unknown) => {
+  const items = asArray(value);
+  if (!items) return undefined;
+  const strings = items.map((item) => cleanString(item)).filter((item): item is string => Boolean(item));
+  return strings.length > 0 ? strings : undefined;
+};
+
 const readPath = (root: unknown, path: string[]) => {
   let current: unknown = root;
   for (const segment of path) {
@@ -105,8 +192,16 @@ const readPath = (root: unknown, path: string[]) => {
 };
 
 const sourceError = (message: string): ModelSourceStatus => ({ status: 'error', message });
-const sourceOk = (): ModelSourceStatus => ({ status: 'ok' });
+const sourceOk = (message?: string): ModelSourceStatus => (message ? { status: 'ok', message } : { status: 'ok' });
 const sourceSkipped = (message: string): ModelSourceStatus => ({ status: 'skipped', message });
+
+const catalogCapability: ModelCatalogCapability = {
+  mode: 'manual',
+  stableApiAvailable: false,
+  libraryUrl: 'https://ollama.com/search',
+  message:
+    'No official stable Ollama public catalog search API is configured. Enter a model name from the Ollama library and Bear Castle AI will pull it through the gateway.'
+};
 
 const sanitizedAxiosMessage = (error: unknown, timeoutMs: number) => {
   if (axios.isAxiosError(error)) {
@@ -175,6 +270,7 @@ const detailsFromModelObject = (record: Record<string, unknown>) => {
   }
 
   includeIfPresent(details, 'family', record.family);
+  includeIfPresent(details, 'families', record.families);
   includeIfPresent(details, 'format', record.format);
   includeIfPresent(details, 'parameter_size', record.parameter_size ?? record.parameterSize);
   includeIfPresent(details, 'quantization_level', record.quantization_level ?? record.quantizationLevel ?? record.quantization);
@@ -200,6 +296,7 @@ const normalizeRuntimeModel = (value: unknown, source: ModelRuntimeInfo['source'
     sizeVram,
     contextLength,
     expiresAt,
+    digest: cleanString(record.digest),
     details,
     source
   };
@@ -217,6 +314,7 @@ const normalizeAvailableModel = (value: unknown, source: AvailableModelInfo['sou
     ? {
         ...rawDetails,
         family: cleanString(rawDetails.family),
+        families: cleanStringArray(rawDetails.families),
         format: cleanString(rawDetails.format),
         parameterSize: cleanString(rawDetails.parameter_size ?? rawDetails.parameterSize),
         quantization: cleanString(rawDetails.quantization_level ?? rawDetails.quantizationLevel ?? rawDetails.quantization)
@@ -227,6 +325,7 @@ const normalizeAvailableModel = (value: unknown, source: AvailableModelInfo['sou
     name: modelName,
     size: cleanNumber(record.size),
     modifiedAt: cleanString(record.modified_at ?? record.modifiedAt),
+    digest: cleanString(record.digest),
     details,
     source
   };
@@ -275,6 +374,7 @@ const mergeRuntimeModels = (models: ModelRuntimeInfo[]) => {
       sizeVram: model.sizeVram ?? existing.sizeVram,
       contextLength: model.contextLength ?? existing.contextLength,
       expiresAt: model.expiresAt ?? existing.expiresAt,
+      digest: model.digest ?? existing.digest,
       details: { ...(existing.details ?? {}), ...(model.details ?? {}) },
       source: existing.source === model.source ? existing.source : 'combined'
     });
@@ -419,6 +519,92 @@ export const extractLoadedModelsFromOllamaPs = (data: unknown) =>
 export const extractAvailableModelsFromOllamaTags = (data: unknown) =>
   uniqueModelList(modelListFromValue(data, (item) => normalizeAvailableModel(item, 'ollamaTags')));
 
+const storageCandidatePaths = [
+  ['storage'],
+  ['disk'],
+  ['filesystem'],
+  ['ollama', 'storage'],
+  ['ollama', 'disk'],
+  ['system', 'storage'],
+  ['system', 'disk']
+];
+
+const normalizeDiskStorageInfo = (data: unknown): DiskStorageInfo | null => {
+  const candidates: unknown[] = [data];
+  for (const path of storageCandidatePaths) {
+    const candidate = readPath(data, path);
+    if (candidate !== undefined) candidates.push(candidate);
+  }
+
+  for (const candidate of candidates) {
+    const record = asRecord(candidate);
+    if (!record) continue;
+
+    const usedBytes = cleanNumber(record.used_bytes ?? record.usedBytes ?? record.used);
+    const availableBytes = cleanNumber(
+      record.available_bytes ?? record.availableBytes ?? record.free_bytes ?? record.freeBytes ?? record.available ?? record.free
+    );
+    const totalBytes = cleanNumber(record.total_bytes ?? record.totalBytes ?? record.total ?? record.size_bytes ?? record.sizeBytes);
+    let usedPercent = cleanNumber(record.used_percent ?? record.usedPercent ?? record.percent_used ?? record.percentUsed);
+    if (usedPercent === undefined && usedBytes !== undefined && totalBytes !== undefined && totalBytes > 0) {
+      usedPercent = (usedBytes / totalBytes) * 100;
+    }
+
+    const ollamaModelsBytes = cleanNumber(
+      record.ollama_models_bytes ?? record.ollamaModelsBytes ?? record.models_bytes ?? record.modelsBytes
+    );
+
+    if (
+      usedBytes === undefined &&
+      availableBytes === undefined &&
+      totalBytes === undefined &&
+      usedPercent === undefined &&
+      ollamaModelsBytes === undefined
+    ) {
+      continue;
+    }
+
+    return {
+      path: cleanString(record.path ?? record.mount_path ?? record.mountPath),
+      filesystem: cleanString(record.filesystem ?? record.device),
+      usedBytes,
+      availableBytes,
+      totalBytes,
+      usedPercent,
+      ollamaModelsBytes
+    };
+  }
+
+  return null;
+};
+
+const installedModelBytes = (models: AvailableModelInfo[]) =>
+  models.reduce((total, model) => total + (model.size !== undefined && Number.isFinite(model.size) ? model.size : 0), 0);
+
+const buildStorageSummary = (
+  availableModels: AvailableModelInfo[],
+  storageData: unknown,
+  storageSource: ModelSourceStatus
+): ModelStorageSummary => {
+  const disk = storageSource.status === 'ok' ? normalizeDiskStorageInfo(storageData) : null;
+  const usedPercent = disk?.usedPercent;
+  const availableBytes = disk?.availableBytes;
+  const lowByPercent = usedPercent !== undefined && usedPercent >= config.modelManagement.lowDiskWarningPercent;
+  const lowByBytes = availableBytes !== undefined && availableBytes <= config.modelManagement.lowDiskWarningBytes;
+  const lowSpace = usedPercent !== undefined || availableBytes !== undefined ? lowByPercent || lowByBytes : null;
+
+  return {
+    installedModelBytes: installedModelBytes(availableModels),
+    installedModelCount: availableModels.length,
+    disk,
+    lowSpace,
+    warning:
+      lowSpace === true
+        ? `local-ai-llm disk usage is above ${config.modelManagement.lowDiskWarningPercent}% or below the free-space warning threshold.`
+        : undefined
+  };
+};
+
 interface BuildModelStatusInput {
   healthData?: unknown;
   healthSource: ModelSourceStatus;
@@ -426,6 +612,8 @@ interface BuildModelStatusInput {
   tagsSource: ModelSourceStatus;
   psData?: unknown;
   psSource: ModelSourceStatus;
+  storageData?: unknown;
+  storageSource?: ModelSourceStatus;
 }
 
 export const buildModelManagementStatus = ({
@@ -434,7 +622,9 @@ export const buildModelManagementStatus = ({
   tagsData,
   tagsSource,
   psData,
-  psSource
+  psSource,
+  storageData,
+  storageSource = sourceSkipped('Storage endpoint was not queried.')
 }: BuildModelStatusInput): ModelManagementStatus => {
   const healthDefaultModel = healthSource.status === 'ok' ? extractDefaultModelFromHealth(healthData) : null;
   const healthDefaultLoaded = healthSource.status === 'ok' ? extractDefaultLoadedFromHealth(healthData) : null;
@@ -459,10 +649,13 @@ export const buildModelManagementStatus = ({
     defaultModelLoaded: healthDefaultLoaded ?? inferredDefaultLoaded,
     loadedModels,
     availableModels,
+    storage: buildStorageSummary(availableModels, storageData, storageSource),
+    catalog: catalogCapability,
     source: {
       health: healthSource,
       ollamaTags: tagsSource,
-      ollamaPs: psSource
+      ollamaPs: psSource,
+      storage: storageSource
     },
     generatedAt: new Date().toISOString()
   };
@@ -492,6 +685,34 @@ const fetchOllamaPs = async () => {
   return response.data;
 };
 
+const storageEndpointsToTry = () => {
+  const configured = config.modelManagement.storageEndpoint;
+  const endpoints = [configured];
+  if (configured === '/storage') endpoints.push('/disk');
+  return endpoints;
+};
+
+const fetchStorage = async () => {
+  const errors: string[] = [];
+
+  for (const endpoint of storageEndpointsToTry()) {
+    try {
+      const response = await axios.get(`${config.llm.monitorBaseUrl}${endpoint}`, {
+        timeout: statusRequestTimeoutMs,
+        validateStatus: (status) => status >= 200 && status < 300
+      });
+      return {
+        data: response.data,
+        source: sourceOk(`Disk data from local-ai-llm monitor ${endpoint}.`)
+      };
+    } catch (error) {
+      errors.push(`${endpoint}: ${sanitizedAxiosMessage(error, statusRequestTimeoutMs)}`);
+    }
+  }
+
+  throw new Error(errors.join('; ') || 'storage endpoint unavailable');
+};
+
 export const getModelManagementStatus = async ({ forceRefresh = false }: { forceRefresh?: boolean } = {}) => {
   const now = Date.now();
   if (!forceRefresh && statusCache && now - statusCache.cachedAt < statusCacheTtlMs) {
@@ -515,26 +736,21 @@ export const getModelManagementStatus = async ({ forceRefresh = false }: { force
     );
   }
 
-  const healthAvailableModels = healthSource.status === 'ok' ? extractAvailableModelsFromHealth(healthData) : [];
-
   let tagsData: unknown;
-  let tagsSource: ModelSourceStatus =
-    healthAvailableModels.length > 0 ? sourceSkipped('Available models were reported by local-ai-llm health.') : sourceOk();
+  let tagsSource: ModelSourceStatus = sourceOk();
 
-  if (tagsSource.status !== 'skipped') {
-    try {
-      tagsData = await fetchOllamaTags();
-    } catch (error) {
-      tagsSource = makeSourceStatusFromError(error, statusRequestTimeoutMs);
-      logger.warn(
-        {
-          errorMessage: tagsSource.message,
-          service: 'ollama',
-          endpoint: 'api/tags'
-        },
-        'Ollama available-model discovery failed'
-      );
-    }
+  try {
+    tagsData = await fetchOllamaTags();
+  } catch (error) {
+    tagsSource = makeSourceStatusFromError(error, statusRequestTimeoutMs);
+    logger.warn(
+      {
+        errorMessage: tagsSource.message,
+        service: 'ollama',
+        endpoint: 'api/tags'
+      },
+      'Ollama installed-model discovery failed'
+    );
   }
 
   let psData: unknown;
@@ -554,13 +770,41 @@ export const getModelManagementStatus = async ({ forceRefresh = false }: { force
     );
   }
 
+  let storageData: unknown;
+  let storageSource: ModelSourceStatus = sourceSkipped('Disk data unavailable; showing installed model sizes only.');
+
+  if (healthSource.status === 'ok' && normalizeDiskStorageInfo(healthData)) {
+    storageData = healthData;
+    storageSource = sourceOk('Disk data from local-ai-llm monitor health.');
+  } else {
+    try {
+      const storage = await fetchStorage();
+      storageData = storage.data;
+      storageSource = normalizeDiskStorageInfo(storage.data)
+        ? storage.source
+        : sourceError('Storage endpoint did not include disk usage fields.');
+    } catch (error) {
+      storageSource = makeSourceStatusFromError(error, statusRequestTimeoutMs);
+      logger.warn(
+        {
+          errorMessage: storageSource.message,
+          service: 'local-ai-llm',
+          endpoint: config.modelManagement.storageEndpoint
+        },
+        'local-ai-llm storage discovery failed'
+      );
+    }
+  }
+
   const status = buildModelManagementStatus({
     healthData,
     healthSource,
     tagsData,
     tagsSource,
     psData,
-    psSource
+    psSource,
+    storageData,
+    storageSource
   });
 
   statusCache = { status, cachedAt: now };
@@ -594,6 +838,22 @@ export const resolveDefaultLlmModel = async () => {
 
 export const loadModel = async ({ model, makeDefault }: ModelLoadOptions) => {
   const validModel = assertValidModelName(model);
+
+  const pullOperation = modelPullsInFlight.get(validModel);
+  if (pullOperation) {
+    throw new ApiError(409, `A pull operation is already in progress for ${validModel}.`, 'MODEL_PULL_IN_PROGRESS', {
+      model: validModel,
+      startedAt: pullOperation.startedAt
+    });
+  }
+
+  const deleteOperation = modelDeletesInFlight.get(validModel);
+  if (deleteOperation) {
+    throw new ApiError(409, `A delete operation is already in progress for ${validModel}.`, 'MODEL_DELETE_IN_PROGRESS', {
+      model: validModel,
+      startedAt: deleteOperation.startedAt
+    });
+  }
 
   if (modelLoadInFlight) {
     throw new ApiError(
@@ -690,8 +950,331 @@ export const loadModel = async ({ model, makeDefault }: ModelLoadOptions) => {
   }
 };
 
+const rawRecord = (value: unknown) => asRecord(value) ?? {};
+
+const contextLengthFromModelInfo = (modelInfo: Record<string, unknown> | undefined) => {
+  if (!modelInfo) return undefined;
+
+  const direct = cleanNumber(modelInfo.context_length ?? modelInfo.contextLength ?? modelInfo['general.context_length']);
+  if (direct !== undefined) return direct;
+
+  for (const [key, value] of Object.entries(modelInfo)) {
+    if (key.endsWith('.context_length')) {
+      const parsed = cleanNumber(value);
+      if (parsed !== undefined) return parsed;
+    }
+  }
+
+  return undefined;
+};
+
+const summarizeModelDetails = (model: string, data: Record<string, unknown>): ModelDetailsSummary => {
+  const details = asRecord(data.details);
+  const modelInfo = asRecord(data.model_info ?? data.modelInfo) ?? undefined;
+
+  return {
+    name: model,
+    size: cleanNumber(data.size),
+    digest: cleanString(data.digest),
+    modifiedAt: cleanString(data.modified_at ?? data.modifiedAt),
+    format: cleanString(details?.format ?? data.format),
+    family: cleanString(details?.family ?? data.family),
+    families: cleanStringArray(details?.families ?? data.families),
+    parameterSize: cleanString(details?.parameter_size ?? details?.parameterSize ?? data.parameter_size ?? data.parameterSize),
+    quantization: cleanString(
+      details?.quantization_level ?? details?.quantizationLevel ?? details?.quantization ?? data.quantization_level ?? data.quantization
+    ),
+    contextLength: cleanNumber(data.context_length ?? data.contextLength) ?? contextLengthFromModelInfo(modelInfo),
+    capabilities: cleanStringArray(data.capabilities),
+    license: cleanString(data.license),
+    template: cleanString(data.template),
+    system: cleanString(data.system),
+    modelfile: cleanString(data.modelfile ?? data.modelFile),
+    parameters: cleanString(data.parameters),
+    modelInfo
+  };
+};
+
+export const showModelDetails = async (model: string): Promise<ModelDetailsResponse> => {
+  const validModel = assertValidModelName(model);
+
+  try {
+    const response = await axios.post(
+      `${config.llm.baseUrl}/api/show`,
+      { model: validModel },
+      {
+        timeout: config.modelManagement.detailsTimeoutMs,
+        validateStatus: (status) => status >= 200 && status < 300
+      }
+    );
+    const raw = rawRecord(response.data);
+    return {
+      model: validModel,
+      summary: summarizeModelDetails(validModel, raw),
+      raw,
+      generatedAt: new Date().toISOString()
+    };
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+
+    const message = sanitizedAxiosMessage(error, config.modelManagement.detailsTimeoutMs);
+    logger.warn({ errorMessage: message, model: validModel, endpoint: 'api/show' }, 'Ollama model details request failed');
+
+    if (axios.isAxiosError(error) && error.response) {
+      throw new ApiError(502, `Ollama model details failed with ${message}.`, 'MODEL_DETAILS_FAILED');
+    }
+
+    throw new ApiError(503, 'Could not reach Ollama to show model details.', 'OLLAMA_UNAVAILABLE');
+  }
+};
+
+const assertNoDeleteInFlight = (model: string) => {
+  const deleteOperation = modelDeletesInFlight.get(model);
+  if (deleteOperation) {
+    throw new ApiError(409, `A delete operation is already in progress for ${model}.`, 'MODEL_DELETE_IN_PROGRESS', {
+      model,
+      startedAt: deleteOperation.startedAt
+    });
+  }
+};
+
+const assertNoPullInFlight = (model: string) => {
+  const pullOperation = modelPullsInFlight.get(model);
+  if (pullOperation) {
+    throw new ApiError(409, `A pull operation is already in progress for ${model}.`, 'MODEL_PULL_IN_PROGRESS', {
+      model,
+      startedAt: pullOperation.startedAt
+    });
+  }
+};
+
+export const reserveModelPull = (model: string): ModelPullReservation => {
+  const validModel = assertValidModelName(model);
+  assertNoPullInFlight(validModel);
+  assertNoDeleteInFlight(validModel);
+
+  if (modelLoadInFlight?.model === validModel) {
+    throw new ApiError(409, `A load operation is already in progress for ${validModel}.`, 'MODEL_LOAD_IN_PROGRESS', {
+      model: validModel,
+      startedAt: modelLoadInFlight.startedAt
+    });
+  }
+
+  if (modelPullsInFlight.size >= config.modelManagement.maxConcurrentPulls) {
+    const activeModel = Array.from(modelPullsInFlight.keys())[0] ?? 'another model';
+    throw new ApiError(
+      409,
+      `Another model pull is already in progress for ${activeModel}. Try again after it finishes.`,
+      'MODEL_PULL_LIMIT_REACHED',
+      { activeModel }
+    );
+  }
+
+  const reservation = { model: validModel, startedAt: new Date().toISOString() };
+  modelPullsInFlight.set(validModel, { startedAt: reservation.startedAt });
+  return reservation;
+};
+
+const progressEventFromOllama = (model: string, record: Record<string, unknown>): ModelPullProgressEvent => {
+  const status = cleanString(record.status) ?? cleanString(record.error) ?? 'Downloading model';
+  const completedBytes = cleanNumber(record.completed);
+  const totalBytes = cleanNumber(record.total);
+  const percent =
+    completedBytes !== undefined && totalBytes !== undefined && totalBytes > 0
+      ? Math.max(0, Math.min(100, (completedBytes / totalBytes) * 100))
+      : undefined;
+
+  return {
+    type: cleanString(record.error) ? 'error' : status.toLowerCase() === 'success' ? 'complete' : 'progress',
+    model,
+    status,
+    completedBytes,
+    totalBytes,
+    percent,
+    error: cleanString(record.error),
+    raw: record,
+    generatedAt: new Date().toISOString()
+  };
+};
+
+const writeProgress = (onProgress: ((event: ModelPullProgressEvent) => void) | undefined, event: ModelPullProgressEvent) => {
+  onProgress?.(event);
+};
+
+const parsePullStream = async (
+  model: string,
+  stream: Readable,
+  onProgress?: (event: ModelPullProgressEvent) => void
+): Promise<ModelPullProgressEvent> =>
+  new Promise((resolve, reject) => {
+    let buffer = '';
+    let lastEvent: ModelPullProgressEvent | null = null;
+    let settled = false;
+
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+      stream.destroy();
+    };
+
+    const handleLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+
+      let record: Record<string, unknown>;
+      try {
+        record = rawRecord(JSON.parse(trimmed));
+      } catch {
+        fail(new ApiError(502, 'Ollama returned an invalid pull progress event.', 'MODEL_PULL_STREAM_INVALID'));
+        return;
+      }
+
+      const event = progressEventFromOllama(model, record);
+      lastEvent = event;
+      writeProgress(onProgress, event);
+
+      if (event.error) {
+        fail(new ApiError(502, `Ollama pull failed: ${event.error}`, 'MODEL_PULL_FAILED', event));
+      }
+    };
+
+    stream.setEncoding('utf8');
+    stream.on('data', (chunk: string) => {
+      buffer += chunk;
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) handleLine(line);
+    });
+    stream.on('error', fail);
+    stream.on('end', () => {
+      if (settled) return;
+      if (buffer.trim()) handleLine(buffer);
+      if (settled) return;
+      settled = true;
+
+      const completeEvent: ModelPullProgressEvent =
+        lastEvent?.type === 'complete'
+          ? lastEvent
+          : {
+              type: 'complete',
+              model,
+              status: lastEvent?.status ?? 'success',
+              completedBytes: lastEvent?.completedBytes,
+              totalBytes: lastEvent?.totalBytes,
+              percent: lastEvent?.percent ?? 100,
+              generatedAt: new Date().toISOString()
+            };
+      writeProgress(onProgress, completeEvent);
+      resolve(completeEvent);
+    });
+  });
+
+export const runReservedModelPull = async (
+  reservation: ModelPullReservation,
+  onProgress?: (event: ModelPullProgressEvent) => void
+) => {
+  const startedAt = Date.now();
+  try {
+    logger.info({ model: reservation.model }, 'Ollama model pull requested');
+    writeProgress(onProgress, {
+      type: 'progress',
+      model: reservation.model,
+      status: 'Starting model download',
+      generatedAt: new Date().toISOString()
+    });
+
+    const response = await axios.post(
+      `${config.llm.baseUrl}/api/pull`,
+      { model: reservation.model, stream: true },
+      {
+        timeout: config.modelManagement.pullTimeoutMs,
+        responseType: 'stream',
+        validateStatus: (status) => status >= 200 && status < 300
+      }
+    );
+
+    const finalEvent = await parsePullStream(reservation.model, response.data as Readable, onProgress);
+    statusCache = null;
+    logger.info({ model: reservation.model, durationMs: Date.now() - startedAt }, 'Ollama model pull completed');
+    return finalEvent;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+
+    const message = sanitizedAxiosMessage(error, config.modelManagement.pullTimeoutMs);
+    logger.error({ errorMessage: message, model: reservation.model }, 'Ollama model pull failed');
+
+    if (axios.isAxiosError(error) && error.code === 'ECONNABORTED') {
+      throw new ApiError(504, `Model pull timed out after ${config.modelManagement.pullTimeoutMs} ms.`, 'MODEL_PULL_TIMEOUT');
+    }
+
+    if (axios.isAxiosError(error) && error.response) {
+      throw new ApiError(502, `Ollama model pull failed with ${message}.`, 'MODEL_PULL_FAILED');
+    }
+
+    throw new ApiError(503, 'Could not reach Ollama to pull the model.', 'OLLAMA_UNAVAILABLE');
+  } finally {
+    modelPullsInFlight.delete(reservation.model);
+  }
+};
+
+export const pullModel = async (model: string, onProgress?: (event: ModelPullProgressEvent) => void) => {
+  const reservation = reserveModelPull(model);
+  return runReservedModelPull(reservation, onProgress);
+};
+
+export const deleteModel = async (model: string) => {
+  const validModel = assertValidModelName(model);
+  assertNoPullInFlight(validModel);
+  assertNoDeleteInFlight(validModel);
+
+  if (modelLoadInFlight?.model === validModel) {
+    throw new ApiError(409, `A load operation is already in progress for ${validModel}.`, 'MODEL_LOAD_IN_PROGRESS', {
+      model: validModel,
+      startedAt: modelLoadInFlight.startedAt
+    });
+  }
+
+  modelDeletesInFlight.set(validModel, { startedAt: new Date().toISOString() });
+  const startedAt = Date.now();
+
+  try {
+    logger.info({ model: validModel }, 'Ollama model delete requested');
+
+    await axios.delete(`${config.llm.baseUrl}/api/delete`, {
+      data: { model: validModel },
+      timeout: config.modelManagement.deleteTimeoutMs,
+      validateStatus: (status) => status >= 200 && status < 300
+    });
+
+    statusCache = null;
+    const status = await getModelManagementStatus({ forceRefresh: true });
+    logger.info({ model: validModel, durationMs: Date.now() - startedAt }, 'Ollama model delete completed');
+    return status;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+
+    const message = sanitizedAxiosMessage(error, config.modelManagement.deleteTimeoutMs);
+    logger.error({ errorMessage: message, model: validModel }, 'Ollama model delete failed');
+
+    if (axios.isAxiosError(error) && error.code === 'ECONNABORTED') {
+      throw new ApiError(504, `Model delete timed out after ${config.modelManagement.deleteTimeoutMs} ms.`, 'MODEL_DELETE_TIMEOUT');
+    }
+
+    if (axios.isAxiosError(error) && error.response) {
+      throw new ApiError(502, `Ollama model delete failed with ${message}.`, 'MODEL_DELETE_FAILED');
+    }
+
+    throw new ApiError(503, 'Could not reach Ollama to delete the model.', 'OLLAMA_UNAVAILABLE');
+  } finally {
+    modelDeletesInFlight.delete(validModel);
+  }
+};
+
 export const resetModelSettingsCacheForTests = () => {
   runtimeDefaultModel = config.llm.model;
   statusCache = null;
   modelLoadInFlight = null;
+  modelPullsInFlight.clear();
+  modelDeletesInFlight.clear();
 };

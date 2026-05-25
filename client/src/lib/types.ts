@@ -107,6 +107,7 @@ export interface ModelRuntimeInfo {
   sizeVram?: number;
   contextLength?: number;
   expiresAt?: string;
+  digest?: string;
   details?: Record<string, unknown>;
   source?: 'health' | 'ollamaPs' | 'combined';
 }
@@ -115,8 +116,10 @@ export interface AvailableModelInfo {
   name: string;
   size?: number;
   modifiedAt?: string;
+  digest?: string;
   details?: {
     family?: string;
+    families?: string[];
     format?: string;
     parameterSize?: string;
     quantization?: string;
@@ -125,22 +128,95 @@ export interface AvailableModelInfo {
   source?: 'health' | 'ollamaTags' | 'combined';
 }
 
+export interface DiskStorageInfo {
+  path?: string;
+  filesystem?: string;
+  usedBytes?: number;
+  availableBytes?: number;
+  totalBytes?: number;
+  usedPercent?: number;
+  ollamaModelsBytes?: number;
+}
+
+export interface ModelStorageSummary {
+  installedModelBytes: number;
+  installedModelCount: number;
+  disk: DiskStorageInfo | null;
+  lowSpace: boolean | null;
+  warning?: string;
+}
+
+export interface ModelCatalogCapability {
+  mode: 'manual';
+  stableApiAvailable: false;
+  libraryUrl: string;
+  message: string;
+}
+
 export interface ModelManagementStatus {
   defaultModel: string | null;
   defaultModelSource: 'local-ai-llm' | 'gateway-fallback';
   defaultModelLoaded: boolean | null;
   loadedModels: ModelRuntimeInfo[];
   availableModels: AvailableModelInfo[];
+  storage: ModelStorageSummary;
+  catalog: ModelCatalogCapability;
   source: {
     health: ModelSourceStatus;
     ollamaTags: ModelSourceStatus;
     ollamaPs: ModelSourceStatus;
+    storage: ModelSourceStatus;
   };
   generatedAt: string;
 }
 
 export interface ModelLoadResponse extends ModelManagementStatus {
   message?: string;
+}
+
+export interface ModelDeleteResponse extends ModelManagementStatus {
+  message?: string;
+}
+
+export interface ModelDetailsSummary {
+  name: string;
+  size?: number;
+  digest?: string;
+  modifiedAt?: string;
+  format?: string;
+  family?: string;
+  families?: string[];
+  parameterSize?: string;
+  quantization?: string;
+  contextLength?: number;
+  capabilities?: string[];
+  license?: string;
+  template?: string;
+  system?: string;
+  modelfile?: string;
+  parameters?: string;
+  modelInfo?: Record<string, unknown>;
+}
+
+export interface ModelDetailsResponse {
+  model: string;
+  summary: ModelDetailsSummary;
+  raw: Record<string, unknown>;
+  generatedAt: string;
+}
+
+export type ModelPullEventType = 'progress' | 'complete' | 'error';
+
+export interface ModelPullProgressEvent {
+  type: ModelPullEventType;
+  model: string;
+  status: string;
+  completedBytes?: number;
+  totalBytes?: number;
+  percent?: number;
+  error?: string;
+  raw?: Record<string, unknown>;
+  generatedAt: string;
 }
 
 export interface ConversationTitleGenerationResult {

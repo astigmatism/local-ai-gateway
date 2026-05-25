@@ -76,6 +76,18 @@ const envSchema = z.object({
   LLM_MONITOR_BASE_URL: z.string().url().default('http://192.168.1.5:8000'),
   LLM_MODEL: z.string().min(1).default('qwen3:30b'),
   LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(600000),
+  MODEL_DISCOVERY_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
+  MODEL_DETAILS_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
+  MODEL_PULL_TIMEOUT_MS: z.coerce.number().int().positive().default(3600000),
+  MODEL_DELETE_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
+  MODEL_MAX_CONCURRENT_PULLS: z.coerce.number().int().positive().default(1),
+  LLM_STORAGE_ENDPOINT: z
+    .string()
+    .trim()
+    .regex(/^\/[A-Za-z0-9/_-]*$/, 'must be a monitor path such as /storage or /disk')
+    .default('/storage'),
+  STORAGE_LOW_DISK_WARNING_PERCENT: z.coerce.number().min(1).max(100).default(85),
+  STORAGE_LOW_DISK_WARNING_BYTES: z.coerce.number().int().positive().default(50 * 1024 * 1024 * 1024),
 
   VOICE_BASE_URL: z.string().url().default('http://192.168.1.8:8000'),
   VOICE_TIMEOUT_MS: z.coerce.number().int().positive().default(300000),
@@ -286,6 +298,16 @@ export const config = {
     monitorBaseUrl: stripTrailingSlash(env.LLM_MONITOR_BASE_URL),
     model: env.LLM_MODEL,
     timeoutMs: env.LLM_TIMEOUT_MS
+  },
+  modelManagement: {
+    discoveryTimeoutMs: Math.min(env.MODEL_DISCOVERY_TIMEOUT_MS, env.LLM_TIMEOUT_MS),
+    detailsTimeoutMs: env.MODEL_DETAILS_TIMEOUT_MS,
+    pullTimeoutMs: env.MODEL_PULL_TIMEOUT_MS,
+    deleteTimeoutMs: env.MODEL_DELETE_TIMEOUT_MS,
+    maxConcurrentPulls: env.MODEL_MAX_CONCURRENT_PULLS,
+    storageEndpoint: env.LLM_STORAGE_ENDPOINT,
+    lowDiskWarningPercent: env.STORAGE_LOW_DISK_WARNING_PERCENT,
+    lowDiskWarningBytes: env.STORAGE_LOW_DISK_WARNING_BYTES
   },
   voice: {
     baseUrl: stripTrailingSlash(env.VOICE_BASE_URL),

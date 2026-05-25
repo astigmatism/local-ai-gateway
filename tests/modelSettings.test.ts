@@ -63,6 +63,15 @@ describe('model settings service helpers', () => {
       psSource: { status: 'ok' },
       psData: {
         models: [{ name: 'qwen3:30b', expires_at: '2026-05-24T13:00:00Z' }]
+      },
+      storageSource: { status: 'ok' },
+      storageData: {
+        path: '/usr/share/ollama/.ollama/models',
+        used_bytes: 100_000_000_000,
+        available_bytes: 60_000_000_000,
+        total_bytes: 150_000_000_000,
+        used_percent: 66.7,
+        ollama_models_bytes: 9_123_456_789
       }
     });
 
@@ -81,6 +90,18 @@ describe('model settings service helpers', () => {
       size: 9_123_456_789,
       details: { parameterSize: '14B', quantization: 'Q4_K_M' }
     });
+    expect(status.storage).toMatchObject({
+      installedModelBytes: 9_123_456_789,
+      installedModelCount: 1,
+      lowSpace: false,
+      disk: {
+        path: '/usr/share/ollama/.ollama/models',
+        availableBytes: 60_000_000_000,
+        totalBytes: 150_000_000_000,
+        usedPercent: 66.7
+      }
+    });
+    expect(status.catalog.mode).toBe('manual');
   });
 
   it('keeps partial discovery data and marks default loaded status unknown when running-model sources fail', async () => {
@@ -100,5 +121,23 @@ describe('model settings service helpers', () => {
     expect(status.source.health.status).toBe('error');
     expect(status.source.ollamaTags.status).toBe('ok');
     expect(status.source.ollamaPs.status).toBe('error');
+    expect(status.storage).toMatchObject({
+      installedModelBytes: 0,
+      installedModelCount: 1,
+      disk: null
+    });
+    expect(status.source.storage.status).toBe('skipped');
+  });
+
+  it('guards duplicate pulls and conflicting delete operations for the same model', async () => {
+    const { reserveModelPull, resetModelSettingsCacheForTests, deleteModel } = await loadService();
+
+    const reservation = reserveModelPull('qwen3:14b');
+
+    expect(() => reserveModelPull('qwen3:14b')).toThrow(/pull operation is already in progress/i);
+    await expect(deleteModel('qwen3:14b')).rejects.toMatchObject({ statusCode: 409, code: 'MODEL_PULL_IN_PROGRESS' });
+
+    resetModelSettingsCacheForTests();
+    expect(reservation.model).toBe('qwen3:14b');
   });
 });

@@ -270,3 +270,163 @@ describe('api client model settings requests', () => {
     });
   });
 });
+
+describe('api client model manager requests', () => {
+  it('requests model details through the gateway', async () => {
+    const { api } = await loadApi();
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            model: 'qwen3:14b',
+            summary: { name: 'qwen3:14b', parameterSize: '14B', quantization: 'Q4_K_M' },
+            raw: {},
+            generatedAt: '2026-05-24T12:00:00.000Z'
+          }),
+          {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/json'
+            }
+          }
+        )
+    );
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    const response = await api.getModelDetails('qwen3:14b');
+
+    expect(response.summary.parameterSize).toBe('14B');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/settings/models/details',
+      expect.objectContaining({
+        credentials: 'include',
+        method: 'POST'
+      })
+    );
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-token');
+    expect(JSON.parse(init.body as string)).toEqual({ model: 'qwen3:14b' });
+  });
+
+  it('streams model pull progress through the gateway', async () => {
+    const { api } = await loadApi();
+    const encoder = new TextEncoder();
+    const events = [
+      {
+        type: 'progress',
+        model: 'qwen3:14b',
+        status: 'pulling manifest',
+        generatedAt: '2026-05-24T12:00:00.000Z'
+      },
+      {
+        type: 'complete',
+        model: 'qwen3:14b',
+        status: 'success',
+        completedBytes: 100,
+        totalBytes: 100,
+        percent: 100,
+        generatedAt: '2026-05-24T12:00:01.000Z'
+      }
+    ];
+    const stream = new ReadableStream({
+      start(controller) {
+        for (const event of events) controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        controller.close();
+      }
+    });
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(stream, {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/x-ndjson'
+          }
+        })
+    );
+    const onProgress = vi.fn();
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    const finalEvent = await api.pullModel('qwen3:14b', onProgress);
+
+    expect(finalEvent.type).toBe('complete');
+    expect(finalEvent.percent).toBe(100);
+    expect(onProgress).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/settings/models/pull',
+      expect.objectContaining({
+        credentials: 'include',
+        method: 'POST'
+      })
+    );
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-token');
+    expect(new Headers(init.headers).get('Content-Type')).toBe('application/json');
+    expect(JSON.parse(init.body as string)).toEqual({ model: 'qwen3:14b' });
+  });
+
+  it('deletes local models through the gateway with CSRF', async () => {
+    const { api } = await loadApi();
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            defaultModel: 'qwen3:30b',
+            defaultModelSource: 'local-ai-llm',
+            defaultModelLoaded: true,
+            loadedModels: [{ name: 'qwen3:30b' }],
+            availableModels: [],
+            storage: {
+              installedModelBytes: 0,
+              installedModelCount: 0,
+              disk: null,
+              lowSpace: null
+            },
+            catalog: {
+              mode: 'manual',
+              stableApiAvailable: false,
+              libraryUrl: 'https://ollama.com/search',
+              message: 'Manual model-name entry is available.'
+            },
+            source: {
+              health: { status: 'ok' },
+              ollamaTags: { status: 'ok' },
+              ollamaPs: { status: 'ok' },
+              storage: { status: 'skipped' }
+            },
+            generatedAt: '2026-05-24T12:00:00.000Z',
+            message: 'Deleted local model qwen3:14b.'
+          }),
+          {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/json'
+            }
+          }
+        )
+    );
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    const response = await api.deleteModel('qwen3:14b');
+
+    expect(response.message).toBe('Deleted local model qwen3:14b.');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/settings/models',
+      expect.objectContaining({
+        credentials: 'include',
+        method: 'DELETE'
+      })
+    );
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-token');
+    expect(JSON.parse(init.body as string)).toEqual({ model: 'qwen3:14b' });
+  });
+});

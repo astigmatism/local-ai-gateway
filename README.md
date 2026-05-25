@@ -62,9 +62,13 @@ Bear Castle AI gateway VM
   +--> local-ai-llm   http://192.168.1.5:11434/api/generate
   |                   http://192.168.1.5:11434/api/tags
   |                   http://192.168.1.5:11434/api/ps
+  |                   http://192.168.1.5:11434/api/show
+  |                   http://192.168.1.5:11434/api/pull
+  |                   http://192.168.1.5:11434/api/delete
   |                   http://192.168.1.5:8000/health
   |                   http://192.168.1.5:8000/gpu
   |                   http://192.168.1.5:8000/model/load
+  |                   http://192.168.1.5:8000/storage (optional)
   |
   +--> local-ai-voice http://192.168.1.8:8000/transcribe
                       http://192.168.1.8:8000/speak
@@ -72,7 +76,7 @@ Bear Castle AI gateway VM
                       http://192.168.1.8:8000/gpu
 ```
 
-The backend serves the frontend in production from `dist/client` and exposes APIs under `/api/*`. The unauthenticated public API surface is intentionally small: login users, login, and `/health`. Conversation, status/GPU, settings/model status, transcription, text-to-speech, LLM generation, and user-management APIs require authentication. Model loading and default-model changes are Eric/admin-only and remain CSRF-protected.
+The backend serves the frontend in production from `dist/client` and exposes APIs under `/api/*`. The unauthenticated public API surface is intentionally small: login users, login, and `/health`. Conversation, status/GPU, settings/model status, transcription, text-to-speech, LLM generation, and user-management APIs require authentication. Model pulls, deletes, loading, and default-model changes are Eric/admin-only and remain CSRF-protected.
 
 ## HTTPS/domain hosting quick start
 
@@ -103,13 +107,66 @@ TTS_DEFAULT_SPEED=1.0
 These are defaults only. Change them in `.env` if the service IPs, ports, voice, or speaking speed change.
 
 
-## Model Management
+## Model Manager
 
-The gear button in the top application bar opens the Bear Castle AI Settings modal. The initial Settings section is **Local LLM Model**, which shows the configured default model, whether that default is currently loaded, currently running Ollama models, and locally available Ollama models when discovery succeeds.
+The gear button in the top application bar opens Settings. The Models section is now an Ollama Model Manager with four compact tabs:
 
-Model status is gathered by the gateway backend only; the browser never calls `local-ai-llm`, Ollama, or `local-ai-voice` directly. The gateway first asks `GET {LLM_MONITOR_BASE_URL}/health` for the configured default model and loaded-model status. If local-ai-llm health does not provide selectable/available models, the gateway asks Ollama through `GET {LLM_BASE_URL}/api/tags`. Running/loaded model details are also enriched from `GET {LLM_BASE_URL}/api/ps` when available. If any discovery source is unavailable, Settings shows partial data and a warning instead of failing the whole modal.
+- **Overview** shows the current Bear Castle AI default model, whether that default is currently loaded, currently running/loaded Ollama models, and storage at a glance.
+- **Installed** lists locally installed Ollama models with size, modified date, digest, family, parameter size, quantization, running/default markers, and row actions.
+- **Browse / Download** provides a safe manual model-name workflow for pulling models locally.
+- **Storage** summarizes installed model footprint, optional local-ai-llm disk capacity/free space, low-space warnings, and large installed models that can be deleted.
 
-Eric/admin can select a discovered model or enter a safe manual Ollama model name fallback, then click **Load Model**. The gateway validates the model name server-side and calls:
+The browser still talks only to the Bear Castle AI gateway. The gateway talks to Ollama and the local-ai-llm monitor/control service using the configured internal URLs; those internal URLs are never exposed to the browser.
+
+### Local model status and details
+
+Model status comes from gateway backend calls to:
+
+- `GET {LLM_MONITOR_BASE_URL}/health` for the configured local-ai-llm default model, whether the default is loaded, and any loaded-model data reported by the monitor.
+- `GET {LLM_BASE_URL}/api/tags` for installed local Ollama models, including model names, sizes, modified dates, digests, and basic metadata.
+- `GET {LLM_BASE_URL}/api/ps` for currently running/loaded Ollama models.
+- `POST {LLM_BASE_URL}/api/show` when the user opens details for an installed model.
+
+The Installed tab uses `/api/tags` as the source of truth for local model files. Details are loaded on demand through `/api/show` and displayed as summarized fields first: model name, size, modified date, digest, format, family/families, parameter size, quantization, context length, capabilities, and optional collapsed license/template/system/modelfile/raw details.
+
+If one source fails, the model manager shows whatever data is still available and displays a warning. For example, if `/api/ps` fails but `/api/tags` works, installed models still render and running state is shown as partial/unavailable.
+
+### Downloading/pulling models
+
+Eric/admin can download a model from the Browse / Download tab by entering an Ollama model name such as `llama3.1:8b`, `qwen3:14b`, `gemma3:12b`, or `deepseek-r1:32b`. The backend validates the model name, prevents duplicate pulls, and calls:
+
+```http
+POST {LLM_BASE_URL}/api/pull
+Content-Type: application/json
+
+{
+  "model": "qwen3:14b",
+  "stream": true
+}
+```
+
+The gateway streams Ollama pull progress back to the Settings UI as newline-delimited JSON. The UI shows status text, completed/total bytes when Ollama provides them, percentage when available, and a progress bar. When the pull completes, installed models and storage are refreshed. Pulling only downloads the model; it does not automatically load or make the model default.
+
+Before pulling, the UI warns that the model size is unknown unless Ollama/storage data can provide enough context. If local-ai-llm disk free space is available, the confirmation includes the reported free space.
+
+### Deleting local models
+
+Eric/admin can delete installed local models from the Installed or Storage tab. The UI requires confirmation and includes the model name and approximate size from `/api/tags`. It adds stronger warnings when the selected model is the current default or is currently loaded/running. The backend validates the model name, rejects conflicting operations, and calls:
+
+```http
+DELETE {LLM_BASE_URL}/api/delete
+Content-Type: application/json
+
+{
+  "model": "qwen3:14b"
+}
+```
+
+After deletion, the gateway refreshes installed models, running models, and storage. Bear Castle AI does not delete model files by path, run shell commands, or SSH into local-ai-llm; deletion goes through Ollama.
+
+### Load/Warm and Make Default
+
+Existing model load/default behavior is preserved. The Installed tab exposes **Load** and **Make Default** actions for Eric/admin. Both actions call the local-ai-llm monitor/control service through the gateway:
 
 ```http
 POST {LLM_MONITOR_BASE_URL}/model/load
@@ -121,9 +178,57 @@ Content-Type: application/json
 }
 ```
 
-Checking **Make this the default model** sends `make_default: true`. On success, local-ai-llm updates its config and the gateway refreshes model status. Future Bear Castle AI chat requests resolve the default model from local-ai-llm health when available, use the refreshed in-memory default after a successful make-default request, and fall back to `LLM_MODEL` only when the monitor default cannot be reached. Loading a model with `make_default: false` warms it but does not change the chat default.
+`make_default: false` warms the model without changing chat defaults. `make_default: true` updates the configured local-ai-llm default, and future Bear Castle AI chat requests use the refreshed default model when local-ai-llm reports it. The gateway still falls back to `LLM_MODEL` only when the monitor default is unavailable.
 
-Regular authenticated users may open Settings and view model status, but they cannot load models or change the default. The frontend disables mutating controls for non-admin users, and the backend enforces Eric/admin-only access on `POST /api/settings/models/load` with a `403` response for non-admin requests.
+### External Ollama catalog browsing
+
+The local Ollama API can list installed models and pull known model names, but it is not a remote public model-library search API. This implementation does not scrape Ollama's public HTML pages or make local model management depend on internet access. Browse / Download therefore uses a manual model-name workflow plus a link to the Ollama model library where an admin can copy an exact model/tag.
+
+If Ollama later publishes a stable official model-catalog JSON API, it can be added behind the gateway without changing the browser-to-gateway security model.
+
+### Storage monitoring
+
+Storage is shown in two layers:
+
+1. **Installed model footprint** is always calculated by summing model sizes returned by `GET {LLM_BASE_URL}/api/tags`.
+2. **Disk free/total** is shown only when local-ai-llm exposes a monitor storage endpoint. The gateway tries `GET {LLM_MONITOR_BASE_URL}{LLM_STORAGE_ENDPOINT}` and, when `LLM_STORAGE_ENDPOINT=/storage`, also tries `/disk` as a compatibility fallback.
+
+Preferred local-ai-llm storage response shape:
+
+```json
+{
+  "path": "/usr/share/ollama/.ollama/models",
+  "filesystem": "/dev/mapper/ubuntu--vg-ubuntu--lv",
+  "used_bytes": 123456789000,
+  "available_bytes": 987654321000,
+  "total_bytes": 1111111111000,
+  "used_percent": 11.1,
+  "ollama_models_bytes": 98765432100
+}
+```
+
+If the storage endpoint is unavailable, Settings shows installed model footprint and a clear "disk data unavailable" note. The gateway does not assume its own VM disk matches local-ai-llm and does not inspect remote disk usage over SSH.
+
+### Authorization and safety
+
+All model manager endpoints require authentication. Mutating endpoints are Eric/admin-only and CSRF-protected:
+
+- `POST /api/settings/models/load`
+- `POST /api/settings/models/pull`
+- `DELETE /api/settings/models`
+
+Regular authenticated users may view model status when Settings is available, but pull/delete/load/make-default controls are hidden or disabled, and direct API attempts return `403`.
+
+The backend validates model names, contacts only configured `LLM_BASE_URL` and `LLM_MONITOR_BASE_URL`, avoids shell commands, avoids arbitrary URLs, prevents duplicate pulls and conflicting delete/pull operations where practical, and returns clear `409` conflicts for busy model operations.
+
+### Troubleshooting
+
+- **Ollama unavailable:** Installed/running model panels show warnings. Confirm `curl http://192.168.1.5:11434/api/tags` and `curl http://192.168.1.5:11434/api/ps` from the gateway VM.
+- **Pull fails:** Check the exact model name/tag, local-ai-llm network access, Ollama logs, and free disk space. A model pull may continue inside Ollama after the browser closes the modal.
+- **Not enough disk space:** Delete unused local models from the Storage tab. Full disk free/total requires the local-ai-llm monitor storage endpoint.
+- **Delete fails:** Confirm the model name still exists and is not currently involved in another pull/delete operation. If Ollama reports the model is in use, stop using that model and retry.
+- **External catalog unavailable:** Manual model-name pull still works because installed/local management does not depend on a public catalog API.
+- **Storage endpoint unavailable:** Installed model footprint still works; expose `/storage` or `/disk` from local-ai-llm to show disk capacity/free space.
 
 ## 4. Gateway VM requirements
 
@@ -787,10 +892,18 @@ scripts/restart.sh
 | `ADMIN_RATE_LIMIT_MAX` | `30` | Max admin user-management actions per window. |
 | `CORS_ALLOWED_ORIGINS` | empty | Comma-separated allowed browser origins for production CORS. Same-origin deployments do not need CORS. |
 | `SECURITY_HEADERS_ENABLED` | `true` | Enables Helmet security headers and a compatible CSP. |
-| `LLM_BASE_URL` | `http://192.168.1.5:11434` | Ollama API base URL used for chat plus model discovery through `/api/tags` and `/api/ps`. |
+| `LLM_BASE_URL` | `http://192.168.1.5:11434` | Ollama API base URL used for chat and model management through `/api/tags`, `/api/ps`, `/api/show`, `/api/pull`, and `/api/delete`. |
 | `LLM_MONITOR_BASE_URL` | `http://192.168.1.5:8000` | LLM monitor/control base URL for health/GPU, default-model status, and `/model/load`. |
 | `LLM_MODEL` | `qwen3:30b` | Gateway fallback/default model at startup. Runtime chat requests prefer the current default reported by local-ai-llm after Settings make-default changes. |
-| `LLM_TIMEOUT_MS` | `600000` | LLM request timeout; also used for long-running model load/warm requests. |
+| `LLM_TIMEOUT_MS` | `600000` | LLM request timeout; also used as a fallback for long-running model load/warm requests. |
+| `MODEL_DISCOVERY_TIMEOUT_MS` | `30000` | Timeout for model status discovery calls such as Ollama `/api/tags`, `/api/ps`, and optional monitor storage checks. |
+| `MODEL_DETAILS_TIMEOUT_MS` | `30000` | Timeout for on-demand Ollama `/api/show` model detail requests. |
+| `MODEL_PULL_TIMEOUT_MS` | `3600000` | Timeout for long-running Ollama `/api/pull` downloads. |
+| `MODEL_DELETE_TIMEOUT_MS` | `120000` | Timeout for Ollama `/api/delete` requests. |
+| `MODEL_MAX_CONCURRENT_PULLS` | `1` | Maximum simultaneous model pulls allowed by the gateway. |
+| `LLM_STORAGE_ENDPOINT` | `/storage` | Optional local-ai-llm monitor path for disk free/total. When `/storage`, the gateway also tries `/disk` as a fallback. |
+| `STORAGE_LOW_DISK_WARNING_PERCENT` | `85` | Warn in Settings when reported local-ai-llm disk used percent is at or above this value. |
+| `STORAGE_LOW_DISK_WARNING_BYTES` | `53687091200` | Warn in Settings when reported local-ai-llm available bytes are at or below this value. |
 | `VOICE_BASE_URL` | `http://192.168.1.8:8000` | Voice/STT API base URL. |
 | `VOICE_TIMEOUT_MS` | `300000` | Voice transcription timeout. |
 | `TRANSCRIPT_FORMATTING_ENABLED` | `false` | Enable optional local-LLM cleanup for raw voice transcripts. |

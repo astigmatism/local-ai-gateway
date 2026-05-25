@@ -5,8 +5,11 @@ import type {
   ConversationSummary,
   GenerateConversationTitleResponse,
   LoginUser,
+  ModelDeleteResponse,
+  ModelDetailsResponse,
   ModelLoadResponse,
   ModelManagementStatus,
+  ModelPullProgressEvent,
   SendMessageResponse,
   StatusResponse,
   TranscribeResponse
@@ -157,6 +160,86 @@ const jsonRequest = async <T>(
     options
   );
 
+const parseJsonErrorResponse = async (response: Response, options: RequestOptions = {}): Promise<never> => {
+  const text = await response.text();
+  let errorData: ApiErrorShape | null = null;
+
+  if (text) {
+    try {
+      errorData = JSON.parse(text) as ApiErrorShape;
+    } catch {
+      errorData = null;
+    }
+  }
+
+  if (response.status === 401 && options.handleUnauthorized !== false) unauthorizedHandler?.();
+
+  throw new ApiClientError(
+    errorData?.error?.message || text || `Request failed with HTTP ${response.status}`,
+    response.status,
+    errorData?.error?.code,
+    errorData?.error?.details
+  );
+};
+
+const parseModelPullStream = async (
+  response: Response,
+  onProgress?: (event: ModelPullProgressEvent) => void
+): Promise<ModelPullProgressEvent> => {
+  if (!response.body) {
+    throw new ApiClientError('Model pull response did not include a progress stream.', 502, 'MODEL_PULL_STREAM_MISSING');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let lastEvent: ModelPullProgressEvent | null = null;
+  let errorEvent: ModelPullProgressEvent | null = null;
+
+  const handleLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+
+    let parsed: ModelPullProgressEvent;
+    try {
+      parsed = JSON.parse(trimmed) as ModelPullProgressEvent;
+    } catch {
+      throw new ApiClientError('Model pull progress stream included invalid JSON.', 502, 'MODEL_PULL_STREAM_INVALID');
+    }
+    lastEvent = parsed;
+    onProgress?.(parsed);
+
+    if (parsed.type === 'error') {
+      errorEvent = parsed;
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) handleLine(line);
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) handleLine(buffer);
+
+  if (errorEvent) {
+    throw new ApiClientError(errorEvent.error || errorEvent.status || 'Model pull failed.', 502, 'MODEL_PULL_FAILED', errorEvent);
+  }
+
+  return (
+    lastEvent ?? {
+      type: 'complete',
+      model: 'unknown',
+      status: 'success',
+      generatedAt: new Date().toISOString()
+    }
+  );
+};
+
 export const api = {
   setCsrfToken(token: string | null) {
     csrfToken = token;
@@ -294,7 +377,33 @@ export const api = {
     return request<ModelManagementStatus>('/api/settings/models');
   },
 
+  async getModelDetails(model: string) {
+    return jsonRequest<ModelDetailsResponse>('/api/settings/models/details', 'POST', { model });
+  },
+
   async loadModel(model: string, makeDefault: boolean) {
     return jsonRequest<ModelLoadResponse>('/api/settings/models/load', 'POST', { model, makeDefault });
+  },
+
+  async pullModel(model: string, onProgress?: (event: ModelPullProgressEvent) => void) {
+    const headers = new Headers({ 'Content-Type': 'application/json' });
+    if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
+
+    const response = await fetch('/api/settings/models/pull', {
+      method: 'POST',
+      headers,
+      credentials: 'include',
+      body: JSON.stringify({ model })
+    });
+
+    if (!response.ok) {
+      return parseJsonErrorResponse(response);
+    }
+
+    return parseModelPullStream(response, onProgress);
+  },
+
+  async deleteModel(model: string) {
+    return jsonRequest<ModelDeleteResponse>('/api/settings/models', 'DELETE', { model });
   }
 };
