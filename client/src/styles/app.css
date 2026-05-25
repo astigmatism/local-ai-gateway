@@ -136,6 +136,40 @@ body.layout-resizing * {
   white-space: nowrap;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.settings-button {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text);
+  background: rgba(20, 28, 39, 0.82);
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease,
+    transform 0.16s ease;
+}
+
+.settings-button:hover,
+.settings-button:focus-visible {
+  border-color: rgba(143, 180, 255, 0.5);
+  background: rgba(69, 109, 186, 0.18);
+  transform: translateY(-1px);
+}
+
+.settings-button svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+
 .user-menu {
   position: relative;
 }
@@ -1592,6 +1626,229 @@ textarea {
   background: rgba(248, 113, 113, 0.12);
 }
 
+
+.settings-modal {
+  width: min(100%, 1040px);
+  max-height: min(880px, calc(100vh - 3rem));
+  max-height: min(880px, calc(100dvh - 3rem));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 1.35rem;
+  background: rgba(16, 23, 32, 0.98);
+  box-shadow: var(--shadow);
+}
+
+.settings-header {
+  flex: 0 0 auto;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.settings-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  gap: 1rem;
+  padding-top: 1rem;
+}
+
+.settings-nav {
+  display: grid;
+  align-content: start;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.settings-nav-item {
+  width: 100%;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  padding: 0.75rem 0.85rem;
+  color: var(--text);
+  background: rgba(15, 23, 42, 0.45);
+  font-weight: 850;
+  text-align: left;
+}
+
+.settings-nav-item.active {
+  border-color: rgba(143, 180, 255, 0.42);
+  background: rgba(69, 109, 186, 0.18);
+}
+
+.settings-content {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.15rem;
+}
+
+.settings-section {
+  display: grid;
+  gap: 1rem;
+}
+
+.settings-section-header,
+.model-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.settings-section-header h3,
+.model-panel-header h4 {
+  margin: 0;
+  color: var(--text);
+}
+
+.settings-section-header h3 {
+  font-size: 1.2rem;
+}
+
+.model-panel-header h4 {
+  font-size: 0.95rem;
+}
+
+.model-panel-header span {
+  display: inline-flex;
+  min-width: 2rem;
+  justify-content: center;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 0.12rem 0.5rem;
+  color: #dbeafe;
+  background: rgba(143, 180, 255, 0.1);
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.settings-warning,
+.settings-admin-note {
+  border: 1px solid rgba(250, 204, 21, 0.28);
+  border-radius: 14px;
+  padding: 0.78rem 0.9rem;
+  color: #fef3c7;
+  background: rgba(250, 204, 21, 0.09);
+  line-height: 1.45;
+}
+
+.settings-status-grid,
+.model-panel-grid,
+.form-grid-two {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.settings-status-grid,
+.model-panel-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.form-grid-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-status-card,
+.model-panel,
+.model-load-form {
+  border: 1px solid var(--border-soft);
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.settings-status-card {
+  display: grid;
+  gap: 0.35rem;
+  padding: 1rem;
+}
+
+.settings-status-label {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-status-card strong {
+  color: var(--text);
+  font-size: 1.02rem;
+  overflow-wrap: anywhere;
+}
+
+.settings-status-card small,
+.model-row small,
+.checkbox-row small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.model-panel {
+  min-width: 0;
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.9rem;
+}
+
+.model-list {
+  display: grid;
+  gap: 0.5rem;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 0.15rem;
+}
+
+.model-row {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  padding: 0.72rem 0.8rem;
+  background: rgba(10, 13, 18, 0.26);
+}
+
+.model-row strong {
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.model-load-form {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.78rem 0.85rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  background: rgba(10, 13, 18, 0.22);
+}
+
+.checkbox-row input {
+  width: auto;
+  margin-top: 0.2rem;
+  accent-color: var(--accent-strong);
+}
+
+.checkbox-row span {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.settings-actions-row {
+  margin-top: 0.2rem;
+}
+
 @media (max-width: 700px) {
   .auth-screen {
     padding: 1rem;
@@ -1599,7 +1856,8 @@ textarea {
 
   .auth-card,
   .modal-body,
-  .admin-panel {
+  .admin-panel,
+  .settings-modal {
     border-radius: 22px;
     padding: 1rem;
   }
@@ -1616,5 +1874,22 @@ textarea {
 
   .admin-user-actions .secondary-button {
     flex: 1 1 auto;
+  }
+
+  .settings-layout,
+  .settings-status-grid,
+  .model-panel-grid,
+  .form-grid-two {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-nav {
+    display: flex;
+    overflow-x: auto;
+  }
+
+  .settings-nav-item {
+    width: auto;
+    white-space: nowrap;
   }
 }

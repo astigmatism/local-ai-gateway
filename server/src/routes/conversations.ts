@@ -15,6 +15,7 @@ import {
   makeFallbackConversationTitle
 } from '../services/conversationTitle.js';
 import { generateWithLlm } from '../services/llmClient.js';
+import { resolveDefaultLlmModel } from '../services/modelSettingsService.js';
 import { buildConversationPrompt } from '../services/promptBuilder.js';
 
 export const conversationsRouter = Router();
@@ -511,15 +512,16 @@ conversationsRouter.post(
       content: message.content
     }));
 
+    const llmModel = await resolveDefaultLlmModel();
     const prompt = buildConversationPrompt(recentMessages, {
       maxMessages: config.conversation.contextMaxMessages,
       maxChars: config.conversation.contextMaxChars,
-      modelName: config.llm.model
+      modelName: llmModel
     });
 
     let llmResult;
     try {
-      llmResult = await generateWithLlm(prompt);
+      llmResult = await generateWithLlm(prompt, { model: llmModel });
     } catch (error) {
       if (fallbackTitleShouldUpdate) {
         await applyFallbackTitleAfterSendFailure(conversationId, body.content);

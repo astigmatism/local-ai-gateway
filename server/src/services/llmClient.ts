@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { ApiError } from '../errors/apiError.js';
+import { resolveDefaultLlmModel } from './modelSettingsService.js';
 
 const ollamaGenerateResponseSchema = z
   .object({
@@ -58,7 +59,7 @@ export const generateWithLlm = async (
   prompt: string,
   options: LlmGenerateOptions = {}
 ): Promise<LlmGenerateResult> => {
-  const model = options.model ?? config.llm.model;
+  const model = options.model ?? (await resolveDefaultLlmModel());
   const timeoutMs = options.timeoutMs ?? config.llm.timeoutMs;
 
   try {

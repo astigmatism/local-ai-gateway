@@ -217,3 +217,56 @@ describe('api client text-to-speech requests', () => {
     });
   });
 });
+
+describe('api client model settings requests', () => {
+  it('loads models through the gateway with CSRF and makeDefault payload', async () => {
+    const { api } = await loadApi();
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            defaultModel: 'qwen3:14b',
+            defaultModelSource: 'local-ai-llm',
+            defaultModelLoaded: true,
+            loadedModels: [{ name: 'qwen3:14b' }],
+            availableModels: [{ name: 'qwen3:14b' }],
+            source: {
+              health: { status: 'ok' },
+              ollamaTags: { status: 'ok' },
+              ollamaPs: { status: 'ok' }
+            },
+            generatedAt: '2026-05-24T12:00:00.000Z',
+            message: 'Model loaded and set as default.'
+          }),
+          {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/json'
+            }
+          }
+        )
+    );
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    const response = await api.loadModel('qwen3:14b', true);
+
+    expect(response.defaultModel).toBe('qwen3:14b');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/settings/models/load',
+      expect.objectContaining({
+        credentials: 'include',
+        method: 'POST'
+      })
+    );
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-token');
+    expect(new Headers(init.headers).get('Content-Type')).toBe('application/json');
+    expect(JSON.parse(init.body as string)).toEqual({
+      model: 'qwen3:14b',
+      makeDefault: true
+    });
+  });
+});

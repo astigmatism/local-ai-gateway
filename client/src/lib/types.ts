@@ -93,6 +93,56 @@ export interface StatusResponse {
   generated_at: string;
 }
 
+
+export type ModelSourceState = 'ok' | 'error' | 'skipped';
+
+export interface ModelSourceStatus {
+  status: ModelSourceState;
+  message?: string;
+}
+
+export interface ModelRuntimeInfo {
+  name: string;
+  size?: number;
+  sizeVram?: number;
+  contextLength?: number;
+  expiresAt?: string;
+  details?: Record<string, unknown>;
+  source?: 'health' | 'ollamaPs' | 'combined';
+}
+
+export interface AvailableModelInfo {
+  name: string;
+  size?: number;
+  modifiedAt?: string;
+  details?: {
+    family?: string;
+    format?: string;
+    parameterSize?: string;
+    quantization?: string;
+    [key: string]: unknown;
+  };
+  source?: 'health' | 'ollamaTags' | 'combined';
+}
+
+export interface ModelManagementStatus {
+  defaultModel: string | null;
+  defaultModelSource: 'local-ai-llm' | 'gateway-fallback';
+  defaultModelLoaded: boolean | null;
+  loadedModels: ModelRuntimeInfo[];
+  availableModels: AvailableModelInfo[];
+  source: {
+    health: ModelSourceStatus;
+    ollamaTags: ModelSourceStatus;
+    ollamaPs: ModelSourceStatus;
+  };
+  generatedAt: string;
+}
+
+export interface ModelLoadResponse extends ModelManagementStatus {
+  message?: string;
+}
+
 export interface ConversationTitleGenerationResult {
   needed: boolean;
   generated?: boolean;

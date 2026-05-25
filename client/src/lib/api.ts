@@ -5,6 +5,8 @@ import type {
   ConversationSummary,
   GenerateConversationTitleResponse,
   LoginUser,
+  ModelLoadResponse,
+  ModelManagementStatus,
   SendMessageResponse,
   StatusResponse,
   TranscribeResponse
@@ -286,5 +288,13 @@ export const api = {
 
   async getStatus() {
     return request<StatusResponse>('/api/status');
+  },
+
+  async getModelSettings() {
+    return request<ModelManagementStatus>('/api/settings/models');
+  },
+
+  async loadModel(model: string, makeDefault: boolean) {
+    return jsonRequest<ModelLoadResponse>('/api/settings/models/load', 'POST', { model, makeDefault });
   }
 };

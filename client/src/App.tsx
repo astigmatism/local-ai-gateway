@@ -5,6 +5,7 @@ import { ChatInput } from './components/ChatInput.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import { MessageThread } from './components/MessageThread.js';
 import { PasswordChangeScreen } from './components/PasswordChangeScreen.js';
+import { SettingsModal } from './components/SettingsModal.js';
 import { Sidebar } from './components/Sidebar.js';
 import { StatusCards } from './components/StatusCards.js';
 import { TopBar } from './components/TopBar.js';
@@ -321,6 +322,7 @@ const savedUserMessageFromError = (error: unknown) => {
 export const App = () => {
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
   const composerNoticeTimerRef = useRef<number | null>(null);
   const titleGenerationFramesRef = useRef<Map<string, number>>(new Map());
   const titleGenerationTimersRef = useRef<Map<string, number>>(new Map());
@@ -331,6 +333,7 @@ export const App = () => {
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [showPasswordChange, setShowPasswordChange] = useState(false);
   const [showUserManagement, setShowUserManagement] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
@@ -394,6 +397,7 @@ export const App = () => {
     setMustChangePassword(false);
     setShowPasswordChange(false);
     setShowUserManagement(false);
+    setShowSettings(false);
     resetConversationState();
     setAuthLoading(false);
   }, [resetConversationState]);
@@ -823,6 +827,7 @@ export const App = () => {
     setMustChangePassword(passwordChangeRequired);
     setShowPasswordChange(false);
     setShowUserManagement(false);
+    setShowSettings(false);
     resetConversationState();
   };
 
@@ -849,6 +854,11 @@ export const App = () => {
       handleUnauthenticated();
     }
   };
+
+  const closeSettings = useCallback(() => {
+    setShowSettings(false);
+    window.requestAnimationFrame(() => settingsButtonRef.current?.focus());
+  }, []);
 
   const handleCreateConversation = useCallback(async () => {
     if (!activeUserId) return;
@@ -1138,6 +1148,8 @@ export const App = () => {
     <div className="app-shell">
       <TopBar
         activeUser={authUser}
+        settingsButtonRef={settingsButtonRef}
+        onOpenSettings={() => setShowSettings(true)}
         onChangePassword={() => setShowPasswordChange(true)}
         onOpenUserManagement={() => setShowUserManagement(true)}
         onLogout={handleLogout}
@@ -1249,6 +1261,10 @@ export const App = () => {
             onCancel={() => setShowPasswordChange(false)}
           />
         </div>
+      )}
+
+      {showSettings && (
+        <SettingsModal currentUser={authUser} returnFocusRef={settingsButtonRef} onClose={closeSettings} />
       )}
 
       {showUserManagement && authUser.isAdmin && authUser.displayName.trim().toLowerCase() === 'eric' && (

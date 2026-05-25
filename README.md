@@ -27,6 +27,7 @@ Core features:
 - Password authentication with first-login password changes
 - Eric as the default administrator account
 - Admin-only user creation, deactivation, and password reset
+- Settings modal with admin-only local LLM model loading and default-model selection
 - Server-side session storage with HTTP-only cookies and CSRF protection
 - Login lockout and endpoint rate limiting
 - Conversation persistence in PostgreSQL
@@ -59,8 +60,11 @@ Bear Castle AI gateway VM
   |
   | Browser never calls these directly
   +--> local-ai-llm   http://192.168.1.5:11434/api/generate
+  |                   http://192.168.1.5:11434/api/tags
+  |                   http://192.168.1.5:11434/api/ps
   |                   http://192.168.1.5:8000/health
   |                   http://192.168.1.5:8000/gpu
+  |                   http://192.168.1.5:8000/model/load
   |
   +--> local-ai-voice http://192.168.1.8:8000/transcribe
                       http://192.168.1.8:8000/speak
@@ -68,7 +72,7 @@ Bear Castle AI gateway VM
                       http://192.168.1.8:8000/gpu
 ```
 
-The backend serves the frontend in production from `dist/client` and exposes APIs under `/api/*`. The unauthenticated public API surface is intentionally small: login users, login, and `/health`. Conversation, status/GPU, transcription, text-to-speech, LLM generation, and user-management APIs require authentication.
+The backend serves the frontend in production from `dist/client` and exposes APIs under `/api/*`. The unauthenticated public API surface is intentionally small: login users, login, and `/health`. Conversation, status/GPU, settings/model status, transcription, text-to-speech, LLM generation, and user-management APIs require authentication. Model loading and default-model changes are Eric/admin-only and remain CSRF-protected.
 
 ## HTTPS/domain hosting quick start
 
@@ -97,6 +101,29 @@ TTS_DEFAULT_SPEED=1.0
 ```
 
 These are defaults only. Change them in `.env` if the service IPs, ports, voice, or speaking speed change.
+
+
+## Model Management
+
+The gear button in the top application bar opens the Bear Castle AI Settings modal. The initial Settings section is **Local LLM Model**, which shows the configured default model, whether that default is currently loaded, currently running Ollama models, and locally available Ollama models when discovery succeeds.
+
+Model status is gathered by the gateway backend only; the browser never calls `local-ai-llm`, Ollama, or `local-ai-voice` directly. The gateway first asks `GET {LLM_MONITOR_BASE_URL}/health` for the configured default model and loaded-model status. If local-ai-llm health does not provide selectable/available models, the gateway asks Ollama through `GET {LLM_BASE_URL}/api/tags`. Running/loaded model details are also enriched from `GET {LLM_BASE_URL}/api/ps` when available. If any discovery source is unavailable, Settings shows partial data and a warning instead of failing the whole modal.
+
+Eric/admin can select a discovered model or enter a safe manual Ollama model name fallback, then click **Load Model**. The gateway validates the model name server-side and calls:
+
+```http
+POST {LLM_MONITOR_BASE_URL}/model/load
+Content-Type: application/json
+
+{
+  "model": "qwen3:14b",
+  "make_default": false
+}
+```
+
+Checking **Make this the default model** sends `make_default: true`. On success, local-ai-llm updates its config and the gateway refreshes model status. Future Bear Castle AI chat requests resolve the default model from local-ai-llm health when available, use the refreshed in-memory default after a successful make-default request, and fall back to `LLM_MODEL` only when the monitor default cannot be reached. Loading a model with `make_default: false` warms it but does not change the chat default.
+
+Regular authenticated users may open Settings and view model status, but they cannot load models or change the default. The frontend disables mutating controls for non-admin users, and the backend enforces Eric/admin-only access on `POST /api/settings/models/load` with a `403` response for non-admin requests.
 
 ## 4. Gateway VM requirements
 
@@ -760,10 +787,10 @@ scripts/restart.sh
 | `ADMIN_RATE_LIMIT_MAX` | `30` | Max admin user-management actions per window. |
 | `CORS_ALLOWED_ORIGINS` | empty | Comma-separated allowed browser origins for production CORS. Same-origin deployments do not need CORS. |
 | `SECURITY_HEADERS_ENABLED` | `true` | Enables Helmet security headers and a compatible CSP. |
-| `LLM_BASE_URL` | `http://192.168.1.5:11434` | Ollama API base URL. |
-| `LLM_MONITOR_BASE_URL` | `http://192.168.1.5:8000` | LLM monitor base URL for health/GPU. |
-| `LLM_MODEL` | `qwen3:30b` | Default Ollama model. |
-| `LLM_TIMEOUT_MS` | `600000` | LLM request timeout. |
+| `LLM_BASE_URL` | `http://192.168.1.5:11434` | Ollama API base URL used for chat plus model discovery through `/api/tags` and `/api/ps`. |
+| `LLM_MONITOR_BASE_URL` | `http://192.168.1.5:8000` | LLM monitor/control base URL for health/GPU, default-model status, and `/model/load`. |
+| `LLM_MODEL` | `qwen3:30b` | Gateway fallback/default model at startup. Runtime chat requests prefer the current default reported by local-ai-llm after Settings make-default changes. |
+| `LLM_TIMEOUT_MS` | `600000` | LLM request timeout; also used for long-running model load/warm requests. |
 | `VOICE_BASE_URL` | `http://192.168.1.8:8000` | Voice/STT API base URL. |
 | `VOICE_TIMEOUT_MS` | `300000` | Voice transcription timeout. |
 | `TRANSCRIPT_FORMATTING_ENABLED` | `false` | Enable optional local-LLM cleanup for raw voice transcripts. |
