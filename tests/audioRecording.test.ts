@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  calculateAudioLevelFromTimeDomainData,
   getMicrophoneRecordingSupportError,
   mapMicrophoneStartError,
   microphoneRecordingErrors,
@@ -89,5 +90,15 @@ describe('audio recording browser support detection', () => {
     expect(getMicrophoneRecordingSupportError(makeSupportedEnvironment({ document: policyDocument }))).toBe(
       microphoneRecordingErrors.securityPolicy
     );
+  });
+});
+
+describe('audio level analysis', () => {
+  it('keeps silent time-domain samples at the visualizer noise floor', () => {
+    expect(calculateAudioLevelFromTimeDomainData(new Uint8Array([128, 128, 128, 128]))).toBe(0.04);
+  });
+
+  it('reports a high level for loud time-domain samples', () => {
+    expect(calculateAudioLevelFromTimeDomainData(new Uint8Array([0, 255, 0, 255]))).toBeGreaterThan(0.9);
   });
 });

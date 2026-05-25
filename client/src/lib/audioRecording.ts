@@ -16,7 +16,9 @@ export const microphoneRecordingErrors = {
   constraints: 'No microphone matched the requested recording constraints.',
   aborted: 'Microphone recording was interrupted before it could start.',
   startFailed: 'Could not start microphone recording.',
-  recordingFailed: 'Browser recording failed. Try again.'
+  recordingFailed: 'Browser recording failed. Try again.',
+  noAudioCaptured: 'No audio was captured.',
+  transcriptionFailed: 'Could not transcribe audio.'
 } as const;
 
 type MediaRecorderSupport = Pick<typeof MediaRecorder, 'isTypeSupported'>;
@@ -104,6 +106,25 @@ export const selectSupportedAudioMimeType = (
       return false;
     }
   });
+};
+
+export const calculateAudioLevelFromTimeDomainData = (
+  data: Uint8Array,
+  options: { sensitivity?: number; noiseFloor?: number } = {}
+) => {
+  const sensitivity = options.sensitivity ?? 4.5;
+  const noiseFloor = options.noiseFloor ?? 0.04;
+
+  if (data.length === 0) return noiseFloor;
+
+  let sumOfSquares = 0;
+  for (const sample of data) {
+    const centeredSample = (sample - 128) / 128;
+    sumOfSquares += centeredSample * centeredSample;
+  }
+
+  const rms = Math.sqrt(sumOfSquares / data.length);
+  return Math.min(1, Math.max(noiseFloor, rms * sensitivity));
 };
 
 export const mapMicrophoneStartError = (

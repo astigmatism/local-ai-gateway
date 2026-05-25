@@ -957,6 +957,11 @@ textarea {
   box-shadow: var(--shadow);
 }
 
+.composer-box-listening {
+  border-color: rgba(143, 180, 255, 0.3);
+  background: linear-gradient(180deg, rgba(16, 23, 32, 0.94), rgba(12, 18, 27, 0.9));
+}
+
 .composer textarea {
   height: 100%;
   min-height: 86px;
@@ -996,15 +1001,120 @@ textarea {
   fill: currentColor;
 }
 
-.icon-button.recording {
-  color: #fecaca;
-  background: rgba(248, 113, 113, 0.16);
-  border-color: rgba(248, 113, 113, 0.45);
-}
-
 .send-button {
   background: var(--accent-strong);
   border-color: rgba(143, 180, 255, 0.3);
+}
+
+.voice-capture-panel {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid rgba(143, 180, 255, 0.2);
+  border-radius: 18px;
+  background: rgba(143, 180, 255, 0.08);
+}
+
+.voice-capture-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+  color: var(--text);
+  font-size: 0.86rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.voice-capture-pulse {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--danger);
+  box-shadow: 0 0 0 5px rgba(248, 113, 113, 0.16);
+  animation: listening-pulse 1.65s ease-in-out infinite;
+}
+
+.voice-level-meter {
+  flex: 1 1 180px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 120px;
+  height: 34px;
+  padding: 0.25rem 0.45rem;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 999px;
+  background: rgba(8, 13, 20, 0.46);
+  overflow: hidden;
+}
+
+.voice-level-meter span {
+  flex: 1 1 0;
+  min-width: 2px;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(226, 232, 240, 0.95), rgba(143, 180, 255, 0.72));
+  opacity: 0.9;
+  transform: scaleY(var(--voice-level-scale, 0.12));
+  transform-origin: center;
+  transition: transform 80ms ease-out;
+}
+
+.voice-capture-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex: 0 0 auto;
+}
+
+.voice-capture-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-width: 0;
+  min-height: 38px;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  background: rgba(26, 37, 50, 0.92);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.voice-capture-button svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.voice-capture-cancel {
+  color: #fecaca;
+  border-color: rgba(248, 113, 113, 0.34);
+  background: rgba(248, 113, 113, 0.12);
+}
+
+.voice-capture-stop {
+  color: #eff6ff;
+  border-color: rgba(143, 180, 255, 0.36);
+  background: rgba(69, 109, 186, 0.72);
+}
+
+@keyframes listening-pulse {
+  0%,
+  100% {
+    opacity: 0.72;
+    transform: scale(0.94);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
 }
 
 .composer-status {
@@ -1258,6 +1368,17 @@ textarea {
   font-size: 0.68rem;
 }
 
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-capture-pulse {
+    animation: none;
+  }
+
+  .voice-level-meter span {
+    transition: none;
+  }
+}
+
 @media (max-width: 1120px) {
   .thread,
   .composer {
@@ -1305,6 +1426,22 @@ textarea {
 
   .composer-actions {
     justify-content: flex-end;
+  }
+
+  .voice-capture-panel {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+
+  .voice-capture-state,
+  .voice-capture-actions {
+    justify-content: space-between;
+  }
+
+  .voice-level-meter {
+    flex-basis: auto;
+    width: 100%;
   }
 }
 

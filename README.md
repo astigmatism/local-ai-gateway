@@ -35,7 +35,8 @@ Core features:
 - Local-LLM generated titles for new conversations
 - Chat prompt submission to Ollama
 - Browser voice snippet recording with MediaRecorder
-- Audio forwarding to `local-ai-voice /transcribe`
+- Compact Listening UI with live microphone activity, Stop-to-transcribe, and Cancel-to-discard controls
+- Audio forwarding to `local-ai-voice /transcribe` only when a recording is stopped/accepted
 - Transcript append-to-input behavior before sending
 - Manual text-to-speech playback for user prompts and assistant responses through `local-ai-voice /speak`
 - Optional local-LLM transcript punctuation/paragraph cleanup for unformatted STT output
@@ -836,7 +837,9 @@ curl http://192.168.1.8:8000/health
 curl -X POST -F "file=@/path/to/audio-file.m4a" http://192.168.1.8:8000/transcribe
 ```
 
-Check browser microphone permission and the page origin. The web app uses `MediaRecorder` and `navigator.mediaDevices.getUserMedia`, which Chrome exposes only from HTTPS or from `localhost`/loopback local testing. If you open Bear Castle AI by LAN IP or hostname over plain HTTP, Chrome may hide microphone APIs and the app will show: `Microphone recording requires HTTPS or localhost.`
+Check browser microphone permission and the page origin. The web app uses `MediaRecorder`, `navigator.mediaDevices.getUserMedia`, and the Web Audio API for the live Listening meter. Chrome exposes microphone capture only from HTTPS or from `localhost`/loopback local testing. If you open Bear Castle AI by LAN IP or hostname over plain HTTP, Chrome may hide microphone APIs and the app will show: `Microphone recording requires HTTPS or localhost.`
+
+In the chat composer, the microphone button starts Listening mode. The live meter responds to microphone input while recording. Choose **Stop** to accept the recording and send it through the authenticated Bear Castle AI `/api/transcribe` gateway endpoint, or choose **Cancel** to discard the captured audio without uploading or transcribing it. The current composer draft remains editable and is not cleared by starting, stopping, or canceling voice capture.
 
 When exposing Bear Castle AI beyond local loopback testing, terminate TLS at Nginx, Caddy, Traefik, or another reverse proxy. Keep `local-ai-llm` and `local-ai-voice` private on the internal network; expose only the gateway through HTTPS. If a reverse proxy sets `Permissions-Policy`, make sure it allows same-origin microphone access, for example `microphone=(self)`, and does not send `microphone=()`.
 

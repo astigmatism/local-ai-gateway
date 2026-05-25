@@ -346,7 +346,6 @@ export const App = () => {
   const [loadingConversations, setLoadingConversations] = useState(false);
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [isSending, setIsSending] = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
   const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
   const [layout, setLayout] = useState<WorkspaceLayout>(() => getInitialLayout());
 
@@ -1093,19 +1092,12 @@ export const App = () => {
 
   const handleRecordingComplete = useCallback(
     async (blob: Blob) => {
-      setIsTranscribing(true);
       setError(null);
-      try {
-        const response = await api.transcribeAudio(blob, {
-          userId: activeUserId ?? undefined,
-          conversationId: activeConversationId ?? undefined
-        });
-        setDraft((current) => appendTranscript(current, response.transcript));
-      } catch (transcribeError) {
-        setError(`Transcription failed: ${errorMessage(transcribeError)}`);
-      } finally {
-        setIsTranscribing(false);
-      }
+      const response = await api.transcribeAudio(blob, {
+        userId: activeUserId ?? undefined,
+        conversationId: activeConversationId ?? undefined
+      });
+      setDraft((current) => appendTranscript(current, response.transcript));
     },
     [activeConversationId, activeUserId]
   );
@@ -1114,6 +1106,16 @@ export const App = () => {
     onRecordingComplete: handleRecordingComplete,
     onError: (message) => setError(message)
   });
+
+  useEffect(() => {
+    if (!activeUserId) {
+      recorder.cancelRecording();
+    }
+  }, [activeUserId, recorder.cancelRecording]);
+
+  useEffect(() => {
+    recorder.cancelRecording();
+  }, [activeConversationId, recorder.cancelRecording]);
 
   if (authLoading) {
     return (
@@ -1241,9 +1243,11 @@ export const App = () => {
               draft={draft}
               setDraft={setDraft}
               onSend={handleSend}
-              onToggleRecording={recorder.toggleRecording}
-              isRecording={recorder.isRecording}
-              isTranscribing={isTranscribing}
+              onStartRecording={() => void recorder.startRecording()}
+              onStopRecording={recorder.stopRecording}
+              onCancelRecording={recorder.cancelRecording}
+              recordingStatus={recorder.status}
+              audioLevels={recorder.audioLevels}
               isSending={isSending}
               disabled={!activeUserId}
               composerNotice={composerNotice}

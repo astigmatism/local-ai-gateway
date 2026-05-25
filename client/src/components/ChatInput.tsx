@@ -1,12 +1,17 @@
 import { forwardRef } from 'react';
+import type { ChangeEvent, KeyboardEvent } from 'react';
+import { VoiceCaptureControls } from './VoiceCaptureControls.js';
+import type { AudioRecordingStatus } from '../hooks/useAudioRecorder.js';
 
 interface ChatInputProps {
   draft: string;
   setDraft: (value: string) => void;
   onSend: () => Promise<void>;
-  onToggleRecording: () => void;
-  isRecording: boolean;
-  isTranscribing: boolean;
+  onStartRecording: () => void;
+  onStopRecording: () => void;
+  onCancelRecording: () => void;
+  recordingStatus: AudioRecordingStatus;
+  audioLevels: number[];
   isSending: boolean;
   disabled: boolean;
   composerNotice?: string | null;
@@ -25,14 +30,31 @@ const SendIcon = () => (
   </svg>
 );
 
+const getComposerStatusText = (
+  recordingStatus: AudioRecordingStatus,
+  isSending: boolean,
+  composerNotice?: string | null
+) => {
+  if (recordingStatus === 'requesting-permission') return 'Requesting microphone permission…';
+  if (recordingStatus === 'listening') return 'Listening… Speak now, then choose Cancel or Stop.';
+  if (recordingStatus === 'stopping') return 'Stopping recording…';
+  if (recordingStatus === 'transcribing') return 'Transcribing…';
+  if (recordingStatus === 'canceled') return 'Recording canceled.';
+  if (isSending) return 'Thinking…';
+  if (composerNotice) return composerNotice;
+  return 'Press Enter to send. Shift+Enter inserts a new line.';
+};
+
 export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(function ChatInput(
   {
     draft,
     setDraft,
     onSend,
-    onToggleRecording,
-    isRecording,
-    isTranscribing,
+    onStartRecording,
+    onStopRecording,
+    onCancelRecording,
+    recordingStatus,
+    audioLevels,
     isSending,
     disabled,
     composerNotice
@@ -40,24 +62,27 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
   ref
 ) {
   const canSend = draft.trim().length > 0 && !isSending && !disabled;
-  const activityStatusText = isRecording
-    ? 'Recording…'
-    : isTranscribing
-      ? 'Transcribing…'
-      : isSending
-        ? 'Thinking…'
-        : 'Press Enter to send. Shift+Enter inserts a new line.';
-  const statusText =
-    composerNotice && !isRecording && !isTranscribing && !isSending ? composerNotice : activityStatusText;
+  const isListening = recordingStatus === 'listening';
+  const showVoiceCaptureControls = recordingStatus === 'listening' || recordingStatus === 'stopping' || recordingStatus === 'canceled';
+  const canStartRecording = !disabled && !isSending && recordingStatus === 'idle';
+  const statusText = getComposerStatusText(recordingStatus, isSending, composerNotice);
 
   return (
-    <footer className="composer">
-      <div className="composer-box">
+    <footer
+      className="composer"
+      onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
+        if (event.key === 'Escape' && isListening) {
+          event.preventDefault();
+          onCancelRecording();
+        }
+      }}
+    >
+      <div className={`composer-box ${showVoiceCaptureControls ? 'composer-box-listening' : ''}`}>
         <textarea
           ref={ref}
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
+          onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setDraft(event.target.value)}
+          onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault();
               if (canSend) void onSend();
@@ -68,16 +93,18 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
           disabled={disabled || isSending}
         />
         <div className="composer-actions" aria-label="Message actions">
-          <button
-            className={`icon-button ${isRecording ? 'recording' : ''}`}
-            type="button"
-            onClick={onToggleRecording}
-            disabled={disabled || isTranscribing || isSending}
-            aria-label={isRecording ? 'Stop recording' : 'Record voice snippet'}
-            title={isRecording ? 'Stop recording' : 'Record voice snippet'}
-          >
-            <MicrophoneIcon />
-          </button>
+          {!showVoiceCaptureControls && (
+            <button
+              className="icon-button"
+              type="button"
+              onClick={onStartRecording}
+              disabled={!canStartRecording}
+              aria-label="Start voice recording"
+              title="Start voice recording"
+            >
+              <MicrophoneIcon />
+            </button>
+          )}
           <button
             className="icon-button send-button"
             type="button"
@@ -89,9 +116,18 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
             <SendIcon />
           </button>
         </div>
+
+        {showVoiceCaptureControls && (
+          <VoiceCaptureControls
+            status={recordingStatus}
+            audioLevels={audioLevels}
+            onCancel={onCancelRecording}
+            onStop={onStopRecording}
+          />
+        )}
       </div>
       <div className="composer-status" aria-live="polite">
-        <span className={isRecording ? 'recording-dot' : ''}>{statusText}</span>
+        <span className={isListening ? 'recording-dot' : ''}>{statusText}</span>
       </div>
     </footer>
   );
