@@ -36,7 +36,7 @@ const getComposerStatusText = (
   composerNotice?: string | null
 ) => {
   if (recordingStatus === 'requesting-permission') return 'Requesting microphone permission…';
-  if (recordingStatus === 'listening') return 'Listening… Speak now, then choose Cancel or Stop.';
+  if (recordingStatus === 'listening') return 'Listening… Speak now, then choose Cancel or Transcribe.';
   if (recordingStatus === 'stopping') return 'Stopping recording…';
   if (recordingStatus === 'transcribing') return 'Transcribing…';
   if (recordingStatus === 'canceled') return 'Recording canceled.';
@@ -61,7 +61,7 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
   },
   ref
 ) {
-  const canSend = draft.trim().length > 0 && !isSending && !disabled;
+  const canSend = draft.trim().length > 0 && !isSending && !disabled && recordingStatus === 'idle';
   const isListening = recordingStatus === 'listening';
   const showVoiceCaptureControls = recordingStatus === 'listening' || recordingStatus === 'stopping' || recordingStatus === 'canceled';
   const canStartRecording = !disabled && !isSending && recordingStatus === 'idle';
@@ -73,7 +73,6 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
       onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
         if (event.key === 'Escape' && isListening) {
           event.preventDefault();
-          event.stopPropagation();
           onCancelRecording();
         }
       }}
@@ -98,7 +97,6 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
             <button
               className="icon-button"
               type="button"
-              onPointerDown={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.stopPropagation();
                 onStartRecording();

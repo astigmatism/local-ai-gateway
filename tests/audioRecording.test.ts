@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   calculateAudioLevelFromTimeDomainData,
-  getAudioRecordingStopDisposition,
   getMicrophoneRecordingSupportError,
   mapMicrophoneStartError,
   microphoneRecordingErrors,
-  selectSupportedAudioMimeType
+  selectSupportedAudioMimeType,
+  shouldShowUserCanceledRecordingStatus,
+  shouldStoreRecordingChunk,
+  shouldTranscribeRecordingStop
 } from '../client/src/lib/audioRecording.js';
 import type { BrowserAudioRecordingEnvironment } from '../client/src/lib/audioRecording.js';
 
@@ -104,19 +106,29 @@ describe('audio level analysis', () => {
   });
 });
 
-describe('audio recording stop disposition', () => {
-  it('transcribes only explicit accepted recordings that did not fail', () => {
-    expect(getAudioRecordingStopDisposition('accept')).toBe('transcribe');
-    expect(getAudioRecordingStopDisposition('accept', true)).toBe('error');
+describe('audio recording stop reason handling', () => {
+  it('transcribes only an accepted recording that did not fail', () => {
+    expect(shouldTranscribeRecordingStop('accept', false)).toBe(true);
+    expect(shouldTranscribeRecordingStop('accept', true)).toBe(false);
+    expect(shouldTranscribeRecordingStop('cancel', false)).toBe(false);
+    expect(shouldTranscribeRecordingStop('cleanup', false)).toBe(false);
+    expect(shouldTranscribeRecordingStop('error', false)).toBe(false);
+    expect(shouldTranscribeRecordingStop(null, false)).toBe(false);
   });
 
-  it('treats user cancellation separately from silent cleanup', () => {
-    expect(getAudioRecordingStopDisposition('user-cancel')).toBe('user-canceled');
-    expect(getAudioRecordingStopDisposition('cleanup')).toBe('discard');
-    expect(getAudioRecordingStopDisposition(null)).toBe('discard');
+  it('shows the canceled state only for explicit user cancellation', () => {
+    expect(shouldShowUserCanceledRecordingStatus('cancel')).toBe(true);
+    expect(shouldShowUserCanceledRecordingStatus('cleanup')).toBe(false);
+    expect(shouldShowUserCanceledRecordingStatus('error')).toBe(false);
+    expect(shouldShowUserCanceledRecordingStatus('accept')).toBe(false);
+    expect(shouldShowUserCanceledRecordingStatus(null)).toBe(false);
   });
 
-  it('does not report recorder failures as user cancellations', () => {
-    expect(getAudioRecordingStopDisposition('error')).toBe('error');
+  it('discards media chunks for cancel, cleanup, and error stop paths', () => {
+    expect(shouldStoreRecordingChunk(null)).toBe(true);
+    expect(shouldStoreRecordingChunk('accept')).toBe(true);
+    expect(shouldStoreRecordingChunk('cancel')).toBe(false);
+    expect(shouldStoreRecordingChunk('cleanup')).toBe(false);
+    expect(shouldStoreRecordingChunk('error')).toBe(false);
   });
 });

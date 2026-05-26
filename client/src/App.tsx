@@ -323,7 +323,6 @@ export const App = () => {
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
-  const previousConversationIdRef = useRef<string | null>(null);
   const composerNoticeTimerRef = useRef<number | null>(null);
   const titleGenerationFramesRef = useRef<Map<string, number>>(new Map());
   const titleGenerationTimersRef = useRef<Map<string, number>>(new Map());
@@ -351,6 +350,8 @@ export const App = () => {
   const [layout, setLayout] = useState<WorkspaceLayout>(() => getInitialLayout());
 
   const activeUserId = authUser?.id ?? null;
+  const previousActiveUserIdRef = useRef<string | null>(activeUserId);
+  const previousActiveConversationIdRef = useRef<string | null>(activeConversationId);
 
   const cancelScheduledTitleGeneration = useCallback((conversationId: string) => {
     const frameId = titleGenerationFramesRef.current.get(conversationId);
@@ -1103,25 +1104,26 @@ export const App = () => {
     [activeConversationId, activeUserId]
   );
 
-  const handleRecorderError = useCallback((message: string) => {
+  const handleRecordingError = useCallback((message: string) => {
     setError(message);
   }, []);
 
   const recorder = useAudioRecorder({
     onRecordingComplete: handleRecordingComplete,
-    onError: handleRecorderError
+    onError: handleRecordingError
   });
 
   useEffect(() => {
-    if (!activeUserId) {
-      recorder.cleanupRecording();
-    }
+    if (previousActiveUserIdRef.current === activeUserId) return;
+
+    previousActiveUserIdRef.current = activeUserId;
+    recorder.cleanupRecording();
   }, [activeUserId, recorder.cleanupRecording]);
 
   useEffect(() => {
-    if (previousConversationIdRef.current === activeConversationId) return;
+    if (previousActiveConversationIdRef.current === activeConversationId) return;
 
-    previousConversationIdRef.current = activeConversationId;
+    previousActiveConversationIdRef.current = activeConversationId;
     recorder.cleanupRecording();
   }, [activeConversationId, recorder.cleanupRecording]);
 

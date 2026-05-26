@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   calculateAudioLevelFromTimeDomainData,
-  getAudioRecordingStopDisposition,
   getBrowserAudioRecordingEnvironment,
   getMicrophoneRecordingSupportError,
   mapMicrophoneStartError,
   microphoneRecordingErrors,
-  selectSupportedAudioMimeType
+  selectSupportedAudioMimeType,
+  shouldShowUserCanceledRecordingStatus,
+  shouldStoreRecordingChunk,
+  shouldTranscribeRecordingStop
 } from '../lib/audioRecording.js';
+import type { AudioRecordingStopReason } from '../lib/audioRecording.js';
 
 export type AudioRecordingStatus =
   | 'idle'
@@ -18,7 +21,6 @@ export type AudioRecordingStatus =
   | 'canceled'
   | 'error';
 
-type RecordingStopReason = 'accept' | 'user-cancel' | 'cleanup' | 'error';
 type AudioContextConstructor = typeof AudioContext;
 type WindowWithWebkitAudioContext = Window &
   typeof globalThis & {
@@ -30,8 +32,8 @@ interface UseAudioRecorderOptions {
   onError: (message: string) => void;
 }
 
-const audioLevelBarCount = 24;
-const visualizerFrameIntervalMs = 70;
+export const audioLevelBarCount = 64;
+const visualizerFrameIntervalMs = 45;
 const canceledStatusResetDelayMs = 350;
 const errorStatusResetDelayMs = 1100;
 
@@ -48,7 +50,7 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const recordingFailedRef = useRef(false);
-  const stopReasonRef = useRef<RecordingStopReason | null>(null);
+  const stopReasonRef = useRef<AudioRecordingStopReason | null>(null);
   const actionInProgressRef = useRef(false);
   const statusRef = useRef<AudioRecordingStatus>('idle');
   const startRequestIdRef = useRef(0);
@@ -64,8 +66,11 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
 
   useEffect(() => {
     onRecordingCompleteRef.current = onRecordingComplete;
+  }, [onRecordingComplete]);
+
+  useEffect(() => {
     onErrorRef.current = onError;
-  }, [onError, onRecordingComplete]);
+  }, [onError]);
 
   const setRecorderStatus = useCallback((nextStatus: AudioRecordingStatus) => {
     statusRef.current = nextStatus;
@@ -202,8 +207,9 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
     async (recorder: MediaRecorder, fallbackMimeType?: string) => {
       const stopReason = stopReasonRef.current;
       const recordingFailed = recordingFailedRef.current;
-      const stopDisposition = getAudioRecordingStopDisposition(stopReason, recordingFailed);
-      const shouldTranscribe = stopDisposition === 'transcribe';
+      const shouldTranscribe = shouldTranscribeRecordingStop(stopReason, recordingFailed);
+      const shouldShowCanceledStatus = shouldShowUserCanceledRecordingStatus(stopReason);
+      const stoppedStatus = statusRef.current;
       const blob = shouldTranscribe
         ? new Blob(chunksRef.current, { type: recorder.mimeType || fallbackMimeType || 'audio/webm' })
         : null;
@@ -213,10 +219,9 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
       resetRecordingRefs();
 
       if (!shouldTranscribe) {
-        if (stopDisposition === 'user-canceled' && statusRef.current === 'canceled') {
+        if (shouldShowCanceledStatus && stoppedStatus === 'canceled') {
           transitionToIdleSoon('canceled', canceledStatusResetDelayMs);
-        } else if (stopDisposition === 'error' || statusRef.current === 'error') {
-          setRecorderStatus('error');
+        } else if (stoppedStatus === 'error' || stopReason === 'error') {
           transitionToIdleSoon('error', errorStatusResetDelayMs);
         } else {
           setRecorderStatus('idle');
@@ -260,54 +265,61 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
     [resetRecordingRefs, setRecorderStatus, stopMediaStream, stopVisualizer, transitionToIdleSoon]
   );
 
-  const cleanupRecording = useCallback(() => {
-    const hasActiveRecorder = mediaRecorderRef.current !== null;
-    const hasActiveStream = streamRef.current !== null;
-    const hasPendingStart = statusRef.current === 'requesting-permission';
+  const settlePendingStart = useCallback(
+    (reason: AudioRecordingStopReason) => {
+      startRequestIdRef.current += 1;
+      clearStatusResetTimer();
+      stopReasonRef.current = reason;
+      stopVisualizer();
+      stopMediaStream();
+      resetRecordingRefs();
 
-    if (!hasActiveRecorder && !hasActiveStream && !hasPendingStart) return;
-
-    startRequestIdRef.current += 1;
-    clearStatusResetTimer();
-    stopReasonRef.current = 'cleanup';
-    actionInProgressRef.current = true;
-    stopVisualizer();
-
-    const recorder = mediaRecorderRef.current;
-    if (recorder) {
-      recorder.ondataavailable = null;
-      recorder.onerror = null;
-      recorder.onstop = null;
-
-      if (recorder.state !== 'inactive') {
-        try {
-          recorder.stop();
-        } catch {
-          // Silent cleanup should not surface a user-facing cancellation or recording error.
-        }
+      if (reason === 'cancel') {
+        setRecorderStatus('canceled');
+        transitionToIdleSoon('canceled', canceledStatusResetDelayMs);
+        return;
       }
-    }
 
-    stopMediaStream();
-    resetRecordingRefs();
-    setRecorderStatus('idle');
-  }, [clearStatusResetTimer, resetRecordingRefs, setRecorderStatus, stopMediaStream, stopVisualizer]);
+      setRecorderStatus('idle');
+    },
+    [clearStatusResetTimer, resetRecordingRefs, setRecorderStatus, stopMediaStream, stopVisualizer, transitionToIdleSoon]
+  );
 
   const requestRecorderStop = useCallback(
-    (reason: Extract<RecordingStopReason, 'accept' | 'user-cancel'>) => {
+    (reason: AudioRecordingStopReason) => {
       if (actionInProgressRef.current || statusRef.current !== 'listening') return;
 
       const recorder = mediaRecorderRef.current;
-      if (!recorder) return;
+      if (!recorder) {
+        stopReasonRef.current = reason;
+        stopVisualizer();
+        stopMediaStream();
+        resetRecordingRefs();
+        setRecorderStatus(reason === 'cancel' ? 'canceled' : 'idle');
+        if (reason === 'cancel') transitionToIdleSoon('canceled', canceledStatusResetDelayMs);
+        return;
+      }
 
       actionInProgressRef.current = true;
       stopReasonRef.current = reason;
       clearStatusResetTimer();
-      setRecorderStatus(reason === 'accept' ? 'stopping' : 'canceled');
+
+      if (reason === 'accept') {
+        setRecorderStatus('stopping');
+      } else if (reason === 'cancel') {
+        setRecorderStatus('canceled');
+      } else if (reason === 'error') {
+        setRecorderStatus('error');
+      } else {
+        setRecorderStatus('idle');
+      }
+
       stopVisualizer();
 
       try {
-        recorder.requestData();
+        if (reason === 'accept') {
+          recorder.requestData();
+        }
       } catch {
         // requestData can throw if the browser has already stopped the recorder.
       }
@@ -320,19 +332,15 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
         }
       } catch {
         recordingFailedRef.current = true;
-
-        if (reason === 'accept') {
-          stopReasonRef.current = 'error';
-          onErrorRef.current(microphoneRecordingErrors.recordingFailed);
-          setRecorderStatus('error');
-        }
-
+        stopReasonRef.current = 'error';
+        onErrorRef.current(microphoneRecordingErrors.recordingFailed);
+        setRecorderStatus('error');
         void finishRecorderStop(recorder);
       } finally {
         stopMediaStream();
       }
     },
-    [clearStatusResetTimer, finishRecorderStop, setRecorderStatus, stopMediaStream, stopVisualizer]
+    [clearStatusResetTimer, finishRecorderStop, resetRecordingRefs, setRecorderStatus, stopMediaStream, stopVisualizer, transitionToIdleSoon]
   );
 
   const startRecording = useCallback(async () => {
@@ -380,10 +388,7 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
       mediaRecorderRef.current = recorder;
 
       recorder.ondataavailable = (event) => {
-        const stopReason = stopReasonRef.current;
-        const shouldKeepChunk = stopReason !== 'user-cancel' && stopReason !== 'cleanup' && stopReason !== 'error';
-
-        if (event.data.size > 0 && shouldKeepChunk) {
+        if (event.data.size > 0 && shouldStoreRecordingChunk(stopReasonRef.current)) {
           chunksRef.current.push(event.data);
         }
       };
@@ -418,6 +423,7 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
       recorder.start();
       setRecorderStatus('listening');
     } catch (error) {
+      if (!isMountedRef.current || requestId !== startRequestIdRef.current) return;
       failRecording(mapMicrophoneStartError(error, environment));
     }
   }, [clearStatusResetTimer, failRecording, finishRecorderStop, setRecorderStatus, startVisualizer, stopMediaStream, stopVisualizer]);
@@ -428,19 +434,23 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
 
   const cancelRecording = useCallback(() => {
     if (statusRef.current === 'requesting-permission') {
-      startRequestIdRef.current += 1;
-      clearStatusResetTimer();
-      stopReasonRef.current = 'user-cancel';
-      stopVisualizer();
-      stopMediaStream();
-      resetRecordingRefs();
-      setRecorderStatus('canceled');
-      transitionToIdleSoon('canceled', canceledStatusResetDelayMs);
+      settlePendingStart('cancel');
       return;
     }
 
-    requestRecorderStop('user-cancel');
-  }, [clearStatusResetTimer, requestRecorderStop, resetRecordingRefs, setRecorderStatus, stopMediaStream, stopVisualizer, transitionToIdleSoon]);
+    requestRecorderStop('cancel');
+  }, [requestRecorderStop, settlePendingStart]);
+
+  const cleanupRecording = useCallback(() => {
+    if (statusRef.current === 'requesting-permission') {
+      settlePendingStart('cleanup');
+      return;
+    }
+
+    if (statusRef.current === 'listening') {
+      requestRecorderStop('cleanup');
+    }
+  }, [requestRecorderStop, settlePendingStart]);
 
   const toggleRecording = useCallback(() => {
     if (statusRef.current === 'listening') {
@@ -451,15 +461,32 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
   }, [startRecording, stopRecording]);
 
   useEffect(
-    () => {
-      isMountedRef.current = true;
+    () => () => {
+      isMountedRef.current = false;
+      startRequestIdRef.current += 1;
+      clearStatusResetTimer();
+      stopReasonRef.current = 'cleanup';
+      stopVisualizer();
+      stopMediaStream();
 
-      return () => {
-        isMountedRef.current = false;
-        cleanupRecording();
-      };
+      const recorder = mediaRecorderRef.current;
+      if (recorder) {
+        recorder.ondataavailable = null;
+        recorder.onerror = null;
+        recorder.onstop = null;
+
+        if (recorder.state !== 'inactive') {
+          try {
+            recorder.stop();
+          } catch {
+            // The component is unmounting, so there is nothing else to surface.
+          }
+        }
+      }
+
+      resetRecordingRefs();
     },
-    [cleanupRecording]
+    [clearStatusResetTimer, resetRecordingRefs, stopMediaStream, stopVisualizer]
   );
 
   return {

@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react';
-import type { AudioRecordingStatus } from '../hooks/useAudioRecorder.js';
+import { audioLevelBarCount, type AudioRecordingStatus } from '../hooks/useAudioRecorder.js';
 
 interface VoiceCaptureControlsProps {
   status: AudioRecordingStatus;
@@ -8,7 +8,7 @@ interface VoiceCaptureControlsProps {
   onStop: () => void;
 }
 
-const fallbackLevels = Array.from({ length: 24 }, () => 0.04);
+const fallbackLevels = Array.from({ length: audioLevelBarCount }, () => 0.04);
 
 const XIcon = () => (
   <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
@@ -47,51 +47,52 @@ export const VoiceCaptureControls = ({ status, audioLevels, onCancel, onStop }: 
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}
     >
-      <div className="voice-capture-state" aria-live="polite">
-        <span className="voice-capture-pulse" aria-hidden="true" />
-        <span>{label}</span>
+      <button
+        className="voice-capture-button voice-capture-cancel"
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onCancel();
+        }}
+        disabled={controlsDisabled}
+        aria-label="Cancel recording"
+        title="Cancel recording"
+      >
+        <XIcon />
+        <span>Cancel</span>
+      </button>
+
+      <div className="voice-capture-content">
+        <div className="voice-capture-state" aria-live="polite">
+          <span className="voice-capture-pulse" aria-hidden="true" />
+          <span>{label}</span>
+        </div>
+
+        <div className="voice-level-meter" aria-hidden="true">
+          {levels.map((level, index) => (
+            <span
+              // The index is stable because this is a fixed-width live meter history.
+              key={index}
+              style={{ '--voice-level-scale': clampLevel(level).toFixed(3) } as CSSProperties}
+            />
+          ))}
+        </div>
       </div>
 
-      <div className="voice-level-meter" aria-hidden="true">
-        {levels.map((level, index) => (
-          <span
-            // The index is stable because this is a fixed-width live meter history.
-            key={index}
-            style={{ '--voice-level-scale': clampLevel(level).toFixed(3) } as CSSProperties}
-          />
-        ))}
-      </div>
-
-      <div className="voice-capture-actions">
-        <button
-          className="voice-capture-button voice-capture-cancel"
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onCancel();
-          }}
-          disabled={controlsDisabled}
-          aria-label="Cancel recording"
-          title="Cancel recording"
-        >
-          <XIcon />
-          <span>Cancel</span>
-        </button>
-        <button
-          className="voice-capture-button voice-capture-stop"
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onStop();
-          }}
-          disabled={controlsDisabled}
-          aria-label="Stop recording and transcribe"
-          title="Stop recording and transcribe"
-        >
-          <StopIcon />
-          <span>Stop</span>
-        </button>
-      </div>
+      <button
+        className="voice-capture-button voice-capture-transcribe"
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onStop();
+        }}
+        disabled={controlsDisabled}
+        aria-label="Stop recording and transcribe"
+        title="Transcribe recording"
+      >
+        <StopIcon />
+        <span>Transcribe</span>
+      </button>
     </div>
   );
 };

@@ -21,18 +21,7 @@ export const microphoneRecordingErrors = {
   transcriptionFailed: 'Could not transcribe audio.'
 } as const;
 
-export type AudioRecordingStopReason = 'accept' | 'user-cancel' | 'cleanup' | 'error' | null;
-export type AudioRecordingStopDisposition = 'transcribe' | 'user-canceled' | 'error' | 'discard';
-
-export const getAudioRecordingStopDisposition = (
-  stopReason: AudioRecordingStopReason,
-  recordingFailed = false
-): AudioRecordingStopDisposition => {
-  if (recordingFailed || stopReason === 'error') return 'error';
-  if (stopReason === 'accept') return 'transcribe';
-  if (stopReason === 'user-cancel') return 'user-canceled';
-  return 'discard';
-};
+export type AudioRecordingStopReason = 'accept' | 'cancel' | 'cleanup' | 'error';
 
 type MediaRecorderSupport = Pick<typeof MediaRecorder, 'isTypeSupported'>;
 
@@ -63,6 +52,14 @@ const getErrorMessage = (error: unknown) => {
   const message = (error as { message?: unknown }).message;
   return typeof message === 'string' ? message : '';
 };
+
+export const shouldTranscribeRecordingStop = (stopReason: AudioRecordingStopReason | null, recordingFailed: boolean) =>
+  stopReason === 'accept' && !recordingFailed;
+
+export const shouldStoreRecordingChunk = (stopReason: AudioRecordingStopReason | null) =>
+  stopReason !== 'cancel' && stopReason !== 'cleanup' && stopReason !== 'error';
+
+export const shouldShowUserCanceledRecordingStatus = (stopReason: AudioRecordingStopReason | null) => stopReason === 'cancel';
 
 export const getBrowserAudioRecordingEnvironment = (): BrowserAudioRecordingEnvironment | null => {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') return null;
