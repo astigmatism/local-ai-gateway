@@ -323,6 +323,7 @@ export const App = () => {
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const previousConversationIdRef = useRef<string | null>(null);
   const composerNoticeTimerRef = useRef<number | null>(null);
   const titleGenerationFramesRef = useRef<Map<string, number>>(new Map());
   const titleGenerationTimersRef = useRef<Map<string, number>>(new Map());
@@ -1102,20 +1103,27 @@ export const App = () => {
     [activeConversationId, activeUserId]
   );
 
+  const handleRecorderError = useCallback((message: string) => {
+    setError(message);
+  }, []);
+
   const recorder = useAudioRecorder({
     onRecordingComplete: handleRecordingComplete,
-    onError: (message) => setError(message)
+    onError: handleRecorderError
   });
 
   useEffect(() => {
     if (!activeUserId) {
-      recorder.cancelRecording();
+      recorder.cleanupRecording();
     }
-  }, [activeUserId, recorder.cancelRecording]);
+  }, [activeUserId, recorder.cleanupRecording]);
 
   useEffect(() => {
-    recorder.cancelRecording();
-  }, [activeConversationId, recorder.cancelRecording]);
+    if (previousConversationIdRef.current === activeConversationId) return;
+
+    previousConversationIdRef.current = activeConversationId;
+    recorder.cleanupRecording();
+  }, [activeConversationId, recorder.cleanupRecording]);
 
   if (authLoading) {
     return (

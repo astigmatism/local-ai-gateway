@@ -41,7 +41,12 @@ export const VoiceCaptureControls = ({ status, audioLevels, onCancel, onStop }: 
   const label = getVoiceCaptureLabel(status);
 
   return (
-    <div className="voice-capture-panel" aria-label="Voice recording controls">
+    <div
+      className="voice-capture-panel"
+      aria-label="Voice recording controls"
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+    >
       <div className="voice-capture-state" aria-live="polite">
         <span className="voice-capture-pulse" aria-hidden="true" />
         <span>{label}</span>
@@ -61,7 +66,10 @@ export const VoiceCaptureControls = ({ status, audioLevels, onCancel, onStop }: 
         <button
           className="voice-capture-button voice-capture-cancel"
           type="button"
-          onClick={onCancel}
+          onClick={(event) => {
+            event.stopPropagation();
+            onCancel();
+          }}
           disabled={controlsDisabled}
           aria-label="Cancel recording"
           title="Cancel recording"
@@ -72,7 +80,10 @@ export const VoiceCaptureControls = ({ status, audioLevels, onCancel, onStop }: 
         <button
           className="voice-capture-button voice-capture-stop"
           type="button"
-          onClick={onStop}
+          onClick={(event) => {
+            event.stopPropagation();
+            onStop();
+          }}
           disabled={controlsDisabled}
           aria-label="Stop recording and transcribe"
           title="Stop recording and transcribe"

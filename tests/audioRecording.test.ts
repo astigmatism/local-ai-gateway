@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   calculateAudioLevelFromTimeDomainData,
+  getAudioRecordingStopDisposition,
   getMicrophoneRecordingSupportError,
   mapMicrophoneStartError,
   microphoneRecordingErrors,
@@ -100,5 +101,22 @@ describe('audio level analysis', () => {
 
   it('reports a high level for loud time-domain samples', () => {
     expect(calculateAudioLevelFromTimeDomainData(new Uint8Array([0, 255, 0, 255]))).toBeGreaterThan(0.9);
+  });
+});
+
+describe('audio recording stop disposition', () => {
+  it('transcribes only explicit accepted recordings that did not fail', () => {
+    expect(getAudioRecordingStopDisposition('accept')).toBe('transcribe');
+    expect(getAudioRecordingStopDisposition('accept', true)).toBe('error');
+  });
+
+  it('treats user cancellation separately from silent cleanup', () => {
+    expect(getAudioRecordingStopDisposition('user-cancel')).toBe('user-canceled');
+    expect(getAudioRecordingStopDisposition('cleanup')).toBe('discard');
+    expect(getAudioRecordingStopDisposition(null)).toBe('discard');
+  });
+
+  it('does not report recorder failures as user cancellations', () => {
+    expect(getAudioRecordingStopDisposition('error')).toBe('error');
   });
 });

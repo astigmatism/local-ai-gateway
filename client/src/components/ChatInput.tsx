@@ -73,6 +73,7 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
       onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
         if (event.key === 'Escape' && isListening) {
           event.preventDefault();
+          event.stopPropagation();
           onCancelRecording();
         }
       }}
@@ -97,7 +98,11 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
             <button
               className="icon-button"
               type="button"
-              onClick={onStartRecording}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                onStartRecording();
+              }}
               disabled={!canStartRecording}
               aria-label="Start voice recording"
               title="Start voice recording"

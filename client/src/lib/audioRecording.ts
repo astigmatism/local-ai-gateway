@@ -21,6 +21,19 @@ export const microphoneRecordingErrors = {
   transcriptionFailed: 'Could not transcribe audio.'
 } as const;
 
+export type AudioRecordingStopReason = 'accept' | 'user-cancel' | 'cleanup' | 'error' | null;
+export type AudioRecordingStopDisposition = 'transcribe' | 'user-canceled' | 'error' | 'discard';
+
+export const getAudioRecordingStopDisposition = (
+  stopReason: AudioRecordingStopReason,
+  recordingFailed = false
+): AudioRecordingStopDisposition => {
+  if (recordingFailed || stopReason === 'error') return 'error';
+  if (stopReason === 'accept') return 'transcribe';
+  if (stopReason === 'user-cancel') return 'user-canceled';
+  return 'discard';
+};
+
 type MediaRecorderSupport = Pick<typeof MediaRecorder, 'isTypeSupported'>;
 
 type FeaturePolicyLike = {
