@@ -161,6 +161,7 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
   const activeReference = overview?.references?.activeReference ?? null;
   const activeReferenceKnown = overview?.references?.activeReferenceKnown ?? false;
   const canSelectReferences = Boolean(overview?.references?.selection.canSelect);
+  const canDeleteReferences = Boolean(overview?.references?.deletion?.canDelete);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -278,8 +279,20 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
     });
   };
 
-  const handleUseReferenceForTts = (reference: VoiceReferenceDescriptor) => {
+  const selectReferenceForTts = (reference: VoiceReferenceDescriptor) => {
     void runMutation(`Use reference ${reference.id}`, () => api.selectVoiceReference(reference.id));
+  };
+
+  const deleteReferenceAudio = (reference: VoiceReferenceDescriptor) => {
+    const label = reference.displayName || reference.originalFilename || reference.storedFilename || reference.id;
+    if (
+      !window.confirm(
+        `Delete reference audio "${label}" from VoiceVM? This cannot be undone. If this reference is selected for TTS, Bear Castle AI will clear that selection.`
+      )
+    ) {
+      return;
+    }
+    void runMutation(`Delete reference ${reference.id}`, () => api.deleteVoiceReference(reference.id));
   };
 
   const gpuDevice = overview?.gpu?.devices[0];
@@ -320,8 +333,10 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
   const renderReferenceCard = (reference: VoiceReferenceDescriptor) => {
     const details = referenceDetails(reference);
     const selectAction = `Use reference ${reference.id}`;
+    const deleteAction = `Delete reference ${reference.id}`;
     const selected = Boolean(reference.isSelected);
     const active = Boolean(reference.isActive);
+    const canDeleteReference = reference.canDelete !== false;
     return (
       <div key={reference.id} className={`voice-descriptor-card voice-reference-card${selected ? ' selected' : ''}`}>
         <div className="voice-reference-main">
@@ -332,15 +347,29 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
           </div>
           {details.length > 0 && <small>{details.join(' · ')}</small>}
         </div>
-        {canManageVoice && canSelectReferences && (
-          <button
-            className="secondary-button"
-            type="button"
-            onClick={() => handleUseReferenceForTts(reference)}
-            disabled={Boolean(busyAction) || selected}
-          >
-            {selected ? 'Selected' : busyAction === selectAction ? 'Selecting...' : 'Use for TTS'}
-          </button>
+        {canManageVoice && (
+          <div className="voice-reference-actions">
+            {canSelectReferences && (
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => selectReferenceForTts(reference)}
+                disabled={Boolean(busyAction) || selected}
+              >
+                {selected ? 'Selected' : busyAction === selectAction ? 'Selecting...' : 'Use for TTS'}
+              </button>
+            )}
+            {canDeleteReferences && canDeleteReference && (
+              <button
+                className="danger-button subtle-danger"
+                type="button"
+                onClick={() => deleteReferenceAudio(reference)}
+                disabled={Boolean(busyAction)}
+              >
+                {busyAction === deleteAction ? 'Deleting...' : 'Delete'}
+              </button>
+            )}
+          </div>
         )}
       </div>
     );
@@ -591,7 +620,7 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
             </span>
           </label>
           <small className="auth-help">
-            Reference uploads use the modern /api/tts/reference-audio route. Original upload names are stored by Bear Castle when VoiceVM stores a generated filename. WebM recordings are not labeled as WAV.
+            Reference uploads use the modern /api/tts/reference-audio route. Delete uses VoiceVM descriptor-provided delete links when available, then Bear Castle's conservative reference-audio delete fallback. WebM recordings are not labeled as WAV.
           </small>
         </form>
       </article>

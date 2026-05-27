@@ -403,6 +403,7 @@ export interface VoiceReferenceDescriptor {
   type?: string;
   isActive?: boolean;
   isSelected?: boolean;
+  canDelete?: boolean;
   source: 'voice-vm' | 'bear-castle';
   raw?: unknown;
 }
@@ -418,12 +419,21 @@ export interface VoiceReferenceSelectionCapability {
   ttsSpeakField: 'voice';
 }
 
+export interface VoiceReferenceDeletionCapability {
+  mode: 'voice-vm-reference-audio-delete';
+  canDelete: boolean;
+  supportedBySuppliedVoiceVmContract: boolean;
+  clearsBearCastleSelection: boolean;
+  clearsBearCastleMetadata: boolean;
+}
+
 export interface VoiceReferencesResponse {
   references: VoiceReferenceDescriptor[];
   activeReference: VoiceReferenceDescriptor | null;
   selectedReference: VoiceReferenceDescriptor | null;
   activeReferenceKnown: boolean;
   selection: VoiceReferenceSelectionCapability;
+  deletion?: VoiceReferenceDeletionCapability;
   raw?: unknown;
 }
 
@@ -464,6 +474,10 @@ export interface VoiceMutationResponse {
   message?: string;
   references?: VoiceReferencesResponse;
   uploadedReferenceId?: string;
+  deletedReferenceId?: string;
+  deletedReference?: VoiceReferenceDescriptor;
+  selectedReferenceCleared?: boolean;
+  stillListed?: boolean;
   mappedOriginalFilename?: boolean;
 }
 

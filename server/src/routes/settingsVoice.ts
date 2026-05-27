@@ -27,6 +27,7 @@ import {
   updateVoiceTtsConfig
 } from '../services/voiceClient.js';
 import {
+  deleteVoiceReference,
   getVoiceReferences,
   selectVoiceReference,
   sanitizeDisplayName,
@@ -306,6 +307,15 @@ settingsVoiceRouter.post(
     const body = selectReferenceSchema.parse(req.body ?? {});
     const references = await selectVoiceReference(body.id);
     res.json({ references, message: 'Reference selected for future TTS requests.' });
+  })
+);
+
+settingsVoiceRouter.delete(
+  '/references/:id',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const body = selectReferenceSchema.parse({ id: req.params.id });
+    res.json(await deleteVoiceReference(body.id));
   })
 );
 

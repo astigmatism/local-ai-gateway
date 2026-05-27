@@ -18,6 +18,7 @@ const loadService = async () => {
 };
 
 afterEach(() => {
+  vi.unmock('../server/src/services/voiceClient.js');
   vi.unstubAllEnvs();
   vi.resetModules();
 });
@@ -117,4 +118,67 @@ describe('voice reference normalization', () => {
 
     await expect(service.getSelectedVoiceReferenceIdForTts()).resolves.toBe('reference_1.wav');
   });
+
+  it('deletes a listed reference and clears Bear Castle selection metadata', async () => {
+    vi.resetModules();
+    stubEnv();
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bear-voice-reference-delete-'));
+    const statePath = path.join(stateDir, 'voice-reference-state.json');
+    const listVoiceDescriptors = vi
+      .fn()
+      .mockResolvedValueOnce({
+        voices: [
+          {
+            id: 'reference_1.wav',
+            label: 'reference_1.wav',
+            raw: { id: 'reference_1.wav', filename: 'reference_1.wav' }
+          }
+        ],
+        raw: {}
+      })
+      .mockResolvedValueOnce({ voices: [], raw: {} });
+    const deleteReferenceAudio = vi.fn(async () => ({
+      result: { ok: true },
+      route: '/api/tts/reference-audio/reference_1.wav',
+      routeSource: 'bear-castle-fallback' as const
+    }));
+
+    vi.doMock('../server/src/services/voiceClient.js', () => ({
+      listVoiceDescriptors,
+      uploadReferenceAudio: vi.fn(),
+      deleteReferenceAudio
+    }));
+
+    const service = await import('../server/src/services/voiceReferenceService.js');
+    service.setVoiceReferenceStateFilePathForTests(statePath);
+    await fs.writeFile(
+      statePath,
+      JSON.stringify({
+        version: 1,
+        selectedReferenceId: 'reference_1.wav',
+        references: {
+          'reference_1.wav': {
+            id: 'reference_1.wav',
+            originalFilename: 'eric-reference.wav',
+            displayName: 'Eric reference',
+            storedFilename: 'reference_1.wav'
+          }
+        }
+      })
+    );
+    service.resetVoiceReferenceStateCacheForTests();
+
+    const result = await service.deleteVoiceReference('reference_1.wav');
+    const state = await service.readVoiceReferenceStateForTests();
+
+    expect(deleteReferenceAudio).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'reference_1.wav', storedFilename: 'reference_1.wav' })
+    );
+    expect(result.deletedReferenceId).toBe('reference_1.wav');
+    expect(result.selectedReferenceCleared).toBe(true);
+    expect(result.stillListed).toBe(false);
+    expect(state.selectedReferenceId).toBeUndefined();
+    expect(state.references['reference_1.wav']).toBeUndefined();
+  });
+
 });

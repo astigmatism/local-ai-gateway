@@ -589,4 +589,28 @@ describe('api client voice VM settings requests', () => {
     expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-token');
     expect(JSON.parse(init.body as string)).toEqual({ id: 'reference_20260527_abc123.wav' });
   });
+
+  it('deletes an existing voice reference through the gateway with CSRF', async () => {
+    const { api } = await loadApi();
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ message: 'Reference audio deleted: Eric sample.wav.' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        })
+    );
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    const response = await api.deleteVoiceReference('reference_20260527_abc123.wav');
+
+    expect(response.message).toContain('Reference audio deleted');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/settings/voice/references/reference_20260527_abc123.wav',
+      expect.objectContaining({ credentials: 'include', method: 'DELETE' })
+    );
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-token');
+  });
 });

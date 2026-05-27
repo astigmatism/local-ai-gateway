@@ -3,6 +3,7 @@ import path from 'node:path';
 import { ApiError } from '../errors/apiError.js';
 import { logger } from '../config/logger.js';
 import {
+  deleteReferenceAudio,
   listVoiceDescriptors,
   uploadReferenceAudio,
   type VoiceDescriptor,
@@ -14,6 +15,7 @@ type UnknownRecord = Record<string, unknown>;
 type VoiceReferenceSource = 'voice-vm' | 'bear-castle';
 
 type ReferenceSelectionMode = 'bear-castle-tts-voice';
+type ReferenceDeletionMode = 'voice-vm-reference-audio-delete';
 
 export interface StoredReferenceMetadata {
   id: string;
@@ -48,6 +50,7 @@ export interface VoiceReferenceDescriptor {
   type?: string;
   isActive?: boolean;
   isSelected?: boolean;
+  canDelete: boolean;
   source: VoiceReferenceSource;
   raw?: unknown;
 }
@@ -63,12 +66,21 @@ export interface VoiceReferenceSelectionCapability {
   ttsSpeakField: 'voice';
 }
 
+export interface VoiceReferenceDeletionCapability {
+  mode: ReferenceDeletionMode;
+  canDelete: true;
+  supportedBySuppliedVoiceVmContract: false;
+  clearsBearCastleSelection: true;
+  clearsBearCastleMetadata: true;
+}
+
 export interface VoiceReferencesResponse {
   references: VoiceReferenceDescriptor[];
   activeReference: VoiceReferenceDescriptor | null;
   selectedReference: VoiceReferenceDescriptor | null;
   activeReferenceKnown: boolean;
   selection: VoiceReferenceSelectionCapability;
+  deletion: VoiceReferenceDeletionCapability;
   raw: unknown;
 }
 
@@ -88,23 +100,19 @@ let cachedState: VoiceReferenceState | null = null;
 const asRecord = (value: unknown): UnknownRecord | null =>
   typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as UnknownRecord) : null;
 
-const stripAsciiControlCharacters = (value: string) =>
+const stripControlCharacters = (value: string) =>
   Array.from(value)
     .filter((character) => {
       const codePoint = character.codePointAt(0);
-      return codePoint !== undefined && codePoint >= 32 && codePoint !== 127;
+      return codePoint !== undefined && (codePoint > 0x1f || codePoint === 0x09) && codePoint !== 0x7f;
     })
     .join('');
 
-const hasAsciiControlCharacters = (value: string) =>
-  Array.from(value).some((character) => {
-    const codePoint = character.codePointAt(0);
-    return codePoint !== undefined && (codePoint < 32 || codePoint === 127);
-  });
+const hasControlCharacters = (value: string) => value !== stripControlCharacters(value);
 
 const cleanString = (value: unknown) => {
   if (typeof value !== 'string') return undefined;
-  const trimmed = stripAsciiControlCharacters(value).trim();
+  const trimmed = stripControlCharacters(value).trim();
   return trimmed || undefined;
 };
 
@@ -170,15 +178,15 @@ const normalizePathSeparators = (value: string) => value.replace(/\\/g, '/');
 export const sanitizeOriginalFilename = (value: unknown, fallback = 'reference.wav') => {
   const cleaned = cleanString(value);
   const filename = path.posix.basename(normalizePathSeparators(cleaned ?? fallback));
-  const withoutControls = stripAsciiControlCharacters(filename).trim();
+  const withoutControls = stripControlCharacters(filename).trim();
   return (withoutControls || fallback).slice(0, 180);
 };
 
 export const sanitizeDisplayName = (value: unknown, fallback?: string) => {
   const base = cleanString(value) ?? cleanString(fallback) ?? 'Reference audio';
-  const displayName = normalizePathSeparators(base).split('/').filter(Boolean).pop();
-  const sanitizedDisplayName = displayName ? stripAsciiControlCharacters(displayName).trim() : undefined;
-  return (sanitizedDisplayName || 'Reference audio').slice(0, 180);
+  const filename = normalizePathSeparators(base).split('/').filter(Boolean).pop() ?? '';
+  const displayName = stripControlCharacters(filename).trim();
+  return (displayName || 'Reference audio').slice(0, 180);
 };
 
 const safeBasename = (value: unknown) => {
@@ -474,6 +482,7 @@ export const normalizeVoiceReferences = (
       type: descriptor.type,
       isActive,
       isSelected: state.selectedReferenceId === descriptor.id,
+      canDelete: true,
       source: stateMetadata ? 'bear-castle' : 'voice-vm',
       raw: descriptor.raw
     } satisfies VoiceReferenceDescriptor;
@@ -498,6 +507,13 @@ export const normalizeVoiceReferences = (
       selectedReferencePersistsIn: 'bear-castle',
       ttsSpeakField: 'voice'
     },
+    deletion: {
+      mode: 'voice-vm-reference-audio-delete',
+      canDelete: true,
+      supportedBySuppliedVoiceVmContract: false,
+      clearsBearCastleSelection: true,
+      clearsBearCastleMetadata: true
+    },
     raw: voiceDescriptors.raw
   };
 };
@@ -520,17 +536,26 @@ export const getVoiceReferences = async () => {
   return normalized;
 };
 
-export const selectVoiceReference = async (referenceId: string) => {
+const validateReferenceId = (referenceId: string, code = 'VOICE_REFERENCE_ID_REQUIRED') => {
   const id = cleanString(referenceId);
-  if (!id || id.length > 240 || hasAsciiControlCharacters(id)) {
-    throw new ApiError(400, 'A valid reference id is required.', 'VOICE_REFERENCE_ID_REQUIRED');
+  if (!id || id.length > 240 || hasControlCharacters(id)) {
+    throw new ApiError(400, 'A valid reference id is required.', code);
   }
+  return id;
+};
 
+const findCurrentReference = async (referenceId: string) => {
+  const id = validateReferenceId(referenceId);
   const references = await getVoiceReferences();
   const reference = references.references.find((item) => item.id === id);
   if (!reference) {
     throw new ApiError(404, 'That voice reference is not available from VoiceVM.', 'VOICE_REFERENCE_NOT_FOUND');
   }
+  return reference;
+};
+
+export const selectVoiceReference = async (referenceId: string) => {
+  const reference = await findCurrentReference(referenceId);
 
   const state = await loadState();
   state.selectedReferenceId = reference.id;
@@ -546,6 +571,53 @@ export const selectVoiceReference = async (referenceId: string) => {
   await saveState(state);
 
   return getVoiceReferences();
+};
+
+export const deleteVoiceReference = async (referenceId: string) => {
+  const reference = await findCurrentReference(referenceId);
+  const deleteResult = await deleteReferenceAudio({
+    id: reference.id,
+    storedFilename: reference.storedFilename,
+    path: reference.path,
+    raw: reference.raw
+  });
+
+  const state = await loadState();
+  const selectedReferenceCleared = state.selectedReferenceId === reference.id;
+  delete state.references[reference.id];
+  if (selectedReferenceCleared) delete state.selectedReferenceId;
+  await saveState(state);
+
+  logger.info(
+    {
+      referenceId: reference.id,
+      displayName: reference.displayName,
+      routeSource: deleteResult.routeSource
+    },
+    'Voice reference audio deleted through VoiceVM'
+  );
+
+  const references = await getVoiceReferences();
+  const stillListed = references.references.some((item) => item.id === reference.id);
+
+  if (stillListed) {
+    logger.warn(
+      { referenceId: reference.id, displayName: reference.displayName },
+      'VoiceVM accepted the reference delete request, but the descriptor is still returned by /voices'
+    );
+  }
+
+  return {
+    result: deleteResult.result,
+    deletedReferenceId: reference.id,
+    deletedReference: reference,
+    selectedReferenceCleared,
+    stillListed,
+    references,
+    message: stillListed
+      ? `Reference delete was requested for ${reference.displayName}, but VoiceVM still lists it. Refresh /voices or check the VoiceVM service logs.`
+      : `Reference audio deleted: ${reference.displayName}.`
+  };
 };
 
 export const getSelectedVoiceReferenceIdForTts = async () => {

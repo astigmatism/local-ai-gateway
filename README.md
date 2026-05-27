@@ -84,7 +84,7 @@ Bear Castle AI gateway VM
                       http://192.168.1.8:8000/voices (descriptor compatibility route)
 ```
 
-The backend serves the frontend in production from `dist/client` and exposes APIs under `/api/*`. The unauthenticated public API surface is intentionally small: login users, login, and `/health`. Conversation, status/GPU, settings/model status, voice status/config, transcription, text-to-speech, LLM generation, and user-management APIs require authentication. Model pulls, deletes, LLM loading/default-model changes, voice model load/unload, voice config updates, voice reference uploads, and voice logs are Eric/admin-only and remain CSRF-protected.
+The backend serves the frontend in production from `dist/client` and exposes APIs under `/api/*`. The unauthenticated public API surface is intentionally small: login users, login, and `/health`. Conversation, status/GPU, settings/model status, voice status/config, transcription, text-to-speech, LLM generation, and user-management APIs require authentication. Model pulls, deletes, LLM loading/default-model changes, voice model load/unload, voice config updates, voice reference uploads/selections/deletions, and voice logs are Eric/admin-only and remain CSRF-protected.
 
 ## HTTPS/domain hosting quick start
 
@@ -138,6 +138,7 @@ Modern routes used by Bear Castle AI:
 - Model management: `POST /api/models/stt/load`, `POST /api/models/stt/unload`, `POST /api/models/tts/load`, and `POST /api/models/tts/unload`.
 - Mutable defaults: `GET /api/config`, `PATCH /api/config/stt`, and `PATCH /api/config/tts`.
 - Reference audio upload: `POST /api/tts/reference-audio` with a WAV file forwarded by the Bear Castle AI gateway.
+- Reference audio deletion: the supplied contract does not document a public delete route. Bear Castle AI can call descriptor-provided delete links from `/voices` when present and otherwise attempts the conservative modern fallback `DELETE /api/tts/reference-audio/:id`; if VoiceVM does not expose either shape, the UI reports deletion as unsupported instead of deleting files by path.
 
 The documented compatibility `GET /voices` route remains in use for voice/reference descriptors because the current contract lists descriptors there and the modern contract does not define a replacement listing route. Other compatibility routes (`/health`, `/gpu`, `/models`, `/speak`, `/transcribe`) are not primary integration targets in Bear Castle AI.
 
@@ -145,17 +146,20 @@ Settings > Voice shows service health, STT/TTS worker status, GPU state, model c
 
 ### Voice Reference Audio
 
-Settings > Voice can upload WAV reference clips through the Bear Castle AI backend, which then calls the VoiceVM `POST /api/tts/reference-audio` route. The browser never calls VoiceVM directly and never contains the internal voice VM URL. Reference uploads are admin-only, CSRF-protected, limited by `MAX_AUDIO_UPLOAD_MB`, and restricted to WAV MIME types/extensions (`audio/wav`, `audio/x-wav`, `audio/wave`, `audio/vnd.wave`, or `.wav`). Browser WebM/Opus microphone recordings are not relabeled as WAV.
+Settings > Voice can upload WAV reference clips through the Bear Castle AI backend, which then calls the VoiceVM `POST /api/tts/reference-audio` route. The browser never calls VoiceVM directly and never contains the internal voice VM URL. Reference uploads, selection, and deletion are admin-only, CSRF-protected, limited by `MAX_AUDIO_UPLOAD_MB` for uploads, and restricted to WAV MIME types/extensions (`audio/wav`, `audio/x-wav`, `audio/wave`, `audio/vnd.wave`, or `.wav`). Browser WebM/Opus microphone recordings are not relabeled as WAV.
 
 VoiceVM may store uploaded reference WAV files under generated safe filenames. The documented contract does not state that `POST /api/tts/reference-audio` preserves or returns the original upload filename, and `GET /voices` remains the descriptor source of truth. Bear Castle AI now keeps a durable sidecar metadata file at `storage/voice-reference-state.json` so future uploads continue to display the user-recognizable original filename or optional display name even when VoiceVM returns a generated stored filename. Generated/stored filenames remain secondary details such as “stored as reference_20260527_abc123.wav.” The sidecar stores metadata only, not uploaded audio. It is intentionally ignored by Git.
 
 The current documented VoiceVM contract does not expose a public set-active-reference route and documents `PATCH /api/config/tts` only for defaults such as `defaultModel` and `language`. It also documents that `POST /api/tts/speak` accepts a `voice` field. Bear Castle AI therefore implements reference selection app-side: admin users can click **Use for TTS** on a listed `/voices` descriptor, the selected descriptor id is persisted in `storage/voice-reference-state.json`, and future gateway `/api/speak` calls include that id as the VoiceVM `/api/tts/speak` `voice` field unless the caller explicitly supplies a different `voice`. If a future VoiceVM `/voices` descriptor includes an active/current flag, the Settings UI shows it as VoiceVM active; otherwise it honestly displays “VoiceVM active reference: Unknown” and labels the persisted choice as “Selected in Bear Castle AI.”
+
+Admins can also click **Delete** on a reference descriptor. Bear Castle AI first uses a delete link advertised by the descriptor (`deleteUrl`, `links.delete.href`, `_links.delete.href`, or similar) when VoiceVM provides one. If no descriptor delete link exists, Bear Castle AI attempts the conservative REST fallback `DELETE /api/tts/reference-audio/:id` and then `DELETE /api/tts/reference-audio` with a JSON body containing the descriptor id/filename. Bear Castle AI never deletes VoiceVM files by filesystem path. If the current VoiceVM build does not support deletion, Settings displays the unsupported-route error and leaves the reference list unchanged. Successful deletion removes matching Bear Castle metadata and clears the selected-reference id if the deleted sample was selected.
 
 Troubleshooting reference audio:
 
 - Uploaded file appears with an unexpected generated name: Bear Castle displays the saved original filename when it can map the upload response or new `/voices` descriptor to the upload. The generated name is shown only as secondary storage detail.
 - Reference list does not refresh: use the Settings > Voice refresh button and confirm VoiceVM `GET /voices` responds.
 - Selected reference does not affect TTS: confirm the selected descriptor id is accepted by VoiceVM as the `/api/tts/speak` `voice` value and that the TTS worker is loaded.
+- Delete reports unsupported: confirm the running VoiceVM build exposes a reference-audio delete route or a descriptor delete link in `GET /voices`; the supplied contract does not require deletion.
 - Active reference is unknown: this is expected when VoiceVM does not expose active-reference state in `/voices` or `/api/config`. Bear Castle still sends the selected descriptor id on future TTS requests.
 - Upload rejected because it is not WAV: convert the clip to a real WAV file before uploading. Do not rename WebM/Opus recordings to `.wav`.
 
@@ -167,7 +171,7 @@ Troubleshooting:
 - STT/TTS model mismatch errors mean the request model does not match the currently loaded model unless the worker supports autoloading.
 - Missing GPU power/fan fields are expected with the new `/api/gpu` shape; Bear Castle AI handles memory, utilization, and temperature without requiring power or fan data.
 - System Health uses `GET {LLM_MONITOR_BASE_URL}/gpus` as the primary local-ai-llm GPU telemetry source and renders one compact pod per returned GPU. The legacy `GET {LLM_MONITOR_BASE_URL}/gpu` endpoint remains as a fallback for older monitor services and is normalized as a one-GPU list. The compact GPU pods show VRAM, Power when available, Fan only when available, Utilization, and Temperature; Free VRAM is retained in details but is no longer shown as a separate main bar.
-- Reference audio uploads must be WAV. Browser WebM recordings are not labeled or uploaded as WAV unless converted outside the app.
+- Reference audio uploads must be WAV. Browser WebM recordings are not labeled or uploaded as WAV unless converted outside the app. Reference deletion requires a compatible VoiceVM delete route; Bear Castle does not delete VoiceVM files by path.
 - CORS is not part of the browser flow because the browser calls Bear Castle AI, and Bear Castle AI calls local-ai-voice over the private network.
 - Worker-only private APIs and worker ports must stay private and must not be exposed publicly.
 

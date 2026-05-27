@@ -179,6 +179,19 @@ export interface VoiceDescriptorsResponse {
   raw: unknown;
 }
 
+export interface DeleteReferenceAudioRequest {
+  id: string;
+  storedFilename?: string;
+  path?: string;
+  raw?: unknown;
+}
+
+export interface DeleteReferenceAudioResult {
+  result: unknown;
+  route: string;
+  routeSource: 'descriptor' | 'bear-castle-fallback';
+}
+
 export interface SttLoadRequest {
   provider: string;
   model: string;
@@ -851,6 +864,156 @@ export const updateVoiceSttConfig = (body: UpdateSttConfigRequest) =>
 
 export const updateVoiceTtsConfig = (body: UpdateTtsConfigRequest) =>
   sendJson('patch', '/api/config/tts', body, 'Update TTS configuration');
+
+const sanitizeRouteSegment = (value: string) => encodeURIComponent(value).replace(/%2F/gi, '%252F');
+
+const uniqueReferenceDeleteCandidates = (
+  candidates: Array<{ path: string; body?: UnknownRecord; routeSource: 'descriptor' | 'bear-castle-fallback' }>
+) => {
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const key = `${candidate.path}:${JSON.stringify(candidate.body ?? {})}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
+const sameVoiceVmRelativePath = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith('//')) return undefined;
+
+  try {
+    const voiceBase = new URL(config.voice.baseUrl);
+    const url = trimmed.startsWith('/') ? new URL(trimmed, voiceBase) : new URL(trimmed);
+    if (url.origin !== voiceBase.origin || !url.pathname.startsWith('/api/')) return undefined;
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return undefined;
+  }
+};
+
+const candidateDeletePathFromUnknown = (value: unknown) => {
+  const candidate = cleanString(value);
+  return candidate ? sameVoiceVmRelativePath(candidate) : undefined;
+};
+
+const collectDescriptorDeletePaths = (raw: unknown) => {
+  const root = asRecord(raw);
+  if (!root) return [];
+
+  const paths: string[] = [];
+  const append = (value: unknown) => {
+    const candidate = candidateDeletePathFromUnknown(value);
+    if (candidate) paths.push(candidate);
+  };
+
+  append(root.deleteUrl);
+  append(root.delete_url);
+  append(root.deleteHref);
+  append(root.delete_href);
+  append(root.referenceDeleteUrl);
+  append(root.reference_delete_url);
+  append(readPath(root, ['links', 'delete']));
+  append(readPath(root, ['links', 'delete', 'href']));
+  append(readPath(root, ['links', 'delete', 'url']));
+  append(readPath(root, ['links', 'delete', 'path']));
+  append(readPath(root, ['_links', 'delete']));
+  append(readPath(root, ['_links', 'delete', 'href']));
+  append(readPath(root, ['_links', 'delete', 'url']));
+  append(readPath(root, ['_links', 'delete', 'path']));
+  append(readPath(root, ['actions', 'delete']));
+  append(readPath(root, ['actions', 'delete', 'href']));
+  append(readPath(root, ['actions', 'delete', 'url']));
+  append(readPath(root, ['actions', 'delete', 'path']));
+  append(readPath(root, ['routes', 'delete']));
+  append(readPath(root, ['routes', 'delete', 'href']));
+  append(readPath(root, ['routes', 'delete', 'url']));
+  append(readPath(root, ['routes', 'delete', 'path']));
+  append(readPath(root, ['api', 'delete']));
+  append(readPath(root, ['api', 'delete', 'href']));
+  append(readPath(root, ['api', 'delete', 'url']));
+  append(readPath(root, ['api', 'delete', 'path']));
+
+  return Array.from(new Set(paths));
+};
+
+const referenceDeleteCandidates = (request: DeleteReferenceAudioRequest) => {
+  const descriptorPaths = collectDescriptorDeletePaths(request.raw).map((deletePath) => ({
+    path: deletePath,
+    routeSource: 'descriptor' as const
+  }));
+
+  const ids = Array.from(new Set([request.id, request.storedFilename].filter((value): value is string => Boolean(cleanString(value)))));
+  const fallbackPathCandidates = ids.map((id) => ({
+    path: `/api/tts/reference-audio/${sanitizeRouteSegment(id)}`,
+    routeSource: 'bear-castle-fallback' as const
+  }));
+  const fallbackBodyCandidates = [
+    {
+      path: '/api/tts/reference-audio',
+      body: {
+        id: request.id,
+        voice: request.id,
+        filename: request.storedFilename ?? request.id,
+        storedFilename: request.storedFilename,
+        path: request.path
+      },
+      routeSource: 'bear-castle-fallback' as const
+    }
+  ];
+
+  return uniqueReferenceDeleteCandidates([...descriptorPaths, ...fallbackPathCandidates, ...fallbackBodyCandidates]);
+};
+
+const isRetryableReferenceDeleteStatus = (status: number) => [400, 404, 405, 422].includes(status);
+
+export const deleteReferenceAudio = async (request: DeleteReferenceAudioRequest): Promise<DeleteReferenceAudioResult> => {
+  const candidates = referenceDeleteCandidates(request);
+  const timeoutMs = config.voice.timeoutMs;
+  const attemptedRoutes: string[] = [];
+
+  for (const candidate of candidates) {
+    attemptedRoutes.push(candidate.path);
+    try {
+      const response = await axios.request({
+        method: 'delete',
+        url: `${config.voice.baseUrl}${candidate.path}`,
+        data: candidate.body,
+        timeout: timeoutMs,
+        headers: candidate.body ? { 'Content-Type': 'application/json' } : undefined,
+        validateStatus: (status) => status >= 200 && status < 300,
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity
+      });
+      return {
+        result: response.data ?? { ok: true },
+        route: candidate.path,
+        routeSource: candidate.routeSource
+      };
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response && isRetryableReferenceDeleteStatus(error.response.status)) {
+        logger.warn(
+          {
+            route: candidate.path,
+            status: error.response.status,
+            routeSource: candidate.routeSource
+          },
+          'Voice reference delete route candidate was not accepted; trying next candidate if available'
+        );
+        continue;
+      }
+      return throwVoiceApiError(error, 'Delete TTS reference audio', 'REFERENCE_AUDIO_DELETE', timeoutMs);
+    }
+  }
+
+  throw new ApiError(
+    501,
+    'VoiceVM did not expose a usable reference-audio delete API for this descriptor. The supplied contract documents upload and /voices listing, but not deletion.',
+    'REFERENCE_AUDIO_DELETE_UNSUPPORTED',
+    { attemptedRoutes }
+  );
+};
 
 const postReferenceAudioWithField = (buffer: Buffer, filename: string, contentType: string, fieldName: string) => {
   const form = new FormData();

@@ -2646,6 +2646,13 @@ textarea {
   gap: 0.25rem;
 }
 
+.voice-reference-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .voice-reference-title-row {
   display: flex;
   align-items: center;
@@ -2675,7 +2682,12 @@ textarea {
     grid-template-columns: 1fr;
   }
 
-  .voice-reference-card .secondary-button {
+  .voice-reference-actions {
+    justify-content: flex-start;
+  }
+
+  .voice-reference-card .secondary-button,
+  .voice-reference-card .danger-button {
     width: fit-content;
   }
 }

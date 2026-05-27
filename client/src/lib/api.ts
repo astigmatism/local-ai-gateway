@@ -478,6 +478,10 @@ export const api = {
     return jsonRequest<VoiceMutationResponse>('/api/settings/voice/references/select', 'POST', { id });
   },
 
+  async deleteVoiceReference(id: string) {
+    return jsonRequest<VoiceMutationResponse>(`/api/settings/voice/references/${encodeURIComponent(id)}`, 'DELETE');
+  },
+
   async uploadReferenceAudio(
     file: File | Blob,
     options: { filename?: string; displayName?: string; useAfterUpload?: boolean } = {}
