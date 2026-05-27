@@ -1,7 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { api, ApiClientError } from '../lib/api.js';
-import type { VoiceModelCatalogResponse, VoiceModelDescriptor, VoiceOverviewResponse } from '../lib/types.js';
+import type {
+  VoiceModelCatalogResponse,
+  VoiceModelDescriptor,
+  VoiceOverviewResponse,
+  VoiceReferenceDescriptor
+} from '../lib/types.js';
 
 interface VoiceSettingsPanelProps {
   canManageVoice: boolean;
@@ -64,6 +69,34 @@ const formatMiB = (value?: number) => {
   return `${(value / 1024).toFixed(1)} GiB`;
 };
 
+const formatBytes = (value?: number) => {
+  if (value === undefined || !Number.isFinite(value)) return null;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+};
+
+const formatDuration = (value?: number) => {
+  if (value === undefined || !Number.isFinite(value)) return null;
+  if (value < 60) return `${value.toFixed(1)} s`;
+  const minutes = Math.floor(value / 60);
+  const seconds = Math.round(value % 60);
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+};
+
+const formatDateTime = (value?: string) => {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  });
+};
+
 const modelOptionValue = (model: VoiceModelDescriptor) => model.model ?? model.name ?? model.id;
 
 const modelDetails = (model: VoiceModelDescriptor) =>
@@ -72,20 +105,32 @@ const modelDetails = (model: VoiceModelDescriptor) =>
 const suggestedModel = (catalog: VoiceModelCatalogResponse | null | undefined) =>
   catalog?.activeModel ?? catalog?.loadedModel ?? catalog?.defaultModel ?? catalog?.models[0]?.model ?? catalog?.models[0]?.id ?? '';
 
-const modelLabel = (catalog: VoiceModelCatalogResponse | null | undefined) =>
-  [
-    catalog?.provider ? `Provider ${catalog.provider}` : null,
-    catalog?.defaultModel ? `Default ${catalog.defaultModel}` : null,
-    catalog?.activeModel ? `Active ${catalog.activeModel}` : null,
-    catalog?.loadedModel ? `Loaded ${catalog.loadedModel}` : null,
-    catalog?.computeType ? `Compute ${catalog.computeType}` : null,
-    catalog?.language ? `Language ${catalog.language}` : null,
-    catalog?.status ? `Status ${catalog.status}` : null
-  ].filter((item): item is string => Boolean(item));
-
 const isWavFile = (file: File) => {
   const type = file.type.toLowerCase();
   return file.name.toLowerCase().endsWith('.wav') || type === 'audio/wav' || type === 'audio/x-wav' || type === 'audio/wave';
+};
+
+const referenceDetails = (reference: VoiceReferenceDescriptor) => {
+  const uploaded = formatDateTime(reference.createdAt);
+  const modified = !uploaded ? formatDateTime(reference.modifiedAt) : null;
+  return [
+    reference.originalFilename && reference.originalFilename !== reference.displayName
+      ? `original: ${reference.originalFilename}`
+      : null,
+    reference.storedFilename && reference.storedFilename !== reference.displayName
+      ? `stored as: ${reference.storedFilename}`
+      : null,
+    reference.provider,
+    reference.model,
+    reference.language,
+    reference.type,
+    reference.description,
+    formatBytes(reference.sizeBytes),
+    formatDuration(reference.durationSeconds),
+    uploaded ? `uploaded: ${uploaded}` : null,
+    modified ? `modified: ${modified}` : null,
+    reference.id !== reference.displayName && reference.id !== reference.storedFilename ? `id: ${reference.id}` : null
+  ].filter((item): item is string => Boolean(item));
 };
 
 export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) => {
@@ -105,11 +150,17 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
   const [ttsDefaultModel, setTtsDefaultModel] = useState('');
   const [ttsDefaultLanguage, setTtsDefaultLanguage] = useState('en');
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
+  const [referenceDisplayName, setReferenceDisplayName] = useState('');
+  const [useReferenceAfterUpload, setUseReferenceAfterUpload] = useState(true);
+  const referenceInputRef = useRef<HTMLInputElement | null>(null);
 
   const sttCatalog = overview?.models.stt ?? null;
   const ttsCatalog = overview?.models.tts ?? null;
-  const sttLabels = useMemo(() => modelLabel(sttCatalog), [sttCatalog]);
-  const ttsLabels = useMemo(() => modelLabel(ttsCatalog), [ttsCatalog]);
+  const references = overview?.references?.references ?? [];
+  const selectedReference = overview?.references?.selectedReference ?? null;
+  const activeReference = overview?.references?.activeReference ?? null;
+  const activeReferenceKnown = overview?.references?.activeReferenceKnown ?? false;
+  const canSelectReferences = Boolean(overview?.references?.selection.canSelect);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -199,6 +250,11 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
     void runMutation('TTS config update', () => api.updateTtsConfig({ defaultModel, language }));
   };
 
+  const handleReferenceFileChange = (file: File | null) => {
+    setReferenceFile(file);
+    setReferenceDisplayName(file?.name ?? '');
+  };
+
   const submitReferenceAudio = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!referenceFile) return;
@@ -206,7 +262,24 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
       setError('Reference audio must be a WAV file. Browser WebM recordings are not uploaded as WAV.');
       return;
     }
-    void runMutation('Reference audio upload', () => api.uploadReferenceAudio(referenceFile, referenceFile.name));
+
+    const displayName = referenceDisplayName.trim() || referenceFile.name;
+    void runMutation('Reference audio upload', async () => {
+      const response = await api.uploadReferenceAudio(referenceFile, {
+        filename: referenceFile.name,
+        displayName,
+        useAfterUpload: useReferenceAfterUpload
+      });
+      setReferenceFile(null);
+      setReferenceDisplayName('');
+      setUseReferenceAfterUpload(true);
+      if (referenceInputRef.current) referenceInputRef.current.value = '';
+      return response;
+    });
+  };
+
+  const handleUseReferenceForTts = (reference: VoiceReferenceDescriptor) => {
+    void runMutation(`Use reference ${reference.id}`, () => api.selectVoiceReference(reference.id));
   };
 
   const gpuDevice = overview?.gpu?.devices[0];
@@ -244,6 +317,35 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
     </article>
   );
 
+  const renderReferenceCard = (reference: VoiceReferenceDescriptor) => {
+    const details = referenceDetails(reference);
+    const selectAction = `Use reference ${reference.id}`;
+    const selected = Boolean(reference.isSelected);
+    const active = Boolean(reference.isActive);
+    return (
+      <div key={reference.id} className={`voice-descriptor-card voice-reference-card${selected ? ' selected' : ''}`}>
+        <div className="voice-reference-main">
+          <div className="voice-reference-title-row">
+            <strong title={reference.id}>{reference.displayName}</strong>
+            {active && <span className="badge ok">Active</span>}
+            {selected && <span className="badge stale">Selected in Bear Castle AI</span>}
+          </div>
+          {details.length > 0 && <small>{details.join(' · ')}</small>}
+        </div>
+        {canManageVoice && canSelectReferences && (
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => handleUseReferenceForTts(reference)}
+            disabled={Boolean(busyAction) || selected}
+          >
+            {selected ? 'Selected' : busyAction === selectAction ? 'Selecting...' : 'Use for TTS'}
+          </button>
+        )}
+      </div>
+    );
+  };
+
   return (
     <section className="settings-section" aria-labelledby="voice-settings-title" aria-busy={loading || Boolean(busyAction)}>
       <div className="settings-section-header">
@@ -258,52 +360,40 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
 
       {loading && !overview && <p className="muted padded">Loading voice service settings...</p>}
 
-      {error && (
-        <div className="auth-error" role="alert">
-          {error}
-        </div>
-      )}
-      {notice && (
-        <div className="auth-success" role="status">
-          {notice}
-        </div>
-      )}
+      {error && <div className="auth-error">{error}</div>}
+      {notice && <div className="auth-success">{notice}</div>}
+
       {voiceErrors.map(([key, message]) => (
-        <div key={key} className="settings-warning" role="status">
-          {key}: {message}
+        <div className="settings-warning" key={key}>
+          <strong>{key}</strong>: {message}
         </div>
       ))}
 
-      <div className="settings-status-grid model-overview-grid">
+      <div className="settings-status-grid">
         <div className="settings-status-card">
-          <span className="settings-status-label">Voice health</span>
+          <span className="settings-status-label">Health</span>
           <strong>{health}</strong>
-          <small>Modern /api/health via the Bear Castle AI gateway.</small>
+          <small>{overview?.health ? 'Reported by /api/health' : 'No health payload yet.'}</small>
         </div>
         <div className="settings-status-card">
-          <span className="settings-status-label">STT worker</span>
-          <strong>{sttStatus}</strong>
-          <small>{sttLabels.length > 0 ? sttLabels.join(' · ') : 'Worker status from /api/services and /api/models/stt.'}</small>
-        </div>
-        <div className="settings-status-card">
-          <span className="settings-status-label">TTS worker</span>
-          <strong>{ttsStatus}</strong>
-          <small>{ttsLabels.length > 0 ? ttsLabels.join(' · ') : 'Worker status from /api/services and /api/models/tts.'}</small>
+          <span className="settings-status-label">Workers</span>
+          <strong>STT {sttStatus} · TTS {ttsStatus}</strong>
+          <small>/api/services and model worker status</small>
         </div>
         <div className="settings-status-card">
           <span className="settings-status-label">Voice GPU</span>
-          <strong>{overview?.gpu?.available ? gpuDevice?.name ?? 'Available' : 'Unavailable'}</strong>
+          <strong>{overview?.gpu?.available ? `${overview.gpu.devices.length || 1} device(s)` : 'Unavailable'}</strong>
           <small>
             {gpuDevice
               ? [
-                  gpuDevice.temperatureC !== undefined ? `${gpuDevice.temperatureC.toFixed(0)}°C` : null,
-                  gpuDevice.utilizationGpuPercent !== undefined ? `${gpuDevice.utilizationGpuPercent.toFixed(0)}% util` : null,
+                  gpuDevice.name,
                   gpuDevice.memoryUsedMiB !== undefined && gpuDevice.memoryTotalMiB !== undefined
-                    ? `${formatMiB(gpuDevice.memoryUsedMiB)} / ${formatMiB(gpuDevice.memoryTotalMiB)}`
+                    ? `${formatMiB(gpuDevice.memoryUsedMiB)} / ${formatMiB(gpuDevice.memoryTotalMiB)} VRAM`
                     : null,
-                  gpuDevice.memoryFreeMiB !== undefined ? `${formatMiB(gpuDevice.memoryFreeMiB)} free` : null
+                  gpuDevice.utilizationGpuPercent !== undefined ? `${gpuDevice.utilizationGpuPercent}% util` : null,
+                  gpuDevice.temperatureC !== undefined ? `${gpuDevice.temperatureC}°C` : null
                 ]
-                  .filter((item): item is string => Boolean(item))
+                  .filter(Boolean)
                   .join(' · ') || 'GPU device details are unavailable.'
               : 'No GPU device reported by /api/gpu.'}
           </small>
@@ -430,37 +520,79 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
       <article className="model-panel voice-reference-panel">
         <div className="model-panel-header">
           <h4>Voices / reference audio</h4>
-          <span>{overview?.voices?.voices.length ?? 0}</span>
+          <span>{references.length}</span>
         </div>
-        {overview?.voices && overview.voices.voices.length > 0 ? (
-          <div className="voice-descriptor-list">
-            {overview.voices.voices.map((voice) => (
-              <div key={voice.id} className="voice-descriptor-card">
-                <strong>{voice.label}</strong>
-                <small>{[voice.provider, voice.model, voice.language, voice.type, voice.description].filter(Boolean).join(' · ') || voice.id}</small>
-              </div>
-            ))}
+
+        <div className="voice-reference-current">
+          <div>
+            <span className="settings-status-label">VoiceVM active reference</span>
+            <strong>{activeReferenceKnown && activeReference ? activeReference.displayName : 'Unknown'}</strong>
+            <small>
+              {activeReferenceKnown
+                ? 'Reported by an active/current flag in /voices.'
+                : 'The documented VoiceVM contract does not expose global active-reference state.'}
+            </small>
           </div>
+          <div>
+            <span className="settings-status-label">Bear Castle selection</span>
+            <strong>{selectedReference ? selectedReference.displayName : 'None selected'}</strong>
+            <small>
+              {selectedReference
+                ? `Future TTS requests send voice=${selectedReference.id}.`
+                : 'Future TTS requests use the VoiceVM default unless a reference is selected.'}
+            </small>
+          </div>
+        </div>
+
+        {references.length > 0 ? (
+          <div className="voice-descriptor-list">{references.map(renderReferenceCard)}</div>
         ) : (
           <p className="muted padded">No voice/reference descriptors were returned by /voices.</p>
         )}
+
         <form className="voice-reference-upload" onSubmit={submitReferenceAudio}>
           <label className="field-label" htmlFor="voice-reference-upload">
             Upload WAV reference clip
           </label>
           <div className="inline-form-row">
             <input
+              ref={referenceInputRef}
               id="voice-reference-upload"
               type="file"
-              accept="audio/wav,.wav"
-              onChange={(event) => setReferenceFile(event.currentTarget.files?.[0] ?? null)}
+              accept="audio/wav,audio/x-wav,.wav"
+              onChange={(event) => handleReferenceFileChange(event.currentTarget.files?.[0] ?? null)}
               disabled={!canManageVoice || Boolean(busyAction)}
             />
             <button className="primary-button" type="submit" disabled={!canManageVoice || !referenceFile || Boolean(busyAction)}>
               {busyAction === 'Reference audio upload' ? 'Uploading...' : 'Upload reference'}
             </button>
           </div>
-          <small className="auth-help">Reference uploads use the modern /api/tts/reference-audio route. WebM recordings are not labeled as WAV.</small>
+          <label className="field-label" htmlFor="voice-reference-display-name">
+            Display name
+          </label>
+          <input
+            id="voice-reference-display-name"
+            value={referenceDisplayName}
+            maxLength={180}
+            onChange={(event) => setReferenceDisplayName(event.target.value)}
+            placeholder={referenceFile?.name ?? 'eric-reference.wav'}
+            disabled={!canManageVoice || Boolean(busyAction)}
+          />
+          <label className="checkbox-row voice-reference-checkbox">
+            <input
+              type="checkbox"
+              checked={useReferenceAfterUpload}
+              onChange={(event) => setUseReferenceAfterUpload(event.target.checked)}
+              disabled={!canManageVoice || Boolean(busyAction)}
+            />
+            <span>
+              Use this reference for future TTS after upload
+              <small>Bear Castle stores the selection and sends it as the VoiceVM /api/tts/speak voice field.</small>
+            </span>
+          </label>
+          <small className="auth-help">
+            Reference uploads use the modern /api/tts/reference-audio route. Original upload names are stored by Bear Castle when VoiceVM stores a generated filename. WebM recordings are not labeled as WAV.
+          </small>
         </form>
       </article>
 

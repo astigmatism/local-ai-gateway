@@ -546,7 +546,11 @@ describe('api client voice VM settings requests', () => {
     vi.stubGlobal('fetch', fetchMock);
     api.setCsrfToken('csrf-token');
 
-    const response = await api.uploadReferenceAudio(new Blob(['RIFF'], { type: 'audio/wav' }), 'sample.wav');
+    const response = await api.uploadReferenceAudio(new Blob(['RIFF'], { type: 'audio/wav' }), {
+      filename: 'sample.wav',
+      displayName: 'Eric sample.wav',
+      useAfterUpload: true
+    });
 
     expect(response.message).toBe('Reference audio uploaded.');
     expect(fetchMock).toHaveBeenCalledWith(
@@ -556,5 +560,33 @@ describe('api client voice VM settings requests', () => {
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-token');
     expect(init.body).toBeInstanceOf(FormData);
+    const formData = init.body as FormData;
+    expect(formData.get('displayName')).toBe('Eric sample.wav');
+    expect(formData.get('useAfterUpload')).toBe('true');
+  });
+
+  it('selects an existing voice reference through the gateway with CSRF', async () => {
+    const { api } = await loadApi();
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ message: 'Reference selected for future TTS requests.' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        })
+    );
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    const response = await api.selectVoiceReference('reference_20260527_abc123.wav');
+
+    expect(response.message).toContain('Reference selected');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/settings/voice/references/select',
+      expect.objectContaining({ credentials: 'include', method: 'POST' })
+    );
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-token');
+    expect(JSON.parse(init.body as string)).toEqual({ id: 'reference_20260527_abc123.wav' });
   });
 });

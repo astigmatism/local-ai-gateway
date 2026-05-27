@@ -2602,3 +2602,80 @@ textarea {
 .voice-advanced-details {
   margin-top: 1rem;
 }
+
+.voice-reference-current {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  padding: 0.75rem;
+}
+
+.voice-reference-current > div {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 0.85rem;
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.8rem 0.9rem;
+  background: rgba(15, 23, 42, 0.36);
+}
+
+.voice-reference-current strong,
+.voice-reference-title-row strong {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.voice-reference-current small {
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.voice-reference-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.voice-reference-card.selected {
+  border-color: rgba(250, 204, 21, 0.42);
+  background: rgba(250, 204, 21, 0.06);
+}
+
+.voice-reference-main {
+  min-width: 0;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.voice-reference-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.voice-reference-checkbox {
+  align-items: flex-start;
+  padding: 0.2rem 0;
+}
+
+.voice-reference-checkbox span {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.voice-reference-upload input[type='text'],
+.voice-reference-upload input:not([type]) {
+  width: 100%;
+}
+
+@media (max-width: 720px) {
+  .voice-reference-current,
+  .voice-reference-card {
+    grid-template-columns: 1fr;
+  }
+
+  .voice-reference-card .secondary-button {
+    width: fit-content;
+  }
+}

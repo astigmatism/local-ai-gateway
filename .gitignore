@@ -16,3 +16,5 @@ storage/uploads/*
 *.csr
 *.p12
 *.pfx
+storage/voice-reference-state.json
+storage/voice-reference-state.json.*.tmp

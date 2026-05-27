@@ -5,6 +5,7 @@ import { createRateLimiter } from '../auth/rateLimit.js';
 import { ApiError } from '../errors/apiError.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { speakText } from '../services/voiceClient.js';
+import { getSelectedVoiceReferenceIdForTts } from '../services/voiceReferenceService.js';
 
 export const speakRouter = Router();
 
@@ -103,8 +104,10 @@ speakRouter.post(
     }
 
     const body = parseSpeakRequest(req.body);
+    const selectedReferenceId = body.voice ? undefined : await getSelectedVoiceReferenceIdForTts();
     const result = await speakText({
       ...body,
+      voice: body.voice ?? selectedReferenceId,
       timeoutMs: config.tts.timeoutMs
     });
 

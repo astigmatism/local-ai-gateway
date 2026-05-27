@@ -386,6 +386,47 @@ export interface VoiceConfigResponse {
   raw?: unknown;
 }
 
+export interface VoiceReferenceDescriptor {
+  id: string;
+  displayName: string;
+  originalFilename?: string;
+  storedFilename?: string;
+  path?: string;
+  sizeBytes?: number;
+  durationSeconds?: number;
+  createdAt?: string;
+  modifiedAt?: string;
+  provider?: string;
+  model?: string;
+  language?: string;
+  description?: string;
+  type?: string;
+  isActive?: boolean;
+  isSelected?: boolean;
+  source: 'voice-vm' | 'bear-castle';
+  raw?: unknown;
+}
+
+export interface VoiceReferenceSelectionCapability {
+  mode: 'bear-castle-tts-voice';
+  canSelect: boolean;
+  activeReferenceExposedByVoiceVm: boolean;
+  activeReferenceKnown: boolean;
+  selectedReferenceId?: string;
+  selectedReferenceDisplayName?: string;
+  selectedReferencePersistsIn: 'bear-castle';
+  ttsSpeakField: 'voice';
+}
+
+export interface VoiceReferencesResponse {
+  references: VoiceReferenceDescriptor[];
+  activeReference: VoiceReferenceDescriptor | null;
+  selectedReference: VoiceReferenceDescriptor | null;
+  activeReferenceKnown: boolean;
+  selection: VoiceReferenceSelectionCapability;
+  raw?: unknown;
+}
+
 export interface VoiceDescriptor {
   id: string;
   label: string;
@@ -413,13 +454,17 @@ export interface VoiceOverviewResponse {
   };
   config: VoiceConfigResponse | null;
   voices: VoiceDescriptorsResponse | null;
+  references?: VoiceReferencesResponse | null;
   errors: Record<string, string>;
   generatedAt: string;
 }
 
 export interface VoiceMutationResponse {
-  result: unknown;
+  result?: unknown;
   message?: string;
+  references?: VoiceReferencesResponse;
+  uploadedReferenceId?: string;
+  mappedOriginalFilename?: boolean;
 }
 
 export interface LoadSttModelRequest {

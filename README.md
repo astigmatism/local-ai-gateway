@@ -27,7 +27,7 @@ Core features:
 - Password authentication with first-login password changes
 - Eric as the default administrator account
 - Admin-only user creation, deactivation, and password reset
-- Settings modal with admin-only local LLM model loading/default-model selection plus voice VM status, STT/TTS model controls, mutable defaults, and reference-audio upload
+- Settings modal with admin-only local LLM model loading/default-model selection plus voice VM status, STT/TTS model controls, mutable defaults, reference-audio upload, and reference selection for future TTS
 - Server-side session storage with HTTP-only cookies and CSRF protection
 - Login lockout and endpoint rate limiting
 - Conversation persistence in PostgreSQL
@@ -141,7 +141,24 @@ Modern routes used by Bear Castle AI:
 
 The documented compatibility `GET /voices` route remains in use for voice/reference descriptors because the current contract lists descriptors there and the modern contract does not define a replacement listing route. Other compatibility routes (`/health`, `/gpu`, `/models`, `/speak`, `/transcribe`) are not primary integration targets in Bear Castle AI.
 
-Settings > Voice shows service health, STT/TTS worker status, GPU state, model catalogs, model load/unload controls, mutable default config, and voice/reference descriptors. Mutating voice controls are Eric/admin-only and CSRF-protected. Soft unload is exposed by default; hard unload/restart is intentionally not exposed in the UI because the voice VM contract notes that hard restarts require extra systemd privileges.
+Settings > Voice shows service health, STT/TTS worker status, GPU state, model catalogs, model load/unload controls, mutable default config, normalized voice/reference descriptors, and Bear Castle-managed reference selection. Mutating voice controls are Eric/admin-only and CSRF-protected. Soft unload is exposed by default; hard unload/restart is intentionally not exposed in the UI because the voice VM contract notes that hard restarts require extra systemd privileges.
+
+### Voice Reference Audio
+
+Settings > Voice can upload WAV reference clips through the Bear Castle AI backend, which then calls the VoiceVM `POST /api/tts/reference-audio` route. The browser never calls VoiceVM directly and never contains the internal voice VM URL. Reference uploads are admin-only, CSRF-protected, limited by `MAX_AUDIO_UPLOAD_MB`, and restricted to WAV MIME types/extensions (`audio/wav`, `audio/x-wav`, `audio/wave`, `audio/vnd.wave`, or `.wav`). Browser WebM/Opus microphone recordings are not relabeled as WAV.
+
+VoiceVM may store uploaded reference WAV files under generated safe filenames. The documented contract does not state that `POST /api/tts/reference-audio` preserves or returns the original upload filename, and `GET /voices` remains the descriptor source of truth. Bear Castle AI now keeps a durable sidecar metadata file at `storage/voice-reference-state.json` so future uploads continue to display the user-recognizable original filename or optional display name even when VoiceVM returns a generated stored filename. Generated/stored filenames remain secondary details such as “stored as reference_20260527_abc123.wav.” The sidecar stores metadata only, not uploaded audio. It is intentionally ignored by Git.
+
+The current documented VoiceVM contract does not expose a public set-active-reference route and documents `PATCH /api/config/tts` only for defaults such as `defaultModel` and `language`. It also documents that `POST /api/tts/speak` accepts a `voice` field. Bear Castle AI therefore implements reference selection app-side: admin users can click **Use for TTS** on a listed `/voices` descriptor, the selected descriptor id is persisted in `storage/voice-reference-state.json`, and future gateway `/api/speak` calls include that id as the VoiceVM `/api/tts/speak` `voice` field unless the caller explicitly supplies a different `voice`. If a future VoiceVM `/voices` descriptor includes an active/current flag, the Settings UI shows it as VoiceVM active; otherwise it honestly displays “VoiceVM active reference: Unknown” and labels the persisted choice as “Selected in Bear Castle AI.”
+
+Troubleshooting reference audio:
+
+- Uploaded file appears with an unexpected generated name: Bear Castle displays the saved original filename when it can map the upload response or new `/voices` descriptor to the upload. The generated name is shown only as secondary storage detail.
+- Reference list does not refresh: use the Settings > Voice refresh button and confirm VoiceVM `GET /voices` responds.
+- Selected reference does not affect TTS: confirm the selected descriptor id is accepted by VoiceVM as the `/api/tts/speak` `voice` value and that the TTS worker is loaded.
+- Active reference is unknown: this is expected when VoiceVM does not expose active-reference state in `/voices` or `/api/config`. Bear Castle still sends the selected descriptor id on future TTS requests.
+- Upload rejected because it is not WAV: convert the clip to a real WAV file before uploading. Do not rename WebM/Opus recordings to `.wav`.
+
 
 Troubleshooting:
 

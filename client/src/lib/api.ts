@@ -24,6 +24,7 @@ import type {
   VoiceModelCatalogResponse,
   VoiceModelsResponse,
   VoiceMutationResponse,
+  VoiceReferencesResponse,
   VoiceOverviewResponse
 } from './types.js';
 
@@ -469,9 +470,23 @@ export const api = {
     return request<VoiceDescriptorsResponse>('/api/settings/voice/voices');
   },
 
-  async uploadReferenceAudio(file: File | Blob, filename = 'reference.wav') {
+  async listVoiceReferences() {
+    return request<VoiceReferencesResponse>('/api/settings/voice/references');
+  },
+
+  async selectVoiceReference(id: string) {
+    return jsonRequest<VoiceMutationResponse>('/api/settings/voice/references/select', 'POST', { id });
+  },
+
+  async uploadReferenceAudio(
+    file: File | Blob,
+    options: { filename?: string; displayName?: string; useAfterUpload?: boolean } = {}
+  ) {
+    const filename = options.filename || (typeof (file as { name?: unknown }).name === 'string' ? (file as { name: string }).name : 'reference.wav');
     const formData = new FormData();
     formData.append('reference_audio', file, filename);
+    if (options.displayName) formData.append('displayName', options.displayName);
+    if (options.useAfterUpload !== undefined) formData.append('useAfterUpload', String(options.useAfterUpload));
     return request<VoiceMutationResponse>('/api/settings/voice/reference-audio', {
       method: 'POST',
       body: formData

@@ -24,9 +24,15 @@ import {
   unloadVoiceSttModel,
   unloadVoiceTtsModel,
   updateVoiceSttConfig,
-  updateVoiceTtsConfig,
-  uploadReferenceAudio
+  updateVoiceTtsConfig
 } from '../services/voiceClient.js';
+import {
+  getVoiceReferences,
+  selectVoiceReference,
+  sanitizeDisplayName,
+  sanitizeOriginalFilename,
+  uploadAndRememberReferenceAudio
+} from '../services/voiceReferenceService.js';
 
 export const settingsVoiceRouter = Router();
 
@@ -36,6 +42,7 @@ const optionalText = z.preprocess(
 );
 
 const requiredText = z.string().trim().min(1).max(160);
+const referenceIdText = z.string().trim().min(1).max(240);
 const optionsSchema = z.record(z.string(), z.unknown()).optional().default({});
 
 const sttLoadSchema = z.object({
@@ -75,6 +82,10 @@ const updateTtsConfigSchema = z
     message: 'At least one TTS config field is required.'
   });
 
+const selectReferenceSchema = z.object({
+  id: referenceIdText
+});
+
 const isWavUpload = (file: Express.Multer.File) => {
   const mime = (file.mimetype || '').toLowerCase();
   const name = (file.originalname || '').toLowerCase();
@@ -108,10 +119,39 @@ const readReferenceFile = (files: Express.Multer.File[] | Record<string, Express
   return files?.reference_audio?.[0] ?? files?.file?.[0];
 };
 
+const voiceSettingErrorMessage = (error: unknown) => {
+  if (error instanceof ApiError) return error.message;
+  if (error instanceof Error) return error.message;
+  return 'Unknown voice reference error.';
+};
+
+const getVoiceOverviewWithReferences = async () => {
+  const overview = await getVoiceOverview();
+  try {
+    const references = await getVoiceReferences();
+    return {
+      ...overview,
+      references,
+      errors: {
+        ...overview.errors
+      }
+    };
+  } catch (error) {
+    return {
+      ...overview,
+      references: null,
+      errors: {
+        ...overview.errors,
+        references: voiceSettingErrorMessage(error)
+      }
+    };
+  }
+};
+
 settingsVoiceRouter.get(
   '/',
   asyncHandler(async (_req, res) => {
-    res.json(await getVoiceOverview());
+    res.json(await getVoiceOverviewWithReferences());
   })
 );
 
@@ -252,6 +292,23 @@ settingsVoiceRouter.get(
   })
 );
 
+settingsVoiceRouter.get(
+  '/references',
+  asyncHandler(async (_req, res) => {
+    res.json(await getVoiceReferences());
+  })
+);
+
+settingsVoiceRouter.post(
+  '/references/select',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const body = selectReferenceSchema.parse(req.body ?? {});
+    const references = await selectVoiceReference(body.id);
+    res.json({ references, message: 'Reference selected for future TTS requests.' });
+  })
+);
+
 settingsVoiceRouter.post(
   '/reference-audio',
   requireAdmin,
@@ -268,8 +325,14 @@ settingsVoiceRouter.post(
       throw new ApiError(415, 'Reference audio must be a WAV file.', 'REFERENCE_AUDIO_WAV_REQUIRED');
     }
 
-    const result = await uploadReferenceAudio(file.buffer, file.originalname || 'reference.wav', file.mimetype || 'audio/wav');
-    res.json({ result, message: 'Reference audio uploaded.' });
+    const originalFilename = sanitizeOriginalFilename(file.originalname || 'reference.wav');
+    const displayName = sanitizeDisplayName(req.body?.displayName ?? req.body?.display_name, originalFilename);
+    const useAfterUpload = z.coerce.boolean().default(false).parse(req.body?.useAfterUpload ?? req.body?.use_after_upload ?? false);
+    const result = await uploadAndRememberReferenceAudio(file.buffer, originalFilename, file.mimetype || 'audio/wav', {
+      displayName,
+      useAfterUpload
+    });
+    res.json(result);
   })
 );
 
