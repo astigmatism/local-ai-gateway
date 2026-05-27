@@ -1,4 +1,6 @@
 export const preferredAudioMimeTypes = [
+  'audio/ogg;codecs=opus',
+  'audio/ogg',
   'audio/webm;codecs=opus',
   'audio/webm',
   'audio/mp4',
@@ -116,6 +118,48 @@ export const selectSupportedAudioMimeType = (
       return false;
     }
   });
+};
+
+const audioMimeTypeExtensionMap: Record<string, string> = {
+  'audio/webm': 'webm',
+  'video/webm': 'webm',
+  'audio/ogg': 'ogg',
+  'application/ogg': 'ogg',
+  'audio/mp4': 'm4a',
+  'audio/x-m4a': 'm4a',
+  'audio/aac': 'aac',
+  'audio/mpeg': 'mp3',
+  'audio/mp3': 'mp3',
+  'audio/wav': 'wav',
+  'audio/wave': 'wav',
+  'audio/x-wav': 'wav',
+  'audio/vnd.wave': 'wav',
+  'audio/flac': 'flac',
+  'audio/x-flac': 'flac'
+};
+
+export const audioMimeTypeToFileExtension = (mimeType: string | undefined | null) => {
+  const normalizedMimeType = mimeType?.split(';')[0]?.trim().toLowerCase();
+  if (!normalizedMimeType) return 'webm';
+
+  const knownExtension = audioMimeTypeExtensionMap[normalizedMimeType];
+  if (knownExtension) return knownExtension;
+
+  if (normalizedMimeType.startsWith('audio/')) {
+    const subtype = normalizedMimeType.slice('audio/'.length).replace(/^x-/, '').replace(/[^a-z0-9]/g, '');
+    return subtype || 'webm';
+  }
+
+  return 'webm';
+};
+
+export const getTranscriptionFailureMessage = (error: unknown) => {
+  if (error instanceof Error) {
+    const message = error.message.trim();
+    if (message) return message;
+  }
+
+  return microphoneRecordingErrors.transcriptionFailed;
 };
 
 export const calculateAudioLevelFromTimeDomainData = (

@@ -309,8 +309,25 @@ export interface GenerateConversationTitleResponse {
   titleGeneration: ConversationTitleGenerationResult;
 }
 
+export interface TranscribeSegment extends Record<string, unknown> {
+  start?: number;
+  end?: number;
+  text?: string | null;
+}
+
 export interface TranscribeResponse {
+  filename?: string;
+  model?: string;
+  defaultModel?: string;
+  activeModel?: string;
+  language?: string;
+  languageProbability?: number;
+  vadFilter?: boolean;
+  minSilenceDurationMs?: number;
+  beamSize?: number;
+  wordTimestamps?: boolean;
   transcript: string;
+  segments?: TranscribeSegment[];
   metadata?: Record<string, unknown>;
   audioSnippet?: Record<string, unknown> | null;
 }

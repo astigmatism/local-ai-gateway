@@ -27,6 +27,7 @@ import type {
   VoiceReferencesResponse,
   VoiceOverviewResponse
 } from './types.js';
+import { audioMimeTypeToFileExtension } from './audioRecording.js';
 
 interface ApiErrorShape {
   error?: {
@@ -58,6 +59,7 @@ interface TranscribeAudioOptions {
   language?: string;
   vadFilter?: boolean;
   minSilenceDurationMs?: number;
+  beamSize?: number;
   wordTimestamps?: boolean;
 }
 
@@ -391,7 +393,7 @@ export const api = {
 
   async transcribeAudio(file: Blob, options: TranscribeAudioOptions) {
     const formData = new FormData();
-    const extension = file.type.includes('mp4') ? 'm4a' : file.type.includes('wav') ? 'wav' : 'webm';
+    const extension = audioMimeTypeToFileExtension(file.type);
     formData.append('file', file, `browser-recording.${extension}`);
     if (options.userId) formData.append('userId', options.userId);
     if (options.conversationId) formData.append('conversationId', options.conversationId);
@@ -401,6 +403,7 @@ export const api = {
     if (options.minSilenceDurationMs !== undefined) {
       formData.append('min_silence_duration_ms', String(options.minSilenceDurationMs));
     }
+    if (options.beamSize !== undefined) formData.append('beam_size', String(options.beamSize));
     if (options.wordTimestamps !== undefined) formData.append('word_timestamps', String(options.wordTimestamps));
 
     return request<TranscribeResponse>('/api/transcribe', {

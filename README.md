@@ -130,7 +130,7 @@ Bear Castle AI now targets the modern local-ai-voice Node gateway contract. The 
 
 Modern routes used by Bear Castle AI:
 
-- STT transcription: `POST {VOICE_BASE_URL}/api/stt/transcribe` with multipart `file`, optional `model`, `language`, `vad_filter`, `min_silence_duration_ms`, and `word_timestamps`.
+- STT transcription: `POST {VOICE_BASE_URL}/api/stt/transcribe` with multipart `file`, optional `model`, `language`, `vad_filter`, `min_silence_duration_ms`, `beam_size`, and `word_timestamps`. Bear Castle AI accepts browser uploads at authenticated `/api/transcribe`, forwards the audio to VoiceVM under multipart field `file`, omits `model` unless the caller explicitly provides one, and normalizes camelCase/snake_case transcript metadata back to a stable camelCase response.
 - TTS speech: `POST {VOICE_BASE_URL}/api/tts/speak` with JSON for normal text-only speech or multipart when reference audio is needed. The response is returned to the browser as `audio/wav` with `Cache-Control: no-store`.
 - GPU telemetry: `GET {VOICE_BASE_URL}/api/gpu`, normalized from `available`, `checkedAt`, and `devices[]` into the compact System Health panel. Missing power/fan fields are omitted instead of showing `undefined`, `NaN`, or placeholder `N/A` rows.
 - Health and workers: `GET {VOICE_BASE_URL}/api/health`, `GET /api/services`, `GET /api/services/stt`, and `GET /api/services/tts`.
@@ -696,6 +696,7 @@ Voice transcription test:
 ```bash
 curl -X POST \
   -F "file=@/path/to/audio-file.m4a" \
+  -F "vad_filter=true" \
   http://192.168.1.8:8000/api/stt/transcribe
 ```
 
@@ -899,6 +900,8 @@ curl -X POST -F "file=@/path/to/audio-file.m4a" http://192.168.1.8:8000/api/stt/
 Check browser microphone permission and the page origin. The web app uses `MediaRecorder`, `navigator.mediaDevices.getUserMedia`, and the Web Audio API for the live Listening meter. Chrome exposes microphone capture only from HTTPS or from `localhost`/loopback local testing. If you open Bear Castle AI by LAN IP or hostname over plain HTTP, Chrome may hide microphone APIs and the app will show: `Microphone recording requires HTTPS or localhost.`
 
 In the chat composer, the microphone button starts Listening mode. The live meter responds to microphone input while recording. Choose **Stop** to accept the recording and send it through the authenticated Bear Castle AI `/api/transcribe` gateway endpoint, or choose **Cancel** to discard the captured audio without uploading or transcribing it. The current composer draft remains editable and is not cleared by starting, stopping, or canceling voice capture.
+
+The browser records with the first supported `MediaRecorder` MIME type from the app's preferred list, usually WebM/Opus in Chromium. Bear Castle AI preserves the actual MIME type and uses a matching filename extension such as `.webm`, `.ogg`, `.m4a`, `.mp3`, or `.wav`; it does not relabel WebM/Opus recordings as WAV. If VoiceVM rejects an upload with 400/415/422, the gateway returns that validation error to the UI instead of appending an empty transcript.
 
 When exposing Bear Castle AI beyond local loopback testing, terminate TLS at Nginx, Caddy, Traefik, or another reverse proxy. Keep `local-ai-llm` and `local-ai-voice` private on the internal network; expose only the gateway through HTTPS. If a reverse proxy sets `Permissions-Policy`, make sure it allows same-origin microphone access, for example `microphone=(self)`, and does not send `microphone=()`.
 

@@ -3,6 +3,7 @@ import {
   calculateAudioLevelFromTimeDomainData,
   getBrowserAudioRecordingEnvironment,
   getMicrophoneRecordingSupportError,
+  getTranscriptionFailureMessage,
   mapMicrophoneStartError,
   microphoneRecordingErrors,
   selectSupportedAudioMimeType,
@@ -210,8 +211,9 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
       const shouldTranscribe = shouldTranscribeRecordingStop(stopReason, recordingFailed);
       const shouldShowCanceledStatus = shouldShowUserCanceledRecordingStatus(stopReason);
       const stoppedStatus = statusRef.current;
+      const chunkMimeType = chunksRef.current.find((chunk) => chunk.type)?.type;
       const blob = shouldTranscribe
-        ? new Blob(chunksRef.current, { type: recorder.mimeType || fallbackMimeType || 'audio/webm' })
+        ? new Blob(chunksRef.current, { type: recorder.mimeType || chunkMimeType || fallbackMimeType || 'audio/webm' })
         : null;
 
       stopVisualizer();
@@ -243,8 +245,8 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
         if (statusRef.current === 'transcribing') {
           setRecorderStatus('idle');
         }
-      } catch {
-        onErrorRef.current(microphoneRecordingErrors.transcriptionFailed);
+      } catch (error) {
+        onErrorRef.current(getTranscriptionFailureMessage(error));
         setRecorderStatus('error');
         transitionToIdleSoon('error', errorStatusResetDelayMs);
       }

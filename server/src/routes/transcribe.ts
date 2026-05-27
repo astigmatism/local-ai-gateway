@@ -66,6 +66,12 @@ const upload = multer({
   }
 });
 
+const getUploadedAudioFile = (files: Express.Multer.File[] | { [fieldname: string]: Express.Multer.File[] } | undefined) => {
+  if (!files) return undefined;
+  if (Array.isArray(files)) return files[0];
+  return files.file?.[0] ?? files.audio?.[0];
+};
+
 const booleanField = z.preprocess((value) => {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'string') {
@@ -87,6 +93,8 @@ const transcribeBodySchema = z.object({
   vadFilter: booleanField.optional(),
   min_silence_duration_ms: z.coerce.number().int().positive().max(60000).optional(),
   minSilenceDurationMs: z.coerce.number().int().positive().max(60000).optional(),
+  beam_size: z.coerce.number().int().positive().max(64).optional(),
+  beamSize: z.coerce.number().int().positive().max(64).optional(),
   word_timestamps: booleanField.optional(),
   wordTimestamps: booleanField.optional()
 });
@@ -94,12 +102,15 @@ const transcribeBodySchema = z.object({
 transcribeRouter.post(
   '/',
   transcribeRateLimiter,
-  upload.single('file'),
+  upload.fields([
+    { name: 'file', maxCount: 1 },
+    { name: 'audio', maxCount: 1 }
+  ]),
   asyncHandler(async (req, res) => {
-    const file = req.file;
+    const file = getUploadedAudioFile(req.files);
 
     if (!file) {
-      throw new ApiError(400, 'Missing multipart form-data file field named "file".', 'MISSING_AUDIO_FILE');
+      throw new ApiError(400, 'Missing multipart form-data audio file field. Use field name "file".', 'MISSING_AUDIO_FILE');
     }
 
     const authenticatedUserId = req.auth?.user.id;
@@ -132,6 +143,7 @@ transcribeRouter.post(
         language: body.language,
         vadFilter: body.vadFilter ?? body.vad_filter,
         minSilenceDurationMs: body.minSilenceDurationMs ?? body.min_silence_duration_ms,
+        beamSize: body.beamSize ?? body.beam_size,
         wordTimestamps: body.wordTimestamps ?? body.word_timestamps
       });
 
@@ -147,7 +159,18 @@ transcribeRouter.post(
       });
 
       res.json({
+        filename: result.filename ?? file.originalname,
+        model: result.model,
+        defaultModel: result.defaultModel,
+        activeModel: result.activeModel,
+        language: result.language,
+        languageProbability: result.languageProbability,
+        vadFilter: result.vadFilter,
+        minSilenceDurationMs: result.minSilenceDurationMs,
+        beamSize: result.beamSize,
+        wordTimestamps: result.wordTimestamps,
         transcript: result.transcript,
+        segments: result.segments,
         metadata: result.metadata,
         audioSnippet
       });

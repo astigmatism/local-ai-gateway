@@ -26,6 +26,8 @@ const transcriptionResponseSchema = z
     vad_filter: z.boolean().optional(),
     minSilenceDurationMs: z.number().optional(),
     min_silence_duration_ms: z.number().optional(),
+    beamSize: z.number().optional(),
+    beam_size: z.number().optional(),
     wordTimestamps: z.boolean().optional(),
     word_timestamps: z.boolean().optional(),
     transcript: z.string().nullable().optional(),
@@ -56,17 +58,40 @@ const transcriptionResponseSchema = z
   })
   .passthrough();
 
+type RawTranscriptionResponse = z.infer<typeof transcriptionResponseSchema>;
+
 export interface VoiceTranscribeOptions {
   model?: string;
   language?: string;
   vadFilter?: boolean;
   minSilenceDurationMs?: number;
+  beamSize?: number;
   wordTimestamps?: boolean;
   timeoutMs?: number;
 }
 
-export interface VoiceTranscriptionResult {
+export interface VoiceTranscriptionSegment extends UnknownRecord {
+  start?: number;
+  end?: number;
+  text?: string | null;
+}
+
+export interface NormalizedTranscribeResponse {
+  filename?: string;
+  model?: string;
+  defaultModel?: string;
+  activeModel?: string;
+  language?: string;
+  languageProbability?: number;
+  vadFilter?: boolean;
+  minSilenceDurationMs?: number;
+  beamSize?: number;
+  wordTimestamps?: boolean;
   transcript: string;
+  segments: VoiceTranscriptionSegment[];
+}
+
+export interface VoiceTranscriptionResult extends NormalizedTranscribeResponse {
   metadata: Record<string, unknown>;
 }
 
@@ -316,6 +341,22 @@ const responseDataSummary = (data: unknown) => {
   };
 };
 
+const voiceResponseErrorMessage = (data: unknown) => {
+  const record = asRecord(data);
+  if (!record) return undefined;
+  const maybeError = asRecord(record.error);
+
+  return firstString(
+    maybeError?.message,
+    maybeError?.detail,
+    maybeError?.description,
+    record.message,
+    record.detail,
+    record.error,
+    record.reason
+  )?.slice(0, 240);
+};
+
 const readHeader = (headers: unknown, name: string) => {
   if (!headers || typeof headers !== 'object') return undefined;
 
@@ -338,7 +379,11 @@ const readHeader = (headers: unknown, name: string) => {
 const voiceErrorStatusCode = (error: unknown) => {
   if (!axios.isAxiosError(error)) return 500;
   if (error.code === 'ECONNABORTED') return 504;
-  if (error.response) return error.response.status >= 500 ? 503 : 502;
+  if (error.response) {
+    const status = error.response.status;
+    if ([400, 413, 415, 422].includes(status)) return status;
+    return status >= 500 ? 503 : 502;
+  }
   return 503;
 };
 
@@ -346,6 +391,9 @@ const voiceErrorCode = (error: unknown, prefix: string) => {
   if (!axios.isAxiosError(error)) return `${prefix}_FAILED`;
   if (error.code === 'ECONNABORTED') return `${prefix}_TIMEOUT`;
   if (error.response?.status === 404) return `${prefix}_ROUTE_UNAVAILABLE`;
+  if (error.response?.status === 413) return `${prefix}_UPLOAD_TOO_LARGE`;
+  if (error.response?.status === 415) return `${prefix}_UNSUPPORTED_MEDIA_TYPE`;
+  if (error.response?.status === 400 || error.response?.status === 422) return `${prefix}_VALIDATION_FAILED`;
   if (error.response) return `${prefix}_SERVICE_FAILED`;
   return `${prefix}_SERVICE_UNAVAILABLE`;
 };
@@ -356,7 +404,14 @@ const voiceErrorMessage = (error: unknown, operation: string, timeoutMs: number)
     if (error.response?.status === 404) {
       return `${operation} failed because the local-ai-voice gateway did not expose the requested modern /api route.`;
     }
-    if (error.response) return `${operation} failed with HTTP ${error.response.status}.`;
+    if (error.response) {
+      const serviceMessage = voiceResponseErrorMessage(error.response.data);
+      const suffix = serviceMessage ? `: ${serviceMessage}` : ` with HTTP ${error.response.status}`;
+      if ([400, 413, 415, 422].includes(error.response.status)) {
+        return `${operation} was rejected by the local-ai-voice gateway${suffix}.`;
+      }
+      return `${operation} failed${suffix}.`;
+    }
     return `${operation} could not reach the local-ai-voice gateway.`;
   }
 
@@ -641,6 +696,35 @@ const addOptionalFormField = (form: FormData, key: string, value: string | numbe
   if (value !== undefined) form.append(key, String(value));
 };
 
+const stripUndefinedFields = <T extends Record<string, unknown>>(record: T) => {
+  for (const [key, value] of Object.entries(record)) {
+    if (value === undefined) delete record[key];
+  }
+  return record;
+};
+
+export const normalizeVoiceTranscriptionResponse = (
+  parsed: RawTranscriptionResponse,
+  transcript: string
+): NormalizedTranscribeResponse => {
+  const segments = (parsed.segments ?? []) as VoiceTranscriptionSegment[];
+
+  return stripUndefinedFields({
+    filename: parsed.filename,
+    model: parsed.model,
+    defaultModel: parsed.defaultModel ?? parsed.default_model,
+    activeModel: parsed.activeModel ?? parsed.active_model,
+    language: parsed.language,
+    languageProbability: parsed.languageProbability ?? parsed.language_probability,
+    vadFilter: parsed.vadFilter ?? parsed.vad_filter,
+    minSilenceDurationMs: parsed.minSilenceDurationMs ?? parsed.min_silence_duration_ms,
+    beamSize: parsed.beamSize ?? parsed.beam_size,
+    wordTimestamps: parsed.wordTimestamps ?? parsed.word_timestamps,
+    transcript,
+    segments
+  });
+};
+
 const speechJsonBody = (options: VoiceSpeechOptions) => ({
   text: options.text,
   ...(options.voice !== undefined ? { voice: options.voice } : {}),
@@ -745,6 +829,7 @@ export const transcribeAudio = async (
   addOptionalFormField(form, 'language', options.language);
   addOptionalFormField(form, 'vad_filter', options.vadFilter);
   addOptionalFormField(form, 'min_silence_duration_ms', options.minSilenceDurationMs);
+  addOptionalFormField(form, 'beam_size', options.beamSize);
   addOptionalFormField(form, 'word_timestamps', options.wordTimestamps);
 
   try {
@@ -756,7 +841,14 @@ export const transcribeAudio = async (
       validateStatus: (status) => status >= 200 && status < 300
     });
 
-    const parsed = transcriptionResponseSchema.parse(response.data);
+    const parseResult = transcriptionResponseSchema.safeParse(response.data);
+    if (!parseResult.success) {
+      throw new ApiError(502, 'Voice transcription returned an unexpected response shape.', 'VOICE_TRANSCRIPTION_INVALID_RESPONSE', {
+        issues: parseResult.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+      });
+    }
+
+    const parsed = parseResult.data;
     const extracted = extractTranscriptText(parsed);
 
     if (!extracted.transcript) {
@@ -776,19 +868,21 @@ export const transcribeAudio = async (
       });
     }
 
+    const normalizedResponse = normalizeVoiceTranscriptionResponse(parsed, finalTranscript);
     const serviceMetadata: Record<string, unknown> = { ...parsed };
     delete serviceMetadata.transcript;
 
     const normalizedMetadata: Record<string, unknown> = {
-      filename: parsed.filename,
-      model: parsed.model,
-      defaultModel: parsed.defaultModel ?? parsed.default_model,
-      activeModel: parsed.activeModel ?? parsed.active_model,
-      language: parsed.language,
-      languageProbability: parsed.languageProbability ?? parsed.language_probability,
-      vadFilter: parsed.vadFilter ?? parsed.vad_filter,
-      minSilenceDurationMs: parsed.minSilenceDurationMs ?? parsed.min_silence_duration_ms,
-      wordTimestamps: parsed.wordTimestamps ?? parsed.word_timestamps
+      filename: normalizedResponse.filename,
+      model: normalizedResponse.model,
+      defaultModel: normalizedResponse.defaultModel,
+      activeModel: normalizedResponse.activeModel,
+      language: normalizedResponse.language,
+      languageProbability: normalizedResponse.languageProbability,
+      vadFilter: normalizedResponse.vadFilter,
+      minSilenceDurationMs: normalizedResponse.minSilenceDurationMs,
+      beamSize: normalizedResponse.beamSize,
+      wordTimestamps: normalizedResponse.wordTimestamps
     };
 
     for (const [key, value] of Object.entries(normalizedMetadata)) {
@@ -821,7 +915,7 @@ export const transcribeAudio = async (
     );
 
     return {
-      transcript: finalTranscript,
+      ...normalizedResponse,
       metadata: transcriptMetadata
     };
   } catch (error) {

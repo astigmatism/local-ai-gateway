@@ -218,6 +218,52 @@ describe('api client text-to-speech requests', () => {
   });
 });
 
+describe('api client speech-to-text requests', () => {
+  it('uploads microphone audio through the Bear Castle gateway with CSRF and multipart field file', async () => {
+    const { api } = await loadApi();
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ transcript: 'Hello from the microphone.', segments: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        })
+    );
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    const response = await api.transcribeAudio(new Blob(['WEBM'], { type: 'audio/webm;codecs=opus' }), {
+      userId: '11111111-1111-4111-8111-111111111111',
+      conversationId: '22222222-2222-4222-8222-222222222222',
+      vadFilter: true,
+      minSilenceDurationMs: 1000,
+      beamSize: 5,
+      wordTimestamps: false
+    });
+
+    expect(response.transcript).toBe('Hello from the microphone.');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/transcribe',
+      expect.objectContaining({ credentials: 'include', method: 'POST' })
+    );
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const headers = new Headers(init.headers);
+    expect(headers.get('X-CSRF-Token')).toBe('csrf-token');
+    expect(headers.get('Content-Type')).toBeNull();
+    expect(init.body).toBeInstanceOf(FormData);
+
+    const formData = init.body as FormData;
+    const uploadedFile = formData.get('file') as File;
+    expect(uploadedFile.name).toBe('browser-recording.webm');
+    expect(uploadedFile.type).toBe('audio/webm;codecs=opus');
+    expect(formData.get('vad_filter')).toBe('true');
+    expect(formData.get('min_silence_duration_ms')).toBe('1000');
+    expect(formData.get('beam_size')).toBe('5');
+    expect(formData.get('word_timestamps')).toBe('false');
+  });
+});
+
 describe('api client model settings requests', () => {
   it('loads models through the gateway with CSRF and makeDefault payload', async () => {
     const { api } = await loadApi();

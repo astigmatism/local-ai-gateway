@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   calculateAudioLevelFromTimeDomainData,
+  audioMimeTypeToFileExtension,
   getMicrophoneRecordingSupportError,
+  getTranscriptionFailureMessage,
   mapMicrophoneStartError,
   microphoneRecordingErrors,
   selectSupportedAudioMimeType,
@@ -71,6 +73,14 @@ describe('audio recording browser support detection', () => {
     expect(selectSupportedAudioMimeType(MediaRecorder)).toBe('audio/webm');
   });
 
+  it('maps recording MIME types to matching file extensions', () => {
+    expect(audioMimeTypeToFileExtension('audio/webm;codecs=opus')).toBe('webm');
+    expect(audioMimeTypeToFileExtension('audio/mp4')).toBe('m4a');
+    expect(audioMimeTypeToFileExtension('audio/mpeg')).toBe('mp3');
+    expect(audioMimeTypeToFileExtension('audio/wav')).toBe('wav');
+    expect(audioMimeTypeToFileExtension('audio/ogg;codecs=opus')).toBe('ogg');
+  });
+
   it('maps permission denial to a permission-specific message', () => {
     expect(mapMicrophoneStartError(new DOMException('Permission denied', 'NotAllowedError'), makeSupportedEnvironment())).toBe(
       microphoneRecordingErrors.permissionDenied
@@ -93,6 +103,13 @@ describe('audio recording browser support detection', () => {
     expect(getMicrophoneRecordingSupportError(makeSupportedEnvironment({ document: policyDocument }))).toBe(
       microphoneRecordingErrors.securityPolicy
     );
+  });
+
+  it('preserves safe transcription error messages from the API client', () => {
+    expect(getTranscriptionFailureMessage(new Error('The voice service rejected the audio format.'))).toBe(
+      'The voice service rejected the audio format.'
+    );
+    expect(getTranscriptionFailureMessage({})).toBe(microphoneRecordingErrors.transcriptionFailed);
   });
 });
 
