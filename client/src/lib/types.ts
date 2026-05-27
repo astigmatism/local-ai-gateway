@@ -78,6 +78,76 @@ export interface TelemetryEntry {
   stale: boolean;
 }
 
+export type HealthStatusState = 'healthy' | 'stale' | 'unavailable' | 'loading' | 'unknown' | string;
+
+export interface RawGpuTelemetryDevice extends Record<string, unknown> {
+  index?: number;
+  uuid?: string;
+  name?: string;
+  gpu_name?: string;
+  gpuName?: string;
+  product_name?: string;
+  productName?: string;
+  driver_version?: string;
+  driverVersion?: string;
+  memory_total_mib?: number;
+  memoryTotalMiB?: number;
+  memory_used_mib?: number;
+  memoryUsedMiB?: number;
+  memory_free_mib?: number;
+  memoryFreeMiB?: number;
+  utilization_gpu_percent?: number;
+  utilizationGpuPercent?: number;
+  temperature_gpu_c?: number;
+  temperature_c?: number;
+  temperatureC?: number;
+  power_draw_w?: number;
+  powerDrawW?: number;
+  power_limit_w?: number;
+  powerLimitW?: number;
+  fan_speed_percent?: number;
+  fanSpeedPercent?: number;
+  checked_at?: string;
+  checkedAt?: string;
+  source_endpoint?: string;
+  sourceEndpoint?: string;
+}
+
+export interface GpuTelemetryData extends Record<string, unknown> {
+  ok?: boolean;
+  status?: string;
+  gpus?: RawGpuTelemetryDevice[];
+  gpu_count?: number;
+  source_endpoint?: string;
+  sourceEndpoint?: string;
+}
+
+export interface NormalizedGpuHealth {
+  id: string;
+  machineId: string;
+  machineLabel: string;
+  index?: number;
+  uuid?: string;
+  name: string;
+  shortName: string;
+  driverVersion?: string;
+  memoryTotalMiB?: number;
+  memoryUsedMiB?: number;
+  memoryFreeMiB?: number;
+  utilizationGpuPercent?: number;
+  temperatureC?: number;
+  powerDrawW?: number;
+  powerLimitW?: number;
+  fanSpeedPercent?: number;
+  checkedAt?: string;
+  sourceEndpoint?: string;
+  status: HealthStatusState;
+  gpuStatus?: string;
+  healthError?: string | null;
+  gpuError?: string | null;
+  telemetryStale: boolean;
+}
+
 export interface ServiceTelemetryStatus {
   health: TelemetryEntry;
   gpu: TelemetryEntry;

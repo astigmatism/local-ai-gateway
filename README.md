@@ -67,7 +67,8 @@ Bear Castle AI gateway VM
   |                   http://192.168.1.5:11434/api/pull
   |                   http://192.168.1.5:11434/api/delete
   |                   http://192.168.1.5:8000/health
-  |                   http://192.168.1.5:8000/gpu
+  |                   http://192.168.1.5:8000/gpus (primary multi-GPU telemetry)
+  |                   http://192.168.1.5:8000/gpu (legacy fallback)
   |                   http://192.168.1.5:8000/model/load
   |                   http://192.168.1.5:8000/storage (optional)
   |
@@ -131,7 +132,7 @@ Modern routes used by Bear Castle AI:
 
 - STT transcription: `POST {VOICE_BASE_URL}/api/stt/transcribe` with multipart `file`, optional `model`, `language`, `vad_filter`, `min_silence_duration_ms`, and `word_timestamps`.
 - TTS speech: `POST {VOICE_BASE_URL}/api/tts/speak` with JSON for normal text-only speech or multipart when reference audio is needed. The response is returned to the browser as `audio/wav` with `Cache-Control: no-store`.
-- GPU telemetry: `GET {VOICE_BASE_URL}/api/gpu`, normalized from `available`, `checkedAt`, and `devices[]` into the compact System Health panel. Missing power/fan fields are omitted or shown as unavailable instead of `undefined` or `NaN`.
+- GPU telemetry: `GET {VOICE_BASE_URL}/api/gpu`, normalized from `available`, `checkedAt`, and `devices[]` into the compact System Health panel. Missing power/fan fields are omitted instead of showing `undefined`, `NaN`, or placeholder `N/A` rows.
 - Health and workers: `GET {VOICE_BASE_URL}/api/health`, `GET /api/services`, `GET /api/services/stt`, and `GET /api/services/tts`.
 - Model catalogs/status: `GET /api/models`, `GET /api/models/stt`, and `GET /api/models/tts`.
 - Model management: `POST /api/models/stt/load`, `POST /api/models/stt/unload`, `POST /api/models/tts/load`, and `POST /api/models/tts/unload`.
@@ -148,6 +149,7 @@ Troubleshooting:
 - Model load failures usually indicate a missing model name, GPU memory pressure, a provider/model mismatch, or worker-side autoload restrictions.
 - STT/TTS model mismatch errors mean the request model does not match the currently loaded model unless the worker supports autoloading.
 - Missing GPU power/fan fields are expected with the new `/api/gpu` shape; Bear Castle AI handles memory, utilization, and temperature without requiring power or fan data.
+- System Health uses `GET {LLM_MONITOR_BASE_URL}/gpus` as the primary local-ai-llm GPU telemetry source and renders one compact pod per returned GPU. The legacy `GET {LLM_MONITOR_BASE_URL}/gpu` endpoint remains as a fallback for older monitor services and is normalized as a one-GPU list. The compact GPU pods show VRAM, Power when available, Fan only when available, Utilization, and Temperature; Free VRAM is retained in details but is no longer shown as a separate main bar.
 - Reference audio uploads must be WAV. Browser WebM recordings are not labeled or uploaded as WAV unless converted outside the app.
 - CORS is not part of the browser flow because the browser calls Bear Castle AI, and Bear Castle AI calls local-ai-voice over the private network.
 - Worker-only private APIs and worker ports must stay private and must not be exposed publicly.
@@ -646,7 +648,8 @@ From the gateway VM:
 
 ```bash
 curl http://192.168.1.5:8000/health
-curl http://192.168.1.5:8000/gpu
+curl http://192.168.1.5:8000/gpus
+curl http://192.168.1.5:8000/gpu   # legacy fallback check
 curl http://192.168.1.8:8000/api/health
 curl http://192.168.1.8:8000/api/gpu
 curl http://192.168.1.8:8000/api/services

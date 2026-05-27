@@ -126,10 +126,88 @@ describe('telemetry service normalization', () => {
       memory_used_mib: 6144,
       memory_free_mib: 18432,
       utilization_gpu_percent: 12,
-      temperature_gpu_c: 37
+      temperature_gpu_c: 37,
+      gpu_count: 1
+    });
+    expect(normalized.gpus).toHaveLength(1);
+  });
+
+  it('normalizes every device from the local-ai-llm /gpus response', async () => {
+    const { normalizeGpuTelemetryPayload } = await loadTelemetryService();
+
+    const normalized = normalizeGpuTelemetryPayload(
+      {
+        ok: true,
+        gpus: [
+          {
+            index: 0,
+            uuid: 'GPU-358353dd-5933-1dc6-ac0d-e1189b063e4c',
+            name: 'NVIDIA GeForce RTX 3090',
+            driver_version: '595.71.05',
+            memory_total_mib: 24576,
+            memory_used_mib: 1,
+            memory_free_mib: 24126,
+            utilization_gpu_percent: 0,
+            temperature_c: 40,
+            power_draw_w: 12.15,
+            power_limit_w: 420
+          },
+          {
+            index: 1,
+            uuid: 'GPU-b0c40094-4d7a-fe22-3995-664a81ee7e33',
+            name: 'NVIDIA GeForce RTX 4080',
+            driver_version: '595.71.05',
+            memory_total_mib: 16376,
+            memory_used_mib: 2,
+            memory_free_mib: 15945,
+            utilization_gpu_percent: 0,
+            temperature_c: 45,
+            power_draw_w: 11.68,
+            power_limit_w: 320
+          }
+        ]
+      },
+      { sourceEndpoint: '/gpus', source: 'multi-gpu' }
+    );
+
+    expect(normalized).toMatchObject({
+      ok: true,
+      status: 'ok',
+      gpu_count: 2,
+      source_endpoint: '/gpus',
+      source: 'multi-gpu'
+    });
+    expect(normalized.gpus).toHaveLength(2);
+    expect(normalized.gpus[0]).toMatchObject({
+      index: 0,
+      uuid: 'GPU-358353dd-5933-1dc6-ac0d-e1189b063e4c',
+      name: 'NVIDIA GeForce RTX 3090',
+      memory_total_mib: 24576,
+      temperature_c: 40,
+      power_draw_w: 12.15,
+      source_endpoint: '/gpus'
+    });
+    expect(normalized.gpus[1]).toMatchObject({
+      index: 1,
+      uuid: 'GPU-b0c40094-4d7a-fe22-3995-664a81ee7e33',
+      name: 'NVIDIA GeForce RTX 4080',
+      memory_total_mib: 16376,
+      temperature_c: 45,
+      power_limit_w: 320,
+      source_endpoint: '/gpus'
     });
   });
 
+  it('accepts an empty local-ai-llm /gpus list without throwing', async () => {
+    const { normalizeGpuTelemetryPayload } = await loadTelemetryService();
+
+    const normalized = normalizeGpuTelemetryPayload({ ok: true, gpus: [] }, { sourceEndpoint: '/gpus' });
+
+    expect(normalized.status).toBe('ok');
+    expect(normalized.gpu_count).toBe(0);
+    expect(normalized.gpus).toEqual([]);
+    expect(normalized.source_endpoint).toBe('/gpus');
+  });
 
   it('normalizes the modern local-ai-voice /api/gpu device shape', async () => {
     const { normalizeGpuTelemetryPayload } = await loadTelemetryService();

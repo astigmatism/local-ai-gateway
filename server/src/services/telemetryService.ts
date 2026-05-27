@@ -20,10 +20,57 @@ export interface GatewayTelemetryStatus {
   voice: ServiceTelemetryStatus;
 }
 
+export interface NormalizedGpuTelemetryRecord extends Record<string, unknown> {
+  ok?: boolean;
+  status: string;
+  index?: number;
+  uuid?: string;
+  name?: string;
+  gpu_name?: string;
+  driver_version?: string;
+  driverVersion?: string;
+  memory_total_mib?: number;
+  memoryTotalMiB?: number;
+  memory_used_mib?: number;
+  memoryUsedMiB?: number;
+  memory_free_mib?: number;
+  memoryFreeMiB?: number;
+  utilization_gpu_percent?: number;
+  utilizationGpuPercent?: number;
+  temperature_gpu_c?: number;
+  temperature_c?: number;
+  temperatureC?: number;
+  power_draw_w?: number;
+  powerDrawW?: number;
+  power_limit_w?: number;
+  powerLimitW?: number;
+  fan_speed_percent?: number;
+  fanSpeedPercent?: number;
+  checked_at?: string;
+  checkedAt?: string;
+  source_endpoint?: string;
+  raw: unknown;
+}
+
+export interface NormalizedGpuTelemetryPayload extends Record<string, unknown> {
+  ok?: boolean;
+  status: string;
+  gpus: NormalizedGpuTelemetryRecord[];
+  gpu_count: number;
+  source_endpoint?: string;
+  source?: string;
+  raw: unknown;
+}
+
 type ServiceName = 'llm' | 'voice';
 export type EndpointName = 'health' | 'gpu';
 
 type MutableTelemetryEntry = Omit<TelemetryEntry, 'stale'>;
+
+interface TelemetryNormalizationOptions {
+  sourceEndpoint?: string;
+  source?: string;
+}
 
 const makeEntry = (): MutableTelemetryEntry => ({
   data: null,
@@ -119,6 +166,7 @@ const describePayload = (value: unknown): Record<string, unknown> => {
     keys,
     hasGpuObject: asRecord(record.gpu) !== null,
     hasGpusArray: Array.isArray(record.gpus),
+    hasDevicesArray: Array.isArray(record.devices),
     hasOk: 'ok' in record,
     hasStatus: 'status' in record
   };
@@ -140,55 +188,76 @@ const hasAnyOwn = (record: Record<string, unknown>, keys: string[]) => keys.some
 
 const hasGpuSignal = (record: Record<string, unknown>) =>
   hasAnyOwn(record, [
+    'index',
+    'gpu_index',
+    'gpuIndex',
+    'uuid',
+    'gpu_uuid',
+    'gpuUuid',
     'name',
     'gpu_name',
     'gpuName',
     'product_name',
+    'productName',
     'driver_version',
     'driverVersion',
     'memory_total_mib',
     'memoryTotalMiB',
+    'memoryTotalMib',
     'memory_total_mb',
     'memory_used_mib',
     'memoryUsedMiB',
+    'memoryUsedMib',
     'memory_used_mb',
     'memory_free_mib',
     'memoryFreeMiB',
+    'memoryFreeMib',
     'memory_free_mb',
     'memory_total_bytes',
+    'memoryTotalBytes',
     'memory_used_bytes',
+    'memoryUsedBytes',
     'memory_free_bytes',
+    'memoryFreeBytes',
     'utilization_gpu_percent',
     'utilizationGpuPercent',
     'gpu_utilization_percent',
     'utilization_percent',
     'temperature_gpu_c',
+    'temperatureGpuC',
     'temperatureC',
     'temperature_c',
     'temperature',
     'power_draw_w',
+    'powerDrawW',
     'power_limit_w',
-    'fan_speed_percent'
+    'powerLimitW',
+    'fan_speed_percent',
+    'fanSpeedPercent'
   ]) ||
   asRecord(record.memory) !== null ||
   asRecord(record.utilization) !== null ||
   asRecord(record.power) !== null ||
   asRecord(record.temperature) !== null;
 
-const firstRecordFromArray = (value: unknown) => {
+const recordsFromArray = (value: unknown) => {
   const array = asArray(value);
   if (!array) return null;
-  for (const item of array) {
-    const record = asRecord(item);
-    if (record) return record;
-  }
-  return null;
+  return array.map(asRecord).filter((record): record is Record<string, unknown> => record !== null);
 };
 
-const selectGpuRecord = (payload: unknown): Record<string, unknown> => {
+const firstRecordFromArray = (value: unknown) => recordsFromArray(value)?.[0] ?? null;
+
+const selectGpuRecords = (payload: unknown): { records: Record<string, unknown>[]; explicitGpuList: boolean } => {
   const root = asRecord(payload);
   if (!root) {
     throw new TelemetryPayloadError('GPU telemetry response was not a JSON object.', payload);
+  }
+
+  const arrayCandidates = [root.gpus, root.devices, root.cards, root.gpu, root.device, root.card];
+  for (const candidate of arrayCandidates) {
+    const records = recordsFromArray(candidate);
+    if (records) return { records, explicitGpuList: true };
   }
 
   const candidates = [
@@ -204,7 +273,7 @@ const selectGpuRecord = (payload: unknown): Record<string, unknown> => {
   ].filter((candidate): candidate is Record<string, unknown> => candidate !== null);
 
   const withSignal = candidates.find(hasGpuSignal);
-  return withSignal ?? candidates[0] ?? root;
+  return { records: withSignal ? [withSignal] : candidates.slice(0, 1), explicitGpuList: false };
 };
 
 const statusFromOk = (ok: boolean | undefined, fallbackStatus: string | undefined, hasSignal: boolean) => {
@@ -231,18 +300,19 @@ export const normalizeHealthTelemetryPayload = (payload: unknown): Record<string
   };
 };
 
-export const normalizeGpuTelemetryPayload = (payload: unknown): Record<string, unknown> => {
-  const root = asRecord(payload);
-  if (!root) {
-    throw new TelemetryPayloadError('GPU telemetry response was not a JSON object.', payload);
-  }
-
-  const gpu = selectGpuRecord(payload);
+const normalizeGpuRecord = (
+  gpu: Record<string, unknown>,
+  root: Record<string, unknown>,
+  indexHint: number | undefined,
+  options: TelemetryNormalizationOptions
+): NormalizedGpuTelemetryRecord | null => {
   const memory = asRecord(gpu.memory) ?? asRecord(readPath(gpu, ['fb_memory_usage'])) ?? {};
   const utilization = asRecord(gpu.utilization) ?? {};
   const power = asRecord(gpu.power) ?? {};
   const temperature = asRecord(gpu.temperature) ?? {};
 
+  const index = firstNumber(gpu.index, gpu.gpu_index, gpu.gpuIndex) ?? indexHint;
+  const uuid = firstString(gpu.uuid, gpu.gpu_uuid, gpu.gpuUuid, gpu.id, gpu.gpuId);
   const name = firstString(gpu.name, gpu.gpu_name, gpu.gpuName, gpu.product_name, gpu.productName, root.name, root.gpu_name);
   const driverVersion = firstString(
     gpu.driver_version,
@@ -260,8 +330,8 @@ export const normalizeGpuTelemetryPayload = (payload: unknown): Record<string, u
     gpu.memory_total_mb,
     gpu.memoryTotalMb,
     memory.total_mib,
-    memory.totalMiB,
     memory.totalMib,
+    memory.totalMiB,
     memory.total_mb,
     memory.totalMb,
     memory.total,
@@ -277,8 +347,8 @@ export const normalizeGpuTelemetryPayload = (payload: unknown): Record<string, u
     gpu.memory_used_mb,
     gpu.memoryUsedMb,
     memory.used_mib,
-    memory.usedMiB,
     memory.usedMib,
+    memory.usedMiB,
     memory.used_mb,
     memory.usedMb,
     memory.used,
@@ -294,8 +364,8 @@ export const normalizeGpuTelemetryPayload = (payload: unknown): Record<string, u
     gpu.memory_free_mb,
     gpu.memoryFreeMb,
     memory.free_mib,
-    memory.freeMiB,
     memory.freeMib,
+    memory.freeMiB,
     memory.free_mb,
     memory.freeMb,
     memory.free,
@@ -329,7 +399,6 @@ export const normalizeGpuTelemetryPayload = (payload: unknown): Record<string, u
     gpu.temperatureGpuC,
     gpu.temperatureC,
     gpu.temperature_c,
-    gpu.temperatureC,
     typeof gpu.temperature === 'number' || typeof gpu.temperature === 'string' ? gpu.temperature : undefined,
     temperature.gpu_c,
     temperature.gpuC,
@@ -365,9 +434,12 @@ export const normalizeGpuTelemetryPayload = (payload: unknown): Record<string, u
     gpu.fan_speed,
     gpu.fanSpeed
   );
+  const checkedAt = firstString(gpu.checked_at, gpu.checkedAt, root.checked_at, root.checkedAt);
 
-  const ok = firstBoolean(gpu.ok, root.ok, root.available, gpu.healthy, root.healthy, gpu.status, root.status);
+  const ok = firstBoolean(gpu.ok, gpu.available, root.ok, root.available, gpu.healthy, root.healthy, gpu.status, root.status);
   const hasSignal =
+    index !== undefined ||
+    uuid !== undefined ||
     name !== undefined ||
     driverVersion !== undefined ||
     memoryTotalMib !== undefined ||
@@ -379,52 +451,138 @@ export const normalizeGpuTelemetryPayload = (payload: unknown): Record<string, u
     powerLimitW !== undefined ||
     fanSpeedPercent !== undefined;
 
-  if (!hasSignal && ok === undefined) {
-    throw new TelemetryPayloadError('GPU telemetry response did not include recognizable GPU fields.', payload);
-  }
+  if (!hasSignal && ok === undefined) return null;
 
-  const normalized: Record<string, unknown> = {
+  const normalized: NormalizedGpuTelemetryRecord = {
     ...gpu,
     ok,
     status: statusFromOk(ok, firstString(gpu.status, root.status), hasSignal),
-    raw: payload
+    raw: gpu
   };
 
+  if (index !== undefined) normalized.index = index;
+  if (uuid !== undefined) normalized.uuid = uuid;
   if (name !== undefined) {
     normalized.name = name;
     normalized.gpu_name = name;
   }
-  if (driverVersion !== undefined) normalized.driver_version = driverVersion;
-  if (memoryTotalMib !== undefined) normalized.memory_total_mib = memoryTotalMib;
-  if (memoryUsedMib !== undefined) normalized.memory_used_mib = memoryUsedMib;
-  if (memoryFreeMib !== undefined) normalized.memory_free_mib = memoryFreeMib;
-  if (utilizationGpuPercent !== undefined) normalized.utilization_gpu_percent = utilizationGpuPercent;
+  if (driverVersion !== undefined) {
+    normalized.driver_version = driverVersion;
+    normalized.driverVersion = driverVersion;
+  }
+  if (memoryTotalMib !== undefined) {
+    normalized.memory_total_mib = memoryTotalMib;
+    normalized.memoryTotalMiB = memoryTotalMib;
+  }
+  if (memoryUsedMib !== undefined) {
+    normalized.memory_used_mib = memoryUsedMib;
+    normalized.memoryUsedMiB = memoryUsedMib;
+  }
+  if (memoryFreeMib !== undefined) {
+    normalized.memory_free_mib = memoryFreeMib;
+    normalized.memoryFreeMiB = memoryFreeMib;
+  }
+  if (utilizationGpuPercent !== undefined) {
+    normalized.utilization_gpu_percent = utilizationGpuPercent;
+    normalized.utilizationGpuPercent = utilizationGpuPercent;
+  }
   if (temperatureGpuC !== undefined) {
     normalized.temperature_gpu_c = temperatureGpuC;
     normalized.temperature_c = temperatureGpuC;
+    normalized.temperatureC = temperatureGpuC;
   }
-  if (powerDrawW !== undefined) normalized.power_draw_w = powerDrawW;
-  if (powerLimitW !== undefined) normalized.power_limit_w = powerLimitW;
-  if (fanSpeedPercent !== undefined) normalized.fan_speed_percent = fanSpeedPercent;
+  if (powerDrawW !== undefined) {
+    normalized.power_draw_w = powerDrawW;
+    normalized.powerDrawW = powerDrawW;
+  }
+  if (powerLimitW !== undefined) {
+    normalized.power_limit_w = powerLimitW;
+    normalized.powerLimitW = powerLimitW;
+  }
+  if (fanSpeedPercent !== undefined) {
+    normalized.fan_speed_percent = fanSpeedPercent;
+    normalized.fanSpeedPercent = fanSpeedPercent;
+  }
+  if (checkedAt !== undefined) {
+    normalized.checked_at = checkedAt;
+    normalized.checkedAt = checkedAt;
+  }
+  if (options.sourceEndpoint) normalized.source_endpoint = options.sourceEndpoint;
+  if (options.source) normalized.source = options.source;
 
   return normalized;
 };
 
-export const normalizeTelemetryPayload = (endpoint: EndpointName, payload: unknown) => {
+export const normalizeGpuTelemetryPayload = (
+  payload: unknown,
+  options: TelemetryNormalizationOptions = {}
+): NormalizedGpuTelemetryPayload => {
+  const root = asRecord(payload);
+  if (!root) {
+    throw new TelemetryPayloadError('GPU telemetry response was not a JSON object.', payload);
+  }
+
+  const { records, explicitGpuList } = selectGpuRecords(payload);
+  const normalizedGpus = records
+    .map((gpu, index) => normalizeGpuRecord(gpu, root, explicitGpuList ? index : undefined, options))
+    .filter((gpu): gpu is NormalizedGpuTelemetryRecord => gpu !== null);
+  const rootOk = firstBoolean(root.ok, root.available, root.healthy, root.status);
+
+  if (normalizedGpus.length === 0) {
+    if (!explicitGpuList && rootOk === undefined) {
+      throw new TelemetryPayloadError('GPU telemetry response did not include recognizable GPU fields.', payload);
+    }
+
+    const normalized: NormalizedGpuTelemetryPayload = {
+      ...root,
+      ok: rootOk,
+      status: statusFromOk(rootOk, firstString(root.status), explicitGpuList),
+      gpus: [],
+      gpu_count: 0,
+      raw: payload
+    };
+    if (options.sourceEndpoint) normalized.source_endpoint = options.sourceEndpoint;
+    if (options.source) normalized.source = options.source;
+    return normalized;
+  }
+
+  const firstGpu = normalizedGpus[0]!;
+  const ok = rootOk ?? firstGpu.ok;
+  const normalized: NormalizedGpuTelemetryPayload = {
+    ...root,
+    ...firstGpu,
+    ok,
+    status: statusFromOk(ok, firstString(root.status, firstGpu.status), true),
+    gpus: normalizedGpus,
+    gpu_count: normalizedGpus.length,
+    raw: payload
+  };
+  if (options.sourceEndpoint) normalized.source_endpoint = options.sourceEndpoint;
+  if (options.source) normalized.source = options.source;
+
+  return normalized;
+};
+
+export const normalizeTelemetryPayload = (
+  endpoint: EndpointName,
+  payload: unknown,
+  options: TelemetryNormalizationOptions = {}
+) => {
   if (endpoint === 'health') return normalizeHealthTelemetryPayload(payload);
-  return normalizeGpuTelemetryPayload(payload);
+  return normalizeGpuTelemetryPayload(payload, options);
 };
 
 const errorMessage = (error: unknown) => {
   if (error instanceof TelemetryPayloadError) return error.message;
   if (axios.isAxiosError(error)) {
-    if (error.response) {
-      return `HTTP ${error.response.status}`;
+    const axiosError = error as { response?: { status?: number }; code?: string; message?: string };
+    if (axiosError.response?.status) {
+      return `HTTP ${axiosError.response.status}`;
     }
-    if (error.code === 'ECONNABORTED') {
+    if (axiosError.code === 'ECONNABORTED') {
       return `timeout after ${config.telemetry.requestTimeoutMs} ms`;
     }
-    return error.message;
+    return axiosError.message ?? 'axios error';
   }
   return error instanceof Error ? error.message : 'unknown error';
 };
@@ -492,23 +650,89 @@ class TelemetryService {
   }
 
   private async pollAllGpu() {
-    await Promise.all([
-      this.pollEndpoint('llm', 'gpu', config.llm.monitorBaseUrl),
-      this.pollEndpoint('voice', 'gpu', config.voice.baseUrl, '/api/gpu')
-    ]);
+    await Promise.all([this.pollLlmGpuEndpoint(), this.pollEndpoint('voice', 'gpu', config.voice.baseUrl, '/api/gpu')]);
+  }
+
+  private async fetchTelemetry(
+    endpoint: EndpointName,
+    baseUrl: string,
+    path: string,
+    options: TelemetryNormalizationOptions,
+    requireGpuList = false
+  ) {
+    const response = await axios.get(`${trimUrl(baseUrl)}${path}`, {
+      timeout: config.telemetry.requestTimeoutMs,
+      validateStatus: (status: number) => status >= 200 && status < 300
+    });
+
+    if (requireGpuList) {
+      const root = asRecord(response.data);
+      if (!root || !Array.isArray(root.gpus)) {
+        throw new TelemetryPayloadError('Multi-GPU telemetry response did not include gpus[].', response.data);
+      }
+    }
+
+    return normalizeTelemetryPayload(endpoint, response.data, options);
+  }
+
+  private async pollLlmGpuEndpoint() {
+    const entry = this.state.llm.gpu;
+    entry.last_checked_at = new Date().toISOString();
+
+    try {
+      entry.data = await this.fetchTelemetry(
+        'gpu',
+        config.llm.monitorBaseUrl,
+        '/gpus',
+        {
+          sourceEndpoint: '/gpus',
+          source: 'multi-gpu'
+        },
+        true
+      );
+      entry.last_success_at = new Date().toISOString();
+      entry.last_error = null;
+      return;
+    } catch (primaryError) {
+      try {
+        entry.data = await this.fetchTelemetry('gpu', config.llm.monitorBaseUrl, '/gpu', {
+          sourceEndpoint: '/gpu',
+          source: 'legacy-fallback'
+        });
+        entry.last_success_at = new Date().toISOString();
+        entry.last_error = null;
+        return;
+      } catch (fallbackError) {
+        entry.last_error = `/gpus failed: ${errorMessage(primaryError)}; /gpu fallback failed: ${errorMessage(fallbackError)}`;
+        logger.warn(
+          {
+            primaryError: primaryError instanceof TelemetryPayloadError ? undefined : primaryError,
+            fallbackError: fallbackError instanceof TelemetryPayloadError ? undefined : fallbackError,
+            errorMessage: entry.last_error,
+            primaryPayloadSummary: primaryError instanceof TelemetryPayloadError ? primaryError.payloadSummary : undefined,
+            fallbackPayloadSummary: fallbackError instanceof TelemetryPayloadError ? fallbackError.payloadSummary : undefined,
+            service: 'llm',
+            endpoint: 'gpu',
+            baseUrl: config.llm.monitorBaseUrl,
+            primaryPath: '/gpus',
+            fallbackPath: '/gpu'
+          },
+          'Telemetry poll failed'
+        );
+      }
+    }
   }
 
   private async pollEndpoint(service: ServiceName, endpoint: EndpointName, baseUrl: string, pathOverride?: string) {
     const entry = this.state[service][endpoint];
+    const path = pathOverride ?? `/${endpoint}`;
     entry.last_checked_at = new Date().toISOString();
 
     try {
-      const response = await axios.get(`${trimUrl(baseUrl)}${pathOverride ?? `/${endpoint}`}`, {
-        timeout: config.telemetry.requestTimeoutMs,
-        validateStatus: (status) => status >= 200 && status < 300
+      entry.data = await this.fetchTelemetry(endpoint, baseUrl, path, {
+        sourceEndpoint: path,
+        source: 'primary'
       });
-
-      entry.data = normalizeTelemetryPayload(endpoint, response.data);
       entry.last_success_at = new Date().toISOString();
       entry.last_error = null;
     } catch (error) {
@@ -520,7 +744,8 @@ class TelemetryService {
           payloadSummary: error instanceof TelemetryPayloadError ? error.payloadSummary : undefined,
           service,
           endpoint,
-          baseUrl
+          baseUrl,
+          path
         },
         'Telemetry poll failed'
       );

@@ -1271,9 +1271,15 @@ textarea {
 .status-card-header {
   display: flex;
   justify-content: space-between;
-  gap: 0.65rem;
-  align-items: flex-start;
+  gap: 0.55rem;
+  align-items: center;
   margin-bottom: 0.52rem;
+  min-width: 0;
+}
+
+.status-card-title-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .status-card h3,
@@ -1283,6 +1289,23 @@ textarea {
 
 .status-card h3 {
   font-size: 0.84rem;
+}
+
+.gpu-card-title {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+.gpu-card-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  min-width: 0;
 }
 
 .status-card p,
@@ -1296,21 +1319,23 @@ textarea {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  max-width: 170px;
 }
 
-.status-card .status-gpu-line {
+.status-card .gpu-no-data {
+  max-width: none;
   color: #cbd5e1;
   font-weight: 750;
 }
 
 .badge {
+  flex: 0 0 auto;
   border-radius: 999px;
   padding: 0.22rem 0.48rem;
   font-size: 0.62rem;
   font-weight: 900;
   text-transform: uppercase;
   letter-spacing: 0.06em;
+  white-space: nowrap;
 }
 
 .badge.ok {
@@ -1326,6 +1351,87 @@ textarea {
 .badge.warn {
   background: rgba(248, 113, 113, 0.13);
   color: #fecaca;
+}
+
+.gpu-info {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+.gpu-info-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(26, 37, 50, 0.72);
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.gpu-info-button:hover,
+.gpu-info-button:focus-visible {
+  color: var(--text);
+  border-color: rgba(143, 180, 255, 0.46);
+  outline: none;
+}
+
+.gpu-info-tooltip {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  display: grid;
+  gap: 0.28rem;
+  width: max-content;
+  max-width: min(280px, calc(100vw - 2rem));
+  padding: 0.55rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  color: var(--text);
+  background: rgba(10, 15, 22, 0.96);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.38);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-0.16rem);
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease,
+    visibility 140ms ease;
+  visibility: hidden;
+}
+
+.gpu-info:hover .gpu-info-tooltip,
+.gpu-info:focus-within .gpu-info-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+}
+
+.gpu-info-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.5rem;
+  align-items: baseline;
+  font-size: 0.68rem;
+  line-height: 1.25;
+}
+
+.gpu-info-row span {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.gpu-info-row strong {
+  color: #e5eefc;
+  font-weight: 750;
+  overflow-wrap: anywhere;
 }
 
 .gpu-metric {
@@ -1364,6 +1470,10 @@ textarea {
   background: linear-gradient(90deg, rgba(143, 180, 255, 0.65), rgba(143, 180, 255, 0.95));
 }
 
+.gpu-bar.temperature span {
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.58), rgba(251, 191, 36, 0.7), rgba(248, 113, 113, 0.82));
+}
+
 .gpu-bar.unknown span {
   width: 0;
 }
@@ -1374,6 +1484,7 @@ textarea {
   margin-top: 0.55rem;
   font-size: 0.68rem;
 }
+
 
 
 @media (prefers-reduced-motion: reduce) {
