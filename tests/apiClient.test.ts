@@ -430,3 +430,131 @@ describe('api client model manager requests', () => {
     expect(JSON.parse(init.body as string)).toEqual({ model: 'qwen3:14b' });
   });
 });
+
+describe('api client voice VM settings requests', () => {
+  it('loads the aggregated voice settings overview through the Bear Castle AI gateway', async () => {
+    const { api } = await loadApi();
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            health: { status: 'ok' },
+            services: { stt: { status: 'ready' }, tts: { status: 'ready' } },
+            gpu: { available: true, devices: [] },
+            system: {},
+            models: { stt: null, tts: null },
+            config: null,
+            voices: null,
+            errors: {},
+            generatedAt: '2026-05-26T00:00:00.000Z'
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          }
+        )
+    );
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await api.getVoiceOverview();
+
+    expect(response.health?.status).toBe('ok');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/settings/voice',
+      expect.objectContaining({ credentials: 'include', method: 'GET' })
+    );
+  });
+
+  it('loads STT models using the modern voice settings gateway route', async () => {
+    const { api } = await loadApi();
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            kind: 'stt',
+            provider: 'fast-whisper',
+            defaultModel: 'large-v3-turbo',
+            activeModel: 'large-v3-turbo',
+            worker: { status: 'ready' },
+            models: [{ id: 'large-v3-turbo', label: 'large-v3-turbo', model: 'large-v3-turbo' }]
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          }
+        )
+    );
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await api.getSttModels();
+
+    expect(response.kind).toBe('stt');
+    expect(response.models[0]?.id).toBe('large-v3-turbo');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/settings/voice/models/stt',
+      expect.objectContaining({ credentials: 'include', method: 'GET' })
+    );
+  });
+
+  it('sends STT load requests with CSRF to the modern voice model route', async () => {
+    const { api } = await loadApi();
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ result: { ok: true }, message: 'STT model large-v3-turbo load requested.' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        })
+    );
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    const response = await api.loadSttModel({
+      provider: 'fast-whisper',
+      model: 'large-v3-turbo',
+      computeType: 'int8_float16',
+      options: {}
+    });
+
+    expect(response.message).toContain('STT model');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/settings/voice/models/stt/load',
+      expect.objectContaining({ credentials: 'include', method: 'POST' })
+    );
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-token');
+    expect(JSON.parse(init.body as string)).toEqual({
+      provider: 'fast-whisper',
+      model: 'large-v3-turbo',
+      computeType: 'int8_float16',
+      options: {}
+    });
+  });
+
+  it('uploads TTS reference audio with CSRF through the gateway', async () => {
+    const { api } = await loadApi();
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ result: { id: 'sample' }, message: 'Reference audio uploaded.' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        })
+    );
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    const response = await api.uploadReferenceAudio(new Blob(['RIFF'], { type: 'audio/wav' }), 'sample.wav');
+
+    expect(response.message).toBe('Reference audio uploaded.');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/settings/voice/reference-audio',
+      expect.objectContaining({ credentials: 'include', method: 'POST' })
+    );
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-token');
+    expect(init.body).toBeInstanceOf(FormData);
+  });
+});

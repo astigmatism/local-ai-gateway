@@ -130,6 +130,54 @@ describe('telemetry service normalization', () => {
     });
   });
 
+
+  it('normalizes the modern local-ai-voice /api/gpu device shape', async () => {
+    const { normalizeGpuTelemetryPayload } = await loadTelemetryService();
+
+    const normalized = normalizeGpuTelemetryPayload({
+      available: true,
+      checkedAt: '2026-05-26T00:00:00.000Z',
+      devices: [
+        {
+          index: 0,
+          name: 'NVIDIA GeForce RTX 3090',
+          driverVersion: '555.42.06',
+          memoryTotalMiB: 24576,
+          memoryUsedMiB: 4096,
+          memoryFreeMiB: 20480,
+          utilizationGpuPercent: 12,
+          temperatureC: 55
+        }
+      ]
+    });
+
+    expect(normalized).toMatchObject({
+      status: 'ok',
+      name: 'NVIDIA GeForce RTX 3090',
+      gpu_name: 'NVIDIA GeForce RTX 3090',
+      driver_version: '555.42.06',
+      memory_total_mib: 24576,
+      memory_used_mib: 4096,
+      memory_free_mib: 20480,
+      utilization_gpu_percent: 12,
+      temperature_gpu_c: 55,
+      temperature_c: 55
+    });
+  });
+
+  it('represents an unavailable modern voice GPU without throwing', async () => {
+    const { normalizeGpuTelemetryPayload } = await loadTelemetryService();
+
+    const normalized = normalizeGpuTelemetryPayload({
+      available: false,
+      checkedAt: '2026-05-26T00:00:00.000Z',
+      devices: []
+    });
+
+    expect(normalized.status).toBe('error');
+    expect(normalized.ok).toBe(false);
+  });
+
   it('throws a clear parse error for unrecognizable GPU payloads', async () => {
     const { normalizeGpuTelemetryPayload } = await loadTelemetryService();
 

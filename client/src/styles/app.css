@@ -2423,3 +2423,71 @@ textarea {
     white-space: nowrap;
   }
 }
+
+.voice-settings-grid {
+  align-items: stretch;
+}
+
+.voice-model-list,
+.voice-descriptor-list {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.75rem;
+}
+
+.voice-model-option {
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 0.9rem;
+  background: rgba(15, 23, 42, 0.46);
+  color: inherit;
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.8rem 0.9rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.voice-model-option:hover,
+.voice-model-option:focus-visible {
+  border-color: rgba(125, 211, 252, 0.65);
+  outline: none;
+}
+
+.voice-model-option small,
+.voice-descriptor-card small,
+.voice-reference-upload small {
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.voice-control-panel .voice-settings-form,
+.voice-reference-upload {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.85rem;
+}
+
+.voice-control-panel input,
+.voice-reference-upload input[type='file'] {
+  width: 100%;
+}
+
+.voice-button-row {
+  margin-top: 0.25rem;
+}
+
+.voice-reference-panel {
+  margin-top: 1rem;
+}
+
+.voice-descriptor-card {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 0.85rem;
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.75rem 0.9rem;
+}
+
+.voice-advanced-details {
+  margin-top: 1rem;
+}

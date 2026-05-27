@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, RefObject } from 'react';
 import { api, ApiClientError } from '../lib/api.js';
+import { VoiceSettingsPanel } from './VoiceSettingsPanel.js';
 import type {
   AuthUser,
   AvailableModelInfo,
@@ -16,6 +17,7 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
+type SettingsSection = 'models' | 'voice';
 type ModelManagerTab = 'overview' | 'installed' | 'browse' | 'storage';
 
 const focusableSelector = [
@@ -174,6 +176,7 @@ const deletePrompt = (model: AvailableModelInfo, status: ModelManagementStatus |
 
 export const SettingsModal = ({ currentUser, returnFocusRef, onClose }: SettingsModalProps) => {
   const dialogRef = useRef<HTMLElement | null>(null);
+  const [activeSection, setActiveSection] = useState<SettingsSection>('models');
   const [activeTab, setActiveTab] = useState<ModelManagerTab>('overview');
   const [status, setStatus] = useState<ModelManagementStatus | null>(null);
   const [loadingStatus, setLoadingStatus] = useState(true);
@@ -773,15 +776,31 @@ export const SettingsModal = ({ currentUser, returnFocusRef, onClose }: Settings
 
         <div className="settings-layout">
           <nav className="settings-nav" aria-label="Settings sections">
-            <button className="settings-nav-item active" type="button" aria-current="page">
+            <button
+              className={`settings-nav-item ${activeSection === 'models' ? 'active' : ''}`}
+              type="button"
+              aria-current={activeSection === 'models' ? 'page' : undefined}
+              onClick={() => setActiveSection('models')}
+            >
               Models
+            </button>
+            <button
+              className={`settings-nav-item ${activeSection === 'voice' ? 'active' : ''}`}
+              type="button"
+              aria-current={activeSection === 'voice' ? 'page' : undefined}
+              onClick={() => setActiveSection('voice')}
+            >
+              Voice
             </button>
           </nav>
 
           <div
             className="settings-content"
-            aria-busy={Boolean(loadingStatus || loadingModelName || defaultingModelName || pullingModelName || deletingModelName)}
+            aria-busy={activeSection === 'models' && Boolean(loadingStatus || loadingModelName || defaultingModelName || pullingModelName || deletingModelName)}
           >
+            {activeSection === 'voice' ? (
+              <VoiceSettingsPanel canManageVoice={canManageModels} />
+            ) : (
             <section className="settings-section" aria-labelledby="model-manager-title">
               <div className="settings-section-header">
                 <div>
@@ -846,6 +865,7 @@ export const SettingsModal = ({ currentUser, returnFocusRef, onClose }: Settings
               {activeTab === 'browse' && renderBrowse()}
               {activeTab === 'storage' && renderStorage()}
             </section>
+            )}
           </div>
         </div>
       </section>

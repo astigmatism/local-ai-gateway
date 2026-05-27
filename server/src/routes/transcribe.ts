@@ -66,9 +66,29 @@ const upload = multer({
   }
 });
 
+const booleanField = z.preprocess((value) => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+  }
+  return value;
+}, z.boolean());
+
+const optionalText = z.preprocess((value) => (typeof value === 'string' && value.trim() === '' ? undefined : value), z.string().trim().max(120).optional());
+
 const transcribeBodySchema = z.object({
   userId: z.string().uuid().optional(),
-  conversationId: z.string().uuid().optional()
+  conversationId: z.string().uuid().optional(),
+  model: optionalText,
+  language: optionalText,
+  vad_filter: booleanField.optional(),
+  vadFilter: booleanField.optional(),
+  min_silence_duration_ms: z.coerce.number().int().positive().max(60000).optional(),
+  minSilenceDurationMs: z.coerce.number().int().positive().max(60000).optional(),
+  word_timestamps: booleanField.optional(),
+  wordTimestamps: booleanField.optional()
 });
 
 transcribeRouter.post(
@@ -107,7 +127,13 @@ transcribeRouter.post(
         }
       }
 
-      const result = await transcribeAudio(file.path, file.originalname, file.mimetype);
+      const result = await transcribeAudio(file.path, file.originalname, file.mimetype, {
+        model: body.model,
+        language: body.language,
+        vadFilter: body.vadFilter ?? body.vad_filter,
+        minSilenceDurationMs: body.minSilenceDurationMs ?? body.min_silence_duration_ms,
+        wordTimestamps: body.wordTimestamps ?? body.word_timestamps
+      });
 
       const audioSnippet = await prisma.audioSnippet.create({
         data: {

@@ -15,11 +15,27 @@ const speakRateLimiter = createRateLimiter({
   keyGenerator: (req) => req.auth?.user.id ?? req.ip ?? 'unknown'
 });
 
+const optionalText = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  z.string().trim().max(160).optional()
+);
+
+const optionalControlNumber = z.preprocess((value) => {
+  if (typeof value === 'string' && value.trim() === '') return undefined;
+  return value;
+}, z.coerce.number().finite().optional());
+
 const speakBodySchema = z
   .object({
     text: z.unknown().optional(),
-    voice: z.unknown().optional(),
-    speed: z.unknown().optional()
+    voice: optionalText,
+    speed: optionalControlNumber,
+    exaggeration: optionalControlNumber,
+    cfg_weight: optionalControlNumber,
+    cfgWeight: optionalControlNumber,
+    temperature: optionalControlNumber,
+    language: optionalText,
+    model: optionalText
   })
   .passthrough();
 
@@ -30,11 +46,12 @@ const parseSpeakRequest = (body: unknown) => {
     throw new ApiError(400, 'Text is required.', 'TTS_TEXT_REQUIRED');
   }
 
-  if (parsed.text.trim().length === 0) {
+  const text = parsed.text.trim();
+  if (text.length === 0) {
     throw new ApiError(400, 'Text is required.', 'TTS_TEXT_REQUIRED');
   }
 
-  if (parsed.text.length > config.tts.maxTextChars) {
+  if (text.length > config.tts.maxTextChars) {
     throw new ApiError(
       400,
       `This message is too long to speak. Maximum is ${config.tts.maxTextChars} characters.`,
@@ -42,34 +59,29 @@ const parseSpeakRequest = (body: unknown) => {
     );
   }
 
-  let voice = config.tts.defaultVoice;
-  if (parsed.voice !== undefined) {
-    if (typeof parsed.voice !== 'string' || parsed.voice.trim().length === 0) {
-      throw new ApiError(400, 'Voice must be a non-empty string.', 'TTS_INVALID_VOICE');
-    }
-    voice = parsed.voice.trim();
-    if (voice.length > 120) {
-      throw new ApiError(400, 'Voice is too long.', 'TTS_INVALID_VOICE');
-    }
+  if (parsed.speed !== undefined && (parsed.speed < 0.25 || parsed.speed > 4.0)) {
+    throw new ApiError(400, 'Speed must be between 0.25 and 4.0.', 'TTS_INVALID_SPEED');
   }
 
-  let speed = config.tts.defaultSpeed;
-  if (parsed.speed !== undefined) {
-    speed =
-      typeof parsed.speed === 'number'
-        ? parsed.speed
-        : typeof parsed.speed === 'string'
-          ? Number(parsed.speed)
-          : NaN;
-    if (!Number.isFinite(speed) || speed < 0.5 || speed > 2.0) {
-      throw new ApiError(400, 'Speed must be between 0.5 and 2.0.', 'TTS_INVALID_SPEED');
+  for (const [name, value] of [
+    ['exaggeration', parsed.exaggeration],
+    ['cfg_weight', parsed.cfgWeight ?? parsed.cfg_weight],
+    ['temperature', parsed.temperature]
+  ] as const) {
+    if (value !== undefined && (value < 0 || value > 5)) {
+      throw new ApiError(400, `${name} must be between 0 and 5.`, 'TTS_INVALID_CONTROL');
     }
   }
 
   return {
-    text: parsed.text,
-    voice,
-    speed
+    text,
+    voice: parsed.voice,
+    speed: parsed.speed,
+    exaggeration: parsed.exaggeration,
+    cfgWeight: parsed.cfgWeight ?? parsed.cfg_weight,
+    temperature: parsed.temperature,
+    language: parsed.language,
+    model: parsed.model
   };
 };
 
@@ -92,9 +104,7 @@ speakRouter.post(
 
     const body = parseSpeakRequest(req.body);
     const result = await speakText({
-      text: body.text,
-      voice: body.voice,
-      speed: body.speed,
+      ...body,
       timeoutMs: config.tts.timeoutMs
     });
 
@@ -104,10 +114,14 @@ speakRouter.post(
     const ttsEngine = safeResponseHeader(result.headers.engine);
     const ttsVoice = safeResponseHeader(result.headers.voice);
     const ttsSpeed = safeResponseHeader(result.headers.speed);
+    const ttsModel = safeResponseHeader(result.headers.model);
+    const ttsLanguage = safeResponseHeader(result.headers.language);
 
     if (ttsEngine) res.setHeader('X-TTS-Engine', ttsEngine);
     if (ttsVoice) res.setHeader('X-TTS-Voice', ttsVoice);
     if (ttsSpeed) res.setHeader('X-TTS-Speed', ttsSpeed);
+    if (ttsModel) res.setHeader('X-TTS-Model', ttsModel);
+    if (ttsLanguage) res.setHeader('X-TTS-Language', ttsLanguage);
 
     res.status(200).send(result.audio);
   })

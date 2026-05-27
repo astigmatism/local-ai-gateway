@@ -4,6 +4,8 @@ import type {
   Conversation,
   ConversationSummary,
   GenerateConversationTitleResponse,
+  LoadSttModelRequest,
+  LoadTtsModelRequest,
   LoginUser,
   ModelDeleteResponse,
   ModelDetailsResponse,
@@ -12,7 +14,17 @@ import type {
   ModelPullProgressEvent,
   SendMessageResponse,
   StatusResponse,
-  TranscribeResponse
+  TranscribeResponse,
+  UnloadVoiceModelRequest,
+  UpdateSttConfigRequest,
+  UpdateTtsConfigRequest,
+  VoiceConfigResponse,
+  VoiceDescriptorsResponse,
+  VoiceGpuResponse,
+  VoiceModelCatalogResponse,
+  VoiceModelsResponse,
+  VoiceMutationResponse,
+  VoiceOverviewResponse
 } from './types.js';
 
 interface ApiErrorShape {
@@ -30,7 +42,22 @@ interface RequestOptions {
 interface SpeakTextOptions {
   voice?: string;
   speed?: number;
+  exaggeration?: number;
+  cfgWeight?: number;
+  temperature?: number;
+  language?: string;
+  model?: string;
   signal?: AbortSignal;
+}
+
+interface TranscribeAudioOptions {
+  userId?: string;
+  conversationId?: string;
+  model?: string;
+  language?: string;
+  vadFilter?: boolean;
+  minSilenceDurationMs?: number;
+  wordTimestamps?: boolean;
 }
 
 export class ApiClientError extends Error {
@@ -350,18 +377,30 @@ export const api = {
       body: JSON.stringify({
         text,
         voice: options.voice,
-        speed: options.speed
+        speed: options.speed,
+        exaggeration: options.exaggeration,
+        cfgWeight: options.cfgWeight,
+        temperature: options.temperature,
+        language: options.language,
+        model: options.model
       }),
       signal: options.signal
     });
   },
 
-  async transcribeAudio(file: Blob, options: { userId?: string; conversationId?: string }) {
+  async transcribeAudio(file: Blob, options: TranscribeAudioOptions) {
     const formData = new FormData();
     const extension = file.type.includes('mp4') ? 'm4a' : file.type.includes('wav') ? 'wav' : 'webm';
     formData.append('file', file, `browser-recording.${extension}`);
     if (options.userId) formData.append('userId', options.userId);
     if (options.conversationId) formData.append('conversationId', options.conversationId);
+    if (options.model) formData.append('model', options.model);
+    if (options.language) formData.append('language', options.language);
+    if (options.vadFilter !== undefined) formData.append('vad_filter', String(options.vadFilter));
+    if (options.minSilenceDurationMs !== undefined) {
+      formData.append('min_silence_duration_ms', String(options.minSilenceDurationMs));
+    }
+    if (options.wordTimestamps !== undefined) formData.append('word_timestamps', String(options.wordTimestamps));
 
     return request<TranscribeResponse>('/api/transcribe', {
       method: 'POST',
@@ -371,6 +410,72 @@ export const api = {
 
   async getStatus() {
     return request<StatusResponse>('/api/status');
+  },
+
+
+  async getVoiceOverview() {
+    return request<VoiceOverviewResponse>('/api/settings/voice');
+  },
+
+  async getVoiceHealth() {
+    return request<Record<string, unknown>>('/api/settings/voice/health');
+  },
+
+  async getVoiceGpu() {
+    return request<VoiceGpuResponse>('/api/settings/voice/gpu');
+  },
+
+  async getVoiceModels() {
+    return request<VoiceModelsResponse>('/api/settings/voice/models');
+  },
+
+  async getSttModels() {
+    return request<VoiceModelCatalogResponse>('/api/settings/voice/models/stt');
+  },
+
+  async getTtsModels() {
+    return request<VoiceModelCatalogResponse>('/api/settings/voice/models/tts');
+  },
+
+  async loadSttModel(body: LoadSttModelRequest) {
+    return jsonRequest<VoiceMutationResponse>('/api/settings/voice/models/stt/load', 'POST', body);
+  },
+
+  async unloadSttModel(body: UnloadVoiceModelRequest = { strategy: 'soft', clearCache: true }) {
+    return jsonRequest<VoiceMutationResponse>('/api/settings/voice/models/stt/unload', 'POST', body);
+  },
+
+  async loadTtsModel(body: LoadTtsModelRequest) {
+    return jsonRequest<VoiceMutationResponse>('/api/settings/voice/models/tts/load', 'POST', body);
+  },
+
+  async unloadTtsModel(body: UnloadVoiceModelRequest = { strategy: 'soft', clearCache: true }) {
+    return jsonRequest<VoiceMutationResponse>('/api/settings/voice/models/tts/unload', 'POST', body);
+  },
+
+  async getVoiceConfig() {
+    return request<VoiceConfigResponse>('/api/settings/voice/config');
+  },
+
+  async updateSttConfig(body: UpdateSttConfigRequest) {
+    return jsonRequest<VoiceMutationResponse>('/api/settings/voice/config/stt', 'PATCH', body);
+  },
+
+  async updateTtsConfig(body: UpdateTtsConfigRequest) {
+    return jsonRequest<VoiceMutationResponse>('/api/settings/voice/config/tts', 'PATCH', body);
+  },
+
+  async listVoices() {
+    return request<VoiceDescriptorsResponse>('/api/settings/voice/voices');
+  },
+
+  async uploadReferenceAudio(file: File | Blob, filename = 'reference.wav') {
+    const formData = new FormData();
+    formData.append('reference_audio', file, filename);
+    return request<VoiceMutationResponse>('/api/settings/voice/reference-audio', {
+      method: 'POST',
+      body: formData
+    });
   },
 
   async getModelSettings() {

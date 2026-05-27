@@ -147,18 +147,23 @@ const hasGpuSignal = (record: Record<string, unknown>) =>
     'driver_version',
     'driverVersion',
     'memory_total_mib',
+    'memoryTotalMiB',
     'memory_total_mb',
     'memory_used_mib',
+    'memoryUsedMiB',
     'memory_used_mb',
     'memory_free_mib',
+    'memoryFreeMiB',
     'memory_free_mb',
     'memory_total_bytes',
     'memory_used_bytes',
     'memory_free_bytes',
     'utilization_gpu_percent',
+    'utilizationGpuPercent',
     'gpu_utilization_percent',
     'utilization_percent',
     'temperature_gpu_c',
+    'temperatureC',
     'temperature_c',
     'temperature',
     'power_draw_w',
@@ -251,10 +256,12 @@ export const normalizeGpuTelemetryPayload = (payload: unknown): Record<string, u
   const memoryTotalMib = firstNumber(
     gpu.memory_total_mib,
     gpu.memoryTotalMib,
+    gpu.memoryTotalMiB,
     gpu.memory_total_mb,
     gpu.memoryTotalMb,
     memory.total_mib,
     memory.totalMiB,
+    memory.totalMib,
     memory.total_mb,
     memory.totalMb,
     memory.total,
@@ -266,10 +273,12 @@ export const normalizeGpuTelemetryPayload = (payload: unknown): Record<string, u
   const memoryUsedMib = firstNumber(
     gpu.memory_used_mib,
     gpu.memoryUsedMib,
+    gpu.memoryUsedMiB,
     gpu.memory_used_mb,
     gpu.memoryUsedMb,
     memory.used_mib,
     memory.usedMiB,
+    memory.usedMib,
     memory.used_mb,
     memory.usedMb,
     memory.used,
@@ -281,10 +290,12 @@ export const normalizeGpuTelemetryPayload = (payload: unknown): Record<string, u
   const reportedMemoryFreeMib = firstNumber(
     gpu.memory_free_mib,
     gpu.memoryFreeMib,
+    gpu.memoryFreeMiB,
     gpu.memory_free_mb,
     gpu.memoryFreeMb,
     memory.free_mib,
     memory.freeMiB,
+    memory.freeMib,
     memory.free_mb,
     memory.freeMb,
     memory.free,
@@ -316,6 +327,7 @@ export const normalizeGpuTelemetryPayload = (payload: unknown): Record<string, u
   const temperatureGpuC = firstNumber(
     gpu.temperature_gpu_c,
     gpu.temperatureGpuC,
+    gpu.temperatureC,
     gpu.temperature_c,
     gpu.temperatureC,
     typeof gpu.temperature === 'number' || typeof gpu.temperature === 'string' ? gpu.temperature : undefined,
@@ -354,7 +366,7 @@ export const normalizeGpuTelemetryPayload = (payload: unknown): Record<string, u
     gpu.fanSpeed
   );
 
-  const ok = firstBoolean(gpu.ok, root.ok, gpu.healthy, root.healthy, gpu.status, root.status);
+  const ok = firstBoolean(gpu.ok, root.ok, root.available, gpu.healthy, root.healthy, gpu.status, root.status);
   const hasSignal =
     name !== undefined ||
     driverVersion !== undefined ||
@@ -367,7 +379,7 @@ export const normalizeGpuTelemetryPayload = (payload: unknown): Record<string, u
     powerLimitW !== undefined ||
     fanSpeedPercent !== undefined;
 
-  if (!hasSignal && ok !== true) {
+  if (!hasSignal && ok === undefined) {
     throw new TelemetryPayloadError('GPU telemetry response did not include recognizable GPU fields.', payload);
   }
 
@@ -475,23 +487,23 @@ class TelemetryService {
   private async pollAllHealth() {
     await Promise.all([
       this.pollEndpoint('llm', 'health', config.llm.monitorBaseUrl),
-      this.pollEndpoint('voice', 'health', config.voice.baseUrl)
+      this.pollEndpoint('voice', 'health', config.voice.baseUrl, '/api/health')
     ]);
   }
 
   private async pollAllGpu() {
     await Promise.all([
       this.pollEndpoint('llm', 'gpu', config.llm.monitorBaseUrl),
-      this.pollEndpoint('voice', 'gpu', config.voice.baseUrl)
+      this.pollEndpoint('voice', 'gpu', config.voice.baseUrl, '/api/gpu')
     ]);
   }
 
-  private async pollEndpoint(service: ServiceName, endpoint: EndpointName, baseUrl: string) {
+  private async pollEndpoint(service: ServiceName, endpoint: EndpointName, baseUrl: string, pathOverride?: string) {
     const entry = this.state[service][endpoint];
     entry.last_checked_at = new Date().toISOString();
 
     try {
-      const response = await axios.get(`${trimUrl(baseUrl)}/${endpoint}`, {
+      const response = await axios.get(`${trimUrl(baseUrl)}${pathOverride ?? `/${endpoint}`}`, {
         timeout: config.telemetry.requestTimeoutMs,
         validateStatus: (status) => status >= 200 && status < 300
       });

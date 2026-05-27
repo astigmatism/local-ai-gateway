@@ -251,3 +251,132 @@ export interface AuthResponse {
   csrfToken: string;
   passwordPolicy: PasswordPolicy;
 }
+
+export interface VoiceGpuDevice {
+  index?: number;
+  name?: string;
+  driverVersion?: string;
+  memoryTotalMiB?: number;
+  memoryUsedMiB?: number;
+  memoryFreeMiB?: number;
+  utilizationGpuPercent?: number;
+  temperatureC?: number;
+  raw?: unknown;
+}
+
+export interface VoiceGpuResponse {
+  available: boolean;
+  checkedAt?: string;
+  devices: VoiceGpuDevice[];
+  raw?: unknown;
+}
+
+export interface VoiceModelDescriptor {
+  id: string;
+  label: string;
+  provider?: string;
+  model?: string;
+  name?: string;
+  language?: string;
+  languages?: string[];
+  description?: string;
+  raw?: unknown;
+}
+
+export interface VoiceModelCatalogResponse {
+  kind: 'stt' | 'tts';
+  provider?: string;
+  defaultModel?: string;
+  activeModel?: string;
+  loadedModel?: string;
+  computeType?: string;
+  language?: string;
+  status?: string;
+  worker: Record<string, unknown> | null;
+  models: VoiceModelDescriptor[];
+  raw?: unknown;
+}
+
+export interface VoiceModelsResponse {
+  stt: VoiceModelCatalogResponse;
+  tts: VoiceModelCatalogResponse;
+  raw?: unknown;
+}
+
+export interface VoiceConfigSection {
+  defaultModel?: string;
+  computeType?: string;
+  language?: string;
+  raw?: Record<string, unknown> | null;
+}
+
+export interface VoiceConfigResponse {
+  stt: VoiceConfigSection;
+  tts: VoiceConfigSection;
+  raw?: unknown;
+}
+
+export interface VoiceDescriptor {
+  id: string;
+  label: string;
+  provider?: string;
+  model?: string;
+  language?: string;
+  description?: string;
+  type?: string;
+  raw?: unknown;
+}
+
+export interface VoiceDescriptorsResponse {
+  voices: VoiceDescriptor[];
+  raw?: unknown;
+}
+
+export interface VoiceOverviewResponse {
+  health: Record<string, unknown> | null;
+  services: Record<string, unknown> | null;
+  gpu: VoiceGpuResponse | null;
+  system: Record<string, unknown> | null;
+  models: {
+    stt: VoiceModelCatalogResponse | null;
+    tts: VoiceModelCatalogResponse | null;
+  };
+  config: VoiceConfigResponse | null;
+  voices: VoiceDescriptorsResponse | null;
+  errors: Record<string, string>;
+  generatedAt: string;
+}
+
+export interface VoiceMutationResponse {
+  result: unknown;
+  message?: string;
+}
+
+export interface LoadSttModelRequest {
+  provider: string;
+  model: string;
+  computeType: string;
+  options?: Record<string, unknown>;
+}
+
+export interface LoadTtsModelRequest {
+  provider: string;
+  model: string;
+  language?: string;
+  options?: Record<string, unknown>;
+}
+
+export interface UnloadVoiceModelRequest {
+  strategy?: 'soft' | 'hard';
+  clearCache?: boolean;
+}
+
+export interface UpdateSttConfigRequest {
+  defaultModel?: string;
+  computeType?: string;
+}
+
+export interface UpdateTtsConfigRequest {
+  defaultModel?: string;
+  language?: string;
+}

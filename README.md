@@ -3,7 +3,7 @@
 Bear Castle AI is a lightweight browser application for a local AI lab. It runs on a gateway VM and provides a ChatGPT-like UI for two existing local AI service VMs:
 
 - `local-ai-llm` at `192.168.1.5`, running Ollama with `qwen3:30b`
-- `local-ai-voice` at `192.168.1.8`, running faster-whisper speech-to-text and Kokoro ONNX text-to-speech
+- `local-ai-voice` at `192.168.1.8`, running the local-ai-voice Node gateway with modern `/api` routes for STT, TTS, GPU, health, model catalogs, model load/unload, mutable defaults, and reference audio
 
 The browser talks only to this gateway. The gateway backend calls the LLM, voice/STT, health, and GPU telemetry APIs on the internal network.
 
@@ -27,7 +27,7 @@ Core features:
 - Password authentication with first-login password changes
 - Eric as the default administrator account
 - Admin-only user creation, deactivation, and password reset
-- Settings modal with admin-only local LLM model loading and default-model selection
+- Settings modal with admin-only local LLM model loading/default-model selection plus voice VM status, STT/TTS model controls, mutable defaults, and reference-audio upload
 - Server-side session storage with HTTP-only cookies and CSRF protection
 - Login lockout and endpoint rate limiting
 - Conversation persistence in PostgreSQL
@@ -36,9 +36,9 @@ Core features:
 - Chat prompt submission to Ollama
 - Browser voice snippet recording with MediaRecorder
 - Compact Listening UI with live microphone activity, Stop-to-transcribe, and Cancel-to-discard controls
-- Audio forwarding to `local-ai-voice /transcribe` only when a recording is stopped/accepted
+- Audio forwarding to `local-ai-voice /api/stt/transcribe` only when a recording is stopped/accepted
 - Transcript append-to-input behavior before sending
-- Manual text-to-speech playback for user prompts and assistant responses through `local-ai-voice /speak`
+- Manual text-to-speech playback for user prompts and assistant responses through `local-ai-voice /api/tts/speak`
 - Optional local-LLM transcript punctuation/paragraph cleanup for unformatted STT output
 - Markdown-rendered assistant responses
 - Cached health/GPU telemetry for both AI VMs after login
@@ -71,13 +71,19 @@ Bear Castle AI gateway VM
   |                   http://192.168.1.5:8000/model/load
   |                   http://192.168.1.5:8000/storage (optional)
   |
-  +--> local-ai-voice http://192.168.1.8:8000/transcribe
-                      http://192.168.1.8:8000/speak
-                      http://192.168.1.8:8000/health
-                      http://192.168.1.8:8000/gpu
+  +--> local-ai-voice http://192.168.1.8:8000/api/stt/transcribe
+                      http://192.168.1.8:8000/api/tts/speak
+                      http://192.168.1.8:8000/api/tts/reference-audio
+                      http://192.168.1.8:8000/api/health
+                      http://192.168.1.8:8000/api/services
+                      http://192.168.1.8:8000/api/gpu
+                      http://192.168.1.8:8000/api/models/stt
+                      http://192.168.1.8:8000/api/models/tts
+                      http://192.168.1.8:8000/api/config
+                      http://192.168.1.8:8000/voices (descriptor compatibility route)
 ```
 
-The backend serves the frontend in production from `dist/client` and exposes APIs under `/api/*`. The unauthenticated public API surface is intentionally small: login users, login, and `/health`. Conversation, status/GPU, settings/model status, transcription, text-to-speech, LLM generation, and user-management APIs require authentication. Model pulls, deletes, loading, and default-model changes are Eric/admin-only and remain CSRF-protected.
+The backend serves the frontend in production from `dist/client` and exposes APIs under `/api/*`. The unauthenticated public API surface is intentionally small: login users, login, and `/health`. Conversation, status/GPU, settings/model status, voice status/config, transcription, text-to-speech, LLM generation, and user-management APIs require authentication. Model pulls, deletes, LLM loading/default-model changes, voice model load/unload, voice config updates, voice reference uploads, and voice logs are Eric/admin-only and remain CSRF-protected.
 
 ## HTTPS/domain hosting quick start
 
@@ -101,11 +107,9 @@ LLM_BASE_URL=http://192.168.1.5:11434
 LLM_MONITOR_BASE_URL=http://192.168.1.5:8000
 LLM_MODEL=qwen3:30b
 VOICE_BASE_URL=http://192.168.1.8:8000
-TTS_DEFAULT_VOICE=af_heart
-TTS_DEFAULT_SPEED=1.0
 ```
 
-These are defaults only. Change them in `.env` if the service IPs, ports, voice, or speaking speed change.
+These are gateway defaults only. Change the service URLs in `.env` if the VM IPs or ports change. Mutable STT/TTS defaults now live in the local-ai-voice `/api/config` API and can be updated from Settings > Voice when supported by the voice VM.
 
 
 ## Model Manager
@@ -118,6 +122,35 @@ The gear button in the top application bar opens Settings. The Models section is
 - **Storage** summarizes installed model footprint, optional local-ai-llm disk capacity/free space, low-space warnings, and large installed models that can be deleted.
 
 The browser still talks only to the Bear Castle AI gateway. The gateway talks to Ollama and the local-ai-llm monitor/control service using the configured internal URLs; those internal URLs are never exposed to the browser.
+
+## Voice VM API Contract
+
+Bear Castle AI now targets the modern local-ai-voice Node gateway contract. The voice VM OpenAPI UI is available on the running voice gateway at `GET /api/docs`. The browser still calls only Bear Castle AI; it never calls the voice VM or worker-only ports directly.
+
+Modern routes used by Bear Castle AI:
+
+- STT transcription: `POST {VOICE_BASE_URL}/api/stt/transcribe` with multipart `file`, optional `model`, `language`, `vad_filter`, `min_silence_duration_ms`, and `word_timestamps`.
+- TTS speech: `POST {VOICE_BASE_URL}/api/tts/speak` with JSON for normal text-only speech or multipart when reference audio is needed. The response is returned to the browser as `audio/wav` with `Cache-Control: no-store`.
+- GPU telemetry: `GET {VOICE_BASE_URL}/api/gpu`, normalized from `available`, `checkedAt`, and `devices[]` into the compact System Health panel. Missing power/fan fields are omitted or shown as unavailable instead of `undefined` or `NaN`.
+- Health and workers: `GET {VOICE_BASE_URL}/api/health`, `GET /api/services`, `GET /api/services/stt`, and `GET /api/services/tts`.
+- Model catalogs/status: `GET /api/models`, `GET /api/models/stt`, and `GET /api/models/tts`.
+- Model management: `POST /api/models/stt/load`, `POST /api/models/stt/unload`, `POST /api/models/tts/load`, and `POST /api/models/tts/unload`.
+- Mutable defaults: `GET /api/config`, `PATCH /api/config/stt`, and `PATCH /api/config/tts`.
+- Reference audio upload: `POST /api/tts/reference-audio` with a WAV file forwarded by the Bear Castle AI gateway.
+
+The documented compatibility `GET /voices` route remains in use for voice/reference descriptors because the current contract lists descriptors there and the modern contract does not define a replacement listing route. Other compatibility routes (`/health`, `/gpu`, `/models`, `/speak`, `/transcribe`) are not primary integration targets in Bear Castle AI.
+
+Settings > Voice shows service health, STT/TTS worker status, GPU state, model catalogs, model load/unload controls, mutable default config, and voice/reference descriptors. Mutating voice controls are Eric/admin-only and CSRF-protected. Soft unload is exposed by default; hard unload/restart is intentionally not exposed in the UI because the voice VM contract notes that hard restarts require extra systemd privileges.
+
+Troubleshooting:
+
+- `404` from a modern `/api` route usually means the old voice service is still running. Start the new local-ai-voice Node gateway and confirm `GET /api/docs`.
+- Model load failures usually indicate a missing model name, GPU memory pressure, a provider/model mismatch, or worker-side autoload restrictions.
+- STT/TTS model mismatch errors mean the request model does not match the currently loaded model unless the worker supports autoloading.
+- Missing GPU power/fan fields are expected with the new `/api/gpu` shape; Bear Castle AI handles memory, utilization, and temperature without requiring power or fan data.
+- Reference audio uploads must be WAV. Browser WebM recordings are not labeled or uploaded as WAV unless converted outside the app.
+- CORS is not part of the browser flow because the browser calls Bear Castle AI, and Bear Castle AI calls local-ai-voice over the private network.
+- Worker-only private APIs and worker ports must stay private and must not be exposed publicly.
 
 ### Local model status and details
 
@@ -380,19 +413,17 @@ LLM_MODEL=qwen3:30b
 VOICE_BASE_URL=http://192.168.1.8:8000
 ```
 
-Text-to-speech uses the same `local-ai-voice` base URL. The browser never calls `local-ai-voice` directly; it calls the authenticated gateway endpoint, and the gateway posts multipart form data to `POST /speak` on the voice VM. Speech never plays automatically. Users click the speaker icon beside a user prompt or assistant response to generate and play audio. Defaults are `af_heart` and speed `1.0`:
+Text-to-speech uses the same `local-ai-voice` base URL. The browser never calls `local-ai-voice` directly; it calls the authenticated Bear Castle AI gateway endpoint, and the gateway posts JSON or multipart form data to `POST /api/tts/speak` on the voice VM. Speech never plays automatically. Users click the speaker icon beside a user prompt or assistant response to generate and play audio.
 
 ```env
 TTS_ENABLED=true
-TTS_DEFAULT_VOICE=af_heart
-TTS_DEFAULT_SPEED=1.0
 TTS_TIMEOUT_MS=120000
 TTS_MAX_TEXT_CHARS=12000
 TTS_RATE_LIMIT_WINDOW_MS=60000
 TTS_RATE_LIMIT_MAX=20
 ```
 
-If `TTS_ENABLED=false`, the gateway rejects text-to-speech requests. `TTS_MAX_TEXT_CHARS` limits expensive requests and should stay reasonable for the voice VM.
+If `TTS_ENABLED=false`, the gateway rejects text-to-speech requests. `TTS_MAX_TEXT_CHARS` limits expensive requests and should stay reasonable for the voice VM. Legacy `TTS_DEFAULT_VOICE` and `TTS_DEFAULT_SPEED` environment values can remain in existing deployments, but Bear Castle AI now prefers the voice VM `/api/config` defaults and does not need to force a Kokoro-era voice id for ordinary TTS calls.
 
 If the voice/STT service returns a raw unpunctuated transcript, the gateway can optionally ask the configured local Ollama model to restore punctuation, capitalization, sentence boundaries, and paragraph breaks before appending the transcript to the input box. This is disabled by default to preserve the direct STT behavior and avoid an extra LLM call. Enable it only when needed:
 
@@ -616,8 +647,13 @@ From the gateway VM:
 ```bash
 curl http://192.168.1.5:8000/health
 curl http://192.168.1.5:8000/gpu
-curl http://192.168.1.8:8000/health
-curl http://192.168.1.8:8000/gpu
+curl http://192.168.1.8:8000/api/health
+curl http://192.168.1.8:8000/api/gpu
+curl http://192.168.1.8:8000/api/services
+curl http://192.168.1.8:8000/api/models
+curl http://192.168.1.8:8000/api/models/stt
+curl http://192.168.1.8:8000/api/models/tts
+curl http://192.168.1.8:8000/api/config
 ```
 
 Ollama generate test:
@@ -636,17 +672,16 @@ Voice transcription test:
 ```bash
 curl -X POST \
   -F "file=@/path/to/audio-file.m4a" \
-  http://192.168.1.8:8000/transcribe
+  http://192.168.1.8:8000/api/stt/transcribe
 ```
 
 Voice text-to-speech test:
 
 ```bash
 curl -X POST \
-  -F "text=Hello from Bear Castle AI." \
-  -F "voice=af_heart" \
-  -F "speed=1.0" \
-  http://192.168.1.8:8000/speak \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Hello from Bear Castle AI.","language":"en"}' \
+  http://192.168.1.8:8000/api/tts/speak \
   --output test.wav
 ```
 
@@ -833,8 +868,8 @@ Check that the LLM VM firewall allows the gateway VM to reach ports `11434` and 
 From the gateway VM:
 
 ```bash
-curl http://192.168.1.8:8000/health
-curl -X POST -F "file=@/path/to/audio-file.m4a" http://192.168.1.8:8000/transcribe
+curl http://192.168.1.8:8000/api/health
+curl -X POST -F "file=@/path/to/audio-file.m4a" http://192.168.1.8:8000/api/stt/transcribe
 ```
 
 Check browser microphone permission and the page origin. The web app uses `MediaRecorder`, `navigator.mediaDevices.getUserMedia`, and the Web Audio API for the live Listening meter. Chrome exposes microphone capture only from HTTPS or from `localhost`/loopback local testing. If you open Bear Castle AI by LAN IP or hostname over plain HTTP, Chrome may hide microphone APIs and the app will show: `Microphone recording requires HTTPS or localhost.`
@@ -907,8 +942,8 @@ scripts/restart.sh
 | `LLM_STORAGE_ENDPOINT` | `/storage` | Optional local-ai-llm monitor path for disk free/total. When `/storage`, the gateway also tries `/disk` as a fallback. |
 | `STORAGE_LOW_DISK_WARNING_PERCENT` | `85` | Warn in Settings when reported local-ai-llm disk used percent is at or above this value. |
 | `STORAGE_LOW_DISK_WARNING_BYTES` | `53687091200` | Warn in Settings when reported local-ai-llm available bytes are at or below this value. |
-| `VOICE_BASE_URL` | `http://192.168.1.8:8000` | Voice/STT API base URL. |
-| `VOICE_TIMEOUT_MS` | `300000` | Voice transcription timeout. |
+| `VOICE_BASE_URL` | `http://192.168.1.8:8000` | local-ai-voice Node gateway base URL. Bear Castle AI targets modern `/api` routes under this URL and never calls worker-only ports. |
+| `VOICE_TIMEOUT_MS` | `300000` | General voice VM request timeout, including STT transcription and settings reads when a more specific timeout is not used. |
 | `TRANSCRIPT_FORMATTING_ENABLED` | `false` | Enable optional local-LLM cleanup for raw voice transcripts. |
 | `TRANSCRIPT_FORMATTING_TIMEOUT_MS` | `120000` | Timeout for optional transcript cleanup requests. |
 | `TRANSCRIPT_FORMATTING_MODEL` | `LLM_MODEL` | Ollama model used for optional transcript cleanup. |
