@@ -151,7 +151,7 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
   const [ttsDefaultLanguage, setTtsDefaultLanguage] = useState('en');
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
   const [referenceDisplayName, setReferenceDisplayName] = useState('');
-  const [useReferenceAfterUpload, setUseReferenceAfterUpload] = useState(true);
+  const [referenceDeleteUnsupported, setReferenceDeleteUnsupported] = useState(false);
   const referenceInputRef = useRef<HTMLInputElement | null>(null);
 
   const sttCatalog = overview?.models.stt ?? null;
@@ -160,8 +160,12 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
   const selectedReference = overview?.references?.selectedReference ?? null;
   const activeReference = overview?.references?.activeReference ?? null;
   const activeReferenceKnown = overview?.references?.activeReferenceKnown ?? false;
+  const loadedReferenceFromOverview = overview?.references?.loadedReference ?? selectedReference ?? (activeReferenceKnown ? activeReference : null);
+  const loadedReferenceId = loadedReferenceFromOverview?.id ?? references.find((reference) => reference.isLoaded)?.id ?? null;
+  const loadedReference = loadedReferenceFromOverview ?? references.find((reference) => reference.id === loadedReferenceId) ?? null;
+  const loadedReferenceKnown = Boolean(overview?.references?.loadedReferenceKnown ?? loadedReference);
   const canSelectReferences = Boolean(overview?.references?.selection.canSelect);
-  const canDeleteReferences = Boolean(overview?.references?.deletion?.canDelete);
+  const canDeleteReferences = Boolean(overview?.references?.deletion?.canDelete) && !referenceDeleteUnsupported;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -211,6 +215,9 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
       setNotice(response.message ?? 'Voice setting updated.');
       await refresh();
     } catch (mutationError) {
+      if (mutationError instanceof ApiClientError && mutationError.code === 'REFERENCE_AUDIO_DELETE_UNSUPPORTED') {
+        setReferenceDeleteUnsupported(true);
+      }
       setError(`${action} failed: ${errorMessage(mutationError)}`);
     } finally {
       setBusyAction(null);
@@ -268,28 +275,30 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
     void runMutation('Reference audio upload', async () => {
       const response = await api.uploadReferenceAudio(referenceFile, {
         filename: referenceFile.name,
-        displayName,
-        useAfterUpload: useReferenceAfterUpload
+        displayName
       });
       setReferenceFile(null);
       setReferenceDisplayName('');
-      setUseReferenceAfterUpload(true);
       if (referenceInputRef.current) referenceInputRef.current.value = '';
       return response;
     });
   };
 
-  const selectReferenceForTts = (reference: VoiceReferenceDescriptor) => {
-    void runMutation(`Use reference ${reference.id}`, () => api.selectVoiceReference(reference.id));
+  const isLoadedReference = (reference: VoiceReferenceDescriptor) =>
+    loadedReferenceId ? reference.id === loadedReferenceId : Boolean(reference.isLoaded);
+
+  const loadReferenceForTts = (reference: VoiceReferenceDescriptor) => {
+    void runMutation(`Load reference ${reference.id}`, () => api.selectVoiceReference(reference.id));
   };
 
   const deleteReferenceAudio = (reference: VoiceReferenceDescriptor) => {
+    if (isLoadedReference(reference)) {
+      setError('Loaded reference cannot be deleted. Load another reference before deleting this one.');
+      return;
+    }
+
     const label = reference.displayName || reference.originalFilename || reference.storedFilename || reference.id;
-    if (
-      !window.confirm(
-        `Delete reference audio "${label}" from VoiceVM? This cannot be undone. If this reference is selected for TTS, Bear Castle AI will clear that selection.`
-      )
-    ) {
+    if (!window.confirm(`Delete reference audio "${label}" from VoiceVM? This cannot be undone.`)) {
       return;
     }
     void runMutation(`Delete reference ${reference.id}`, () => api.deleteVoiceReference(reference.id));
@@ -332,42 +341,60 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
 
   const renderReferenceCard = (reference: VoiceReferenceDescriptor) => {
     const details = referenceDetails(reference);
-    const selectAction = `Use reference ${reference.id}`;
+    const loadAction = `Load reference ${reference.id}`;
     const deleteAction = `Delete reference ${reference.id}`;
-    const selected = Boolean(reference.isSelected);
-    const active = Boolean(reference.isActive);
-    const canDeleteReference = reference.canDelete !== false;
+    const loaded = isLoadedReference(reference);
+    const deleteDisabledReason = loaded
+      ? 'Loaded reference cannot be deleted.'
+      : reference.canDelete === false
+        ? 'Delete is not available for this reference.'
+        : undefined;
+    const canDeleteReference = !deleteDisabledReason;
+    const deleteHelpId = loaded ? `voice-reference-delete-help-${reference.id.replace(/[^A-Za-z0-9_-]/g, '-')}` : undefined;
+
     return (
-      <div key={reference.id} className={`voice-descriptor-card voice-reference-card${selected ? ' selected' : ''}`}>
+      <div
+        key={reference.id}
+        className={`voice-descriptor-card voice-reference-card${loaded ? ' loaded' : ''}`}
+        role="group"
+        aria-label={`${reference.displayName}${loaded ? ', loaded reference' : ''}`}
+      >
         <div className="voice-reference-main">
           <div className="voice-reference-title-row">
             <strong title={reference.id}>{reference.displayName}</strong>
-            {active && <span className="badge ok">Active</span>}
-            {selected && <span className="badge stale">Selected in Bear Castle AI</span>}
           </div>
           {details.length > 0 && <small>{details.join(' · ')}</small>}
         </div>
         {canManageVoice && (
           <div className="voice-reference-actions">
-            {canSelectReferences && (
+            {canSelectReferences && !loaded && (
               <button
                 className="secondary-button"
                 type="button"
-                onClick={() => selectReferenceForTts(reference)}
-                disabled={Boolean(busyAction) || selected}
-              >
-                {selected ? 'Selected' : busyAction === selectAction ? 'Selecting...' : 'Use for TTS'}
-              </button>
-            )}
-            {canDeleteReferences && canDeleteReference && (
-              <button
-                className="danger-button subtle-danger"
-                type="button"
-                onClick={() => deleteReferenceAudio(reference)}
+                onClick={() => loadReferenceForTts(reference)}
                 disabled={Boolean(busyAction)}
               >
-                {busyAction === deleteAction ? 'Deleting...' : 'Delete'}
+                {busyAction === loadAction ? 'Loading...' : 'Load'}
               </button>
+            )}
+            {canDeleteReferences && (
+              <>
+                <button
+                  className="danger-button subtle-danger"
+                  type="button"
+                  onClick={() => deleteReferenceAudio(reference)}
+                  disabled={Boolean(busyAction) || !canDeleteReference}
+                  title={deleteDisabledReason}
+                  aria-describedby={deleteHelpId}
+                >
+                  {busyAction === deleteAction ? 'Deleting...' : 'Delete'}
+                </button>
+                {loaded && (
+                  <small id={deleteHelpId} className="voice-reference-action-note">
+                    Loaded reference cannot be deleted.
+                  </small>
+                )}
+              </>
             )}
           </div>
         )}
@@ -554,24 +581,19 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
 
         <div className="voice-reference-current">
           <div>
-            <span className="settings-status-label">VoiceVM active reference</span>
-            <strong>{activeReferenceKnown && activeReference ? activeReference.displayName : 'Unknown'}</strong>
+            <span className="settings-status-label">Loaded reference</span>
+            <strong>{loadedReferenceKnown && loadedReference ? loadedReference.displayName : 'None loaded'}</strong>
             <small>
-              {activeReferenceKnown
-                ? 'Reported by an active/current flag in /voices.'
-                : 'The documented VoiceVM contract does not expose global active-reference state.'}
-            </small>
-          </div>
-          <div>
-            <span className="settings-status-label">Bear Castle selection</span>
-            <strong>{selectedReference ? selectedReference.displayName : 'None selected'}</strong>
-            <small>
-              {selectedReference
-                ? `Future TTS requests send voice=${selectedReference.id}.`
-                : 'Future TTS requests use the VoiceVM default unless a reference is selected.'}
+              {loadedReferenceKnown && loadedReference
+                ? 'Future TTS playback uses the highlighted loaded reference.'
+                : 'Click Load on a reference to use it for future TTS playback.'}
             </small>
           </div>
         </div>
+
+        {referenceDeleteUnsupported && (
+          <div className="settings-warning">Delete is not supported by the current VoiceVM API. Reference delete controls are disabled.</div>
+        )}
 
         {references.length > 0 ? (
           <div className="voice-descriptor-list">{references.map(renderReferenceCard)}</div>
@@ -607,20 +629,8 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
             placeholder={referenceFile?.name ?? 'eric-reference.wav'}
             disabled={!canManageVoice || Boolean(busyAction)}
           />
-          <label className="checkbox-row voice-reference-checkbox">
-            <input
-              type="checkbox"
-              checked={useReferenceAfterUpload}
-              onChange={(event) => setUseReferenceAfterUpload(event.target.checked)}
-              disabled={!canManageVoice || Boolean(busyAction)}
-            />
-            <span>
-              Use this reference for future TTS after upload
-              <small>Bear Castle stores the selection and sends it as the VoiceVM /api/tts/speak voice field.</small>
-            </span>
-          </label>
           <small className="auth-help">
-            Reference uploads use the modern /api/tts/reference-audio route. Delete uses VoiceVM descriptor-provided delete links when available, then Bear Castle's conservative reference-audio delete fallback. WebM recordings are not labeled as WAV.
+            Uploading adds the WAV clip to the list and keeps the currently loaded reference unchanged. Click Load next to a reference to use it for future TTS. Delete is disabled for the loaded reference and uses VoiceVM descriptor-provided delete links or Bear Castle's conservative reference-audio delete fallback when supported.
           </small>
         </form>
       </article>

@@ -466,6 +466,7 @@ export interface VoiceReferenceDescriptor {
   type?: string;
   isActive?: boolean;
   isSelected?: boolean;
+  isLoaded?: boolean;
   canDelete?: boolean;
   source: 'voice-vm' | 'bear-castle';
   raw?: unknown;
@@ -476,6 +477,9 @@ export interface VoiceReferenceSelectionCapability {
   canSelect: boolean;
   activeReferenceExposedByVoiceVm: boolean;
   activeReferenceKnown: boolean;
+  loadedReferenceKnown?: boolean;
+  loadedReferenceId?: string;
+  loadedReferenceDisplayName?: string;
   selectedReferenceId?: string;
   selectedReferenceDisplayName?: string;
   selectedReferencePersistsIn: 'bear-castle';
@@ -486,12 +490,15 @@ export interface VoiceReferenceDeletionCapability {
   mode: 'voice-vm-reference-audio-delete';
   canDelete: boolean;
   supportedBySuppliedVoiceVmContract: boolean;
+  blocksLoadedReferenceDelete?: boolean;
   clearsBearCastleSelection: boolean;
   clearsBearCastleMetadata: boolean;
 }
 
 export interface VoiceReferencesResponse {
   references: VoiceReferenceDescriptor[];
+  loadedReference?: VoiceReferenceDescriptor | null;
+  loadedReferenceKnown?: boolean;
   activeReference: VoiceReferenceDescriptor | null;
   selectedReference: VoiceReferenceDescriptor | null;
   activeReferenceKnown: boolean;

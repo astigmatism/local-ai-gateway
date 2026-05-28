@@ -306,7 +306,7 @@ settingsVoiceRouter.post(
   asyncHandler(async (req, res) => {
     const body = selectReferenceSchema.parse(req.body ?? {});
     const references = await selectVoiceReference(body.id);
-    res.json({ references, message: 'Reference selected for future TTS requests.' });
+    res.json({ references, message: 'Reference loaded for future TTS requests.' });
   })
 );
 
@@ -337,10 +337,8 @@ settingsVoiceRouter.post(
 
     const originalFilename = sanitizeOriginalFilename(file.originalname || 'reference.wav');
     const displayName = sanitizeDisplayName(req.body?.displayName ?? req.body?.display_name, originalFilename);
-    const useAfterUpload = z.coerce.boolean().default(false).parse(req.body?.useAfterUpload ?? req.body?.use_after_upload ?? false);
     const result = await uploadAndRememberReferenceAudio(file.buffer, originalFilename, file.mimetype || 'audio/wav', {
-      displayName,
-      useAfterUpload
+      displayName
     });
     res.json(result);
   })

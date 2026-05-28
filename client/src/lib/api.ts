@@ -606,15 +606,11 @@ export const api = {
     return jsonRequest<VoiceMutationResponse>(`/api/settings/voice/references/${encodeURIComponent(id)}`, 'DELETE');
   },
 
-  async uploadReferenceAudio(
-    file: File | Blob,
-    options: { filename?: string; displayName?: string; useAfterUpload?: boolean } = {}
-  ) {
+  async uploadReferenceAudio(file: File | Blob, options: { filename?: string; displayName?: string } = {}) {
     const filename = options.filename || (typeof (file as { name?: unknown }).name === 'string' ? (file as { name: string }).name : 'reference.wav');
     const formData = new FormData();
     formData.append('reference_audio', file, filename);
     if (options.displayName) formData.append('displayName', options.displayName);
-    if (options.useAfterUpload !== undefined) formData.append('useAfterUpload', String(options.useAfterUpload));
     return request<VoiceMutationResponse>('/api/settings/voice/reference-audio', {
       method: 'POST',
       body: formData

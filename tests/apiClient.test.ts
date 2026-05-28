@@ -594,8 +594,7 @@ describe('api client voice VM settings requests', () => {
 
     const response = await api.uploadReferenceAudio(new Blob(['RIFF'], { type: 'audio/wav' }), {
       filename: 'sample.wav',
-      displayName: 'Eric sample.wav',
-      useAfterUpload: true
+      displayName: 'Eric sample.wav'
     });
 
     expect(response.message).toBe('Reference audio uploaded.');
@@ -608,14 +607,14 @@ describe('api client voice VM settings requests', () => {
     expect(init.body).toBeInstanceOf(FormData);
     const formData = init.body as FormData;
     expect(formData.get('displayName')).toBe('Eric sample.wav');
-    expect(formData.get('useAfterUpload')).toBe('true');
+    expect(formData.has('useAfterUpload')).toBe(false);
   });
 
-  it('selects an existing voice reference through the gateway with CSRF', async () => {
+  it('loads an existing voice reference through the gateway with CSRF', async () => {
     const { api } = await loadApi();
     const fetchMock = vi.fn(
       async () =>
-        new Response(JSON.stringify({ message: 'Reference selected for future TTS requests.' }), {
+        new Response(JSON.stringify({ message: 'Reference loaded for future TTS requests.' }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
         })
@@ -626,7 +625,7 @@ describe('api client voice VM settings requests', () => {
 
     const response = await api.selectVoiceReference('reference_20260527_abc123.wav');
 
-    expect(response.message).toContain('Reference selected');
+    expect(response.message).toContain('Reference loaded');
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/settings/voice/references/select',
       expect.objectContaining({ credentials: 'include', method: 'POST' })

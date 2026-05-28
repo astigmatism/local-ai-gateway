@@ -50,6 +50,7 @@ export interface VoiceReferenceDescriptor {
   type?: string;
   isActive?: boolean;
   isSelected?: boolean;
+  isLoaded?: boolean;
   canDelete: boolean;
   source: VoiceReferenceSource;
   raw?: unknown;
@@ -60,6 +61,9 @@ export interface VoiceReferenceSelectionCapability {
   canSelect: true;
   activeReferenceExposedByVoiceVm: boolean;
   activeReferenceKnown: boolean;
+  loadedReferenceKnown: boolean;
+  loadedReferenceId?: string;
+  loadedReferenceDisplayName?: string;
   selectedReferenceId?: string;
   selectedReferenceDisplayName?: string;
   selectedReferencePersistsIn: 'bear-castle';
@@ -70,12 +74,15 @@ export interface VoiceReferenceDeletionCapability {
   mode: ReferenceDeletionMode;
   canDelete: true;
   supportedBySuppliedVoiceVmContract: false;
-  clearsBearCastleSelection: true;
+  blocksLoadedReferenceDelete: true;
+  clearsBearCastleSelection: false;
   clearsBearCastleMetadata: true;
 }
 
 export interface VoiceReferencesResponse {
   references: VoiceReferenceDescriptor[];
+  loadedReference: VoiceReferenceDescriptor | null;
+  loadedReferenceKnown: boolean;
   activeReference: VoiceReferenceDescriptor | null;
   selectedReference: VoiceReferenceDescriptor | null;
   activeReferenceKnown: boolean;
@@ -86,7 +93,6 @@ export interface VoiceReferencesResponse {
 
 export interface UploadReferenceAudioOptions {
   displayName?: string;
-  useAfterUpload?: boolean;
 }
 
 const defaultState = (): VoiceReferenceState => ({
@@ -445,7 +451,7 @@ export const normalizeVoiceReferences = (
   voiceDescriptors: VoiceDescriptorsResponse,
   state: VoiceReferenceState = defaultState()
 ): VoiceReferencesResponse => {
-  const references = voiceDescriptors.voices.map((descriptor) => {
+  const rawReferences = voiceDescriptors.voices.map((descriptor) => {
     const stateMetadata = state.references[descriptor.id];
     const storedFilename = stateMetadata?.storedFilename ?? storedFilenameFromDescriptor(descriptor);
     const originalFilename = stateMetadata?.originalFilename ?? originalFilenameFromDescriptor(descriptor);
@@ -488,22 +494,41 @@ export const normalizeVoiceReferences = (
     } satisfies VoiceReferenceDescriptor;
   });
 
-  const activeReference = references.find((reference) => reference.isActive) ?? null;
+  const activeReference = rawReferences.find((reference) => reference.isActive) ?? null;
   const activeReferenceKnown = activeReference !== null;
-  const selectedReference = references.find((reference) => reference.id === state.selectedReferenceId) ?? null;
+  const selectedReference = rawReferences.find((reference) => reference.id === state.selectedReferenceId) ?? null;
+
+  // Bear Castle's persisted selection is the first source of truth because /api/speak sends it
+  // as VoiceVM's `voice` field. VoiceVM active/current flags are only a fallback when no app
+  // selection exists, so the UI can show one unambiguous Loaded reference.
+  const loadedReference = selectedReference ?? activeReference;
+  const loadedReferenceKnown = loadedReference !== null;
+  const references = rawReferences.map((reference) => ({
+    ...reference,
+    isLoaded: loadedReference?.id === reference.id,
+    canDelete: loadedReference?.id !== reference.id
+  }));
+  const normalizedLoadedReference = references.find((reference) => reference.id === loadedReference?.id) ?? null;
+  const normalizedActiveReference = references.find((reference) => reference.id === activeReference?.id) ?? null;
+  const normalizedSelectedReference = references.find((reference) => reference.id === selectedReference?.id) ?? null;
 
   return {
     references,
-    activeReference,
-    selectedReference,
+    loadedReference: normalizedLoadedReference,
+    loadedReferenceKnown,
+    activeReference: normalizedActiveReference,
+    selectedReference: normalizedSelectedReference,
     activeReferenceKnown,
     selection: {
       mode: 'bear-castle-tts-voice',
       canSelect: true,
       activeReferenceExposedByVoiceVm: activeReferenceKnown,
       activeReferenceKnown,
-      selectedReferenceId: selectedReference?.id,
-      selectedReferenceDisplayName: selectedReference?.displayName,
+      loadedReferenceKnown,
+      loadedReferenceId: normalizedLoadedReference?.id,
+      loadedReferenceDisplayName: normalizedLoadedReference?.displayName,
+      selectedReferenceId: normalizedSelectedReference?.id,
+      selectedReferenceDisplayName: normalizedSelectedReference?.displayName,
       selectedReferencePersistsIn: 'bear-castle',
       ttsSpeakField: 'voice'
     },
@@ -511,7 +536,8 @@ export const normalizeVoiceReferences = (
       mode: 'voice-vm-reference-audio-delete',
       canDelete: true,
       supportedBySuppliedVoiceVmContract: false,
-      clearsBearCastleSelection: true,
+      blocksLoadedReferenceDelete: true,
+      clearsBearCastleSelection: false,
       clearsBearCastleMetadata: true
     },
     raw: voiceDescriptors.raw
@@ -574,13 +600,43 @@ export const selectVoiceReference = async (referenceId: string) => {
 };
 
 export const deleteVoiceReference = async (referenceId: string) => {
-  const reference = await findCurrentReference(referenceId);
+  const id = validateReferenceId(referenceId);
+  const beforeReferences = await getVoiceReferences();
+  const reference = beforeReferences.references.find((item) => item.id === id);
+  if (!reference) {
+    throw new ApiError(404, 'That voice reference is not available from VoiceVM.', 'VOICE_REFERENCE_NOT_FOUND');
+  }
+
+  if (beforeReferences.loadedReference?.id === reference.id) {
+    throw new ApiError(
+      409,
+      'Loaded reference cannot be deleted. Load another reference before deleting this one.',
+      'VOICE_REFERENCE_LOADED_DELETE_BLOCKED'
+    );
+  }
+
   const deleteResult = await deleteReferenceAudio({
     id: reference.id,
     storedFilename: reference.storedFilename,
     path: reference.path,
     raw: reference.raw
   });
+
+  const postDeleteReferences = await getVoiceReferences();
+  const stillListed = postDeleteReferences.references.some((item) => item.id === reference.id);
+
+  if (stillListed) {
+    logger.warn(
+      { referenceId: reference.id, displayName: reference.displayName, routeSource: deleteResult.routeSource },
+      'VoiceVM accepted the reference delete request, but the descriptor is still returned by /voices'
+    );
+    throw new ApiError(
+      502,
+      `VoiceVM accepted the delete request for ${reference.displayName}, but /voices still lists it. The reference was not removed.`,
+      'REFERENCE_AUDIO_DELETE_NOT_CONFIRMED',
+      { referenceId: reference.id, route: deleteResult.route, routeSource: deleteResult.routeSource }
+    );
+  }
 
   const state = await loadState();
   const selectedReferenceCleared = state.selectedReferenceId === reference.id;
@@ -597,26 +653,14 @@ export const deleteVoiceReference = async (referenceId: string) => {
     'Voice reference audio deleted through VoiceVM'
   );
 
-  const references = await getVoiceReferences();
-  const stillListed = references.references.some((item) => item.id === reference.id);
-
-  if (stillListed) {
-    logger.warn(
-      { referenceId: reference.id, displayName: reference.displayName },
-      'VoiceVM accepted the reference delete request, but the descriptor is still returned by /voices'
-    );
-  }
-
   return {
     result: deleteResult.result,
     deletedReferenceId: reference.id,
     deletedReference: reference,
     selectedReferenceCleared,
-    stillListed,
-    references,
-    message: stillListed
-      ? `Reference delete was requested for ${reference.displayName}, but VoiceVM still lists it. Refresh /voices or check the VoiceVM service logs.`
-      : `Reference audio deleted: ${reference.displayName}.`
+    stillListed: false,
+    references: await getVoiceReferences(),
+    message: `Reference audio deleted: ${reference.displayName}.`
   };
 };
 
@@ -634,6 +678,7 @@ export const uploadAndRememberReferenceAudio = async (
   const originalFilename = sanitizeOriginalFilename(originalFilenameInput, 'reference.wav');
   const displayName = sanitizeDisplayName(options.displayName, originalFilename);
   const before = await getVoiceReferences();
+  const previousLoadedReferenceId = before.loadedReference?.id;
   const uploadResult = await uploadReferenceAudio(buffer, originalFilename, contentType);
   const afterDescriptors = await listVoiceDescriptors();
   let state = await loadState();
@@ -647,12 +692,6 @@ export const uploadAndRememberReferenceAudio = async (
       storedFilename: uploadedReference.storedFilename,
       uploadedAt: new Date().toISOString()
     });
-
-    if (options.useAfterUpload) {
-      state = await loadState();
-      state.selectedReferenceId = uploadedReference.id;
-      await saveState(state);
-    }
   } else {
     logger.warn(
       {
@@ -665,16 +704,22 @@ export const uploadAndRememberReferenceAudio = async (
     );
   }
 
+  if (!before.selectedReference && previousLoadedReferenceId) {
+    state = await loadState();
+    if (!state.selectedReferenceId) {
+      state.selectedReferenceId = previousLoadedReferenceId;
+      await saveState(state);
+    }
+  }
+
   return {
     result: uploadResult,
     uploadedReferenceId: uploadedReference?.id,
     references: await getVoiceReferences(),
     mappedOriginalFilename: Boolean(uploadedReference),
     message: uploadedReference
-      ? options.useAfterUpload
-        ? `Reference audio uploaded and selected for future TTS: ${displayName}.`
-        : `Reference audio uploaded: ${displayName}.`
-      : `Reference audio uploaded, but VoiceVM did not return enough information to match it to a listed descriptor. Refresh /voices and select it if it appears.`
+      ? `Reference audio uploaded: ${displayName}.`
+      : `Reference audio uploaded, but VoiceVM did not return enough information to match it to a listed descriptor. Refresh /voices and load it if it appears.`
   };
 };
 
