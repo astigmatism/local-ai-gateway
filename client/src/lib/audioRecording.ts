@@ -1,8 +1,8 @@
 export const preferredAudioMimeTypes = [
   'audio/webm;codecs=opus',
   'audio/webm',
-  'audio/mp4',
   'audio/mp4;codecs=mp4a.40.2',
+  'audio/mp4',
   'audio/aac',
   'audio/ogg;codecs=opus',
   'audio/ogg'
@@ -20,7 +20,7 @@ export const microphoneRecordingErrors = {
   unsupportedRecordingFormat: 'This browser recording format is not supported.',
   startFailed: 'Could not start microphone recording.',
   recordingFailed: 'Browser recording failed. Try again.',
-  noAudioCaptured: 'No audio was captured.',
+  noAudioCaptured: 'No audio was captured. The microphone stream was active, but the browser did not return recorded audio data.',
   transcriptionFailed: 'Could not transcribe audio.'
 } as const;
 
@@ -106,13 +106,13 @@ export const getMicrophoneRecordingSupportError = (
   return null;
 };
 
-export const selectSupportedAudioMimeType = (
+export const getSupportedAudioMimeTypes = (
   mediaRecorder: MediaRecorderSupport | undefined,
   candidates: readonly string[] = preferredAudioMimeTypes
 ) => {
-  if (typeof mediaRecorder?.isTypeSupported !== 'function') return undefined;
+  if (typeof mediaRecorder?.isTypeSupported !== 'function') return [];
 
-  return candidates.find((mimeType) => {
+  return candidates.filter((mimeType) => {
     try {
       return mediaRecorder.isTypeSupported(mimeType);
     } catch {
@@ -120,6 +120,11 @@ export const selectSupportedAudioMimeType = (
     }
   });
 };
+
+export const selectSupportedAudioMimeType = (
+  mediaRecorder: MediaRecorderSupport | undefined,
+  candidates: readonly string[] = preferredAudioMimeTypes
+) => getSupportedAudioMimeTypes(mediaRecorder, candidates).at(0);
 
 const audioMimeTypeExtensionMap: Record<string, string> = {
   'audio/webm': 'webm',

@@ -3,10 +3,10 @@ import {
   calculateAudioLevelFromTimeDomainData,
   getBrowserAudioRecordingEnvironment,
   getMicrophoneRecordingSupportError,
+  getSupportedAudioMimeTypes,
   getTranscriptionFailureMessage,
   mapMicrophoneStartError,
   microphoneRecordingErrors,
-  selectSupportedAudioMimeType,
   shouldShowUserCanceledRecordingStatus,
   shouldStoreRecordingChunk,
   shouldTranscribeRecordingStop
@@ -33,10 +33,17 @@ interface UseAudioRecorderOptions {
   onError: (message: string) => void;
 }
 
+interface CreatedMediaRecorder {
+  recorder: MediaRecorder;
+  requestedMimeType?: string;
+}
+
 export const audioLevelBarCount = 64;
 const visualizerFrameIntervalMs = 45;
 const canceledStatusResetDelayMs = 350;
 const errorStatusResetDelayMs = 1100;
+const recorderTimesliceMs = 1000;
+const recorderStopSettleDelayMs = 250;
 
 const createIdleAudioLevels = () => Array.from({ length: audioLevelBarCount }, () => 0.04);
 
@@ -44,20 +51,44 @@ const stopTracks = (stream: MediaStream | null) => {
   stream?.getTracks().forEach((track) => track.stop());
 };
 
-const waitForPendingRecorderEvents = () =>
+const waitForFinalRecorderEvents = () =>
   new Promise<void>((resolve) => {
     if (typeof window === 'undefined') {
       resolve();
       return;
     }
 
-    window.setTimeout(resolve, 0);
+    window.setTimeout(resolve, recorderStopSettleDelayMs);
   });
+
+const resumeAudioContext = (audioContext: AudioContext | null) => {
+  if (!audioContext || audioContext.state === 'closed') return;
+  void audioContext.resume().catch(() => undefined);
+};
+
+const createRecorderWithFallback = (MediaRecorderCtor: typeof MediaRecorder, stream: MediaStream): CreatedMediaRecorder => {
+  for (const mimeType of getSupportedAudioMimeTypes(MediaRecorderCtor)) {
+    try {
+      return {
+        recorder: new MediaRecorderCtor(stream, { mimeType }),
+        requestedMimeType: mimeType
+      };
+    } catch {
+      // Some browsers report support but reject the constructor option. Try the next candidate.
+    }
+  }
+
+  return {
+    recorder: new MediaRecorderCtor(stream)
+  };
+};
 
 export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecorderOptions) => {
   const [status, setStatus] = useState<AudioRecordingStatus>('idle');
   const [audioLevels, setAudioLevels] = useState<number[]>(() => createIdleAudioLevels());
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const finalizingRecorderRef = useRef<MediaRecorder | null>(null);
+  const recorderMimeTypeRef = useRef<string | undefined>(undefined);
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const recordingFailedRef = useRef(false);
@@ -116,7 +147,7 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
     [clearStatusResetTimer, setRecorderStatus]
   );
 
-  const stopVisualizer = useCallback(() => {
+  const disconnectVisualizerNodes = useCallback((resetLevels = true) => {
     if (animationFrameRef.current !== null && typeof window !== 'undefined') {
       window.cancelAnimationFrame(animationFrameRef.current);
     }
@@ -139,16 +170,38 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
       // The node may already be disconnected by the browser.
     }
 
+    if (resetLevels && isMountedRef.current) {
+      setAudioLevels(createIdleAudioLevels());
+    }
+  }, []);
+
+  const stopVisualizer = useCallback(() => {
+    disconnectVisualizerNodes();
+
     const audioContext = audioContextRef.current;
     audioContextRef.current = null;
     if (audioContext && audioContext.state !== 'closed') {
       void audioContext.close().catch(() => undefined);
     }
+  }, [disconnectVisualizerNodes]);
 
-    if (isMountedRef.current) {
-      setAudioLevels(createIdleAudioLevels());
+  const prepareVisualizerAudioContext = useCallback(() => {
+    stopVisualizer();
+
+    if (typeof window === 'undefined') return null;
+
+    const AudioContextCtor = window.AudioContext ?? (window as WindowWithWebkitAudioContext).webkitAudioContext;
+    if (typeof AudioContextCtor !== 'function') return null;
+
+    try {
+      const audioContext = new AudioContextCtor();
+      audioContextRef.current = audioContext;
+      resumeAudioContext(audioContext);
+      return audioContext;
+    } catch {
+      return null;
     }
-  }, []);
+  }, [stopVisualizer]);
 
   const stopMediaStream = useCallback(() => {
     stopTracks(streamRef.current);
@@ -157,6 +210,8 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
 
   const resetRecordingRefs = useCallback(() => {
     mediaRecorderRef.current = null;
+    finalizingRecorderRef.current = null;
+    recorderMimeTypeRef.current = undefined;
     chunksRef.current = [];
     recordingFailedRef.current = false;
     stopReasonRef.current = null;
@@ -164,8 +219,8 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
   }, []);
 
   const startVisualizer = useCallback(
-    (stream: MediaStream) => {
-      stopVisualizer();
+    (stream: MediaStream, preparedAudioContext: AudioContext | null = audioContextRef.current) => {
+      disconnectVisualizerNodes(false);
 
       if (typeof window === 'undefined') return;
 
@@ -173,7 +228,9 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
       if (typeof AudioContextCtor !== 'function') return;
 
       try {
-        const audioContext = new AudioContextCtor();
+        const existingAudioContext =
+          preparedAudioContext && preparedAudioContext.state !== 'closed' ? preparedAudioContext : audioContextRef.current;
+        const audioContext = existingAudioContext && existingAudioContext.state !== 'closed' ? existingAudioContext : new AudioContextCtor();
         const analyser = audioContext.createAnalyser();
         analyser.fftSize = 256;
         analyser.smoothingTimeConstant = 0.78;
@@ -195,44 +252,47 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
           if (timestamp - lastVisualizerUpdateRef.current < visualizerFrameIntervalMs) return;
           lastVisualizerUpdateRef.current = timestamp;
 
+          resumeAudioContext(audioContextRef.current);
           analyserRef.current.getByteTimeDomainData(timeDomainData);
           const level = calculateAudioLevelFromTimeDomainData(timeDomainData);
 
-          setAudioLevels((currentLevels) => {
+          setAudioLevels((currentLevels: number[]) => {
             const nextLevels = currentLevels.length === audioLevelBarCount ? currentLevels.slice(1) : createIdleAudioLevels().slice(1);
             nextLevels.push(level);
             return nextLevels;
           });
         };
 
-        void audioContext.resume().catch(() => undefined);
+        resumeAudioContext(audioContext);
         animationFrameRef.current = window.requestAnimationFrame(updateAudioLevels);
       } catch {
         stopVisualizer();
       }
     },
-    [stopVisualizer]
+    [disconnectVisualizerNodes, stopVisualizer]
   );
 
   const finishRecorderStop = useCallback(
     async (recorder: MediaRecorder, fallbackMimeType?: string) => {
-      if (mediaRecorderRef.current !== recorder) return;
+      if (mediaRecorderRef.current !== recorder || finalizingRecorderRef.current === recorder) return;
 
-      await waitForPendingRecorderEvents();
+      finalizingRecorderRef.current = recorder;
+      await waitForFinalRecorderEvents();
 
-      if (mediaRecorderRef.current !== recorder) return;
+      if (mediaRecorderRef.current !== recorder) {
+        if (finalizingRecorderRef.current === recorder) finalizingRecorderRef.current = null;
+        return;
+      }
 
       const stopReason = stopReasonRef.current;
       const recordingFailed = recordingFailedRef.current;
       const shouldTranscribe = shouldTranscribeRecordingStop(stopReason, recordingFailed);
       const shouldShowCanceledStatus = shouldShowUserCanceledRecordingStatus(stopReason);
       const stoppedStatus = statusRef.current;
-      const chunkMimeType = chunksRef.current.find((chunk) => chunk.type)?.type;
-      const blobType = recorder.mimeType || chunkMimeType || fallbackMimeType || undefined;
       const chunks = chunksRef.current.slice();
-      const blob = shouldTranscribe
-        ? new Blob(chunks, blobType ? { type: blobType } : undefined)
-        : null;
+      const chunkMimeType = chunks.find((chunk: Blob) => chunk.type)?.type;
+      const blobType = recorder.mimeType || chunkMimeType || fallbackMimeType || recorderMimeTypeRef.current || undefined;
+      const blob = shouldTranscribe ? new Blob(chunks, blobType ? { type: blobType } : undefined) : null;
 
       stopVisualizer();
       stopMediaStream();
@@ -328,20 +388,13 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
         setRecorderStatus('stopping');
       } else if (reason === 'cancel') {
         setRecorderStatus('canceled');
+        stopVisualizer();
       } else if (reason === 'error') {
         setRecorderStatus('error');
+        stopVisualizer();
       } else {
         setRecorderStatus('idle');
-      }
-
-      stopVisualizer();
-
-      try {
-        if (reason === 'accept') {
-          recorder.requestData();
-        }
-      } catch {
-        // requestData can throw if the browser has already stopped the recorder.
+        stopVisualizer();
       }
 
       try {
@@ -355,6 +408,8 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
         stopReasonRef.current = 'error';
         onErrorRef.current(microphoneRecordingErrors.recordingFailed);
         setRecorderStatus('error');
+        stopVisualizer();
+        stopMediaStream();
         void finishRecorderStop(recorder);
       } finally {
         if (reason !== 'accept') {
@@ -389,11 +444,14 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
 
     const requestId = startRequestIdRef.current + 1;
     startRequestIdRef.current = requestId;
+    const preparedAudioContext = prepareVisualizerAudioContext();
 
     try {
       recordingFailedRef.current = false;
       stopReasonRef.current = null;
       actionInProgressRef.current = false;
+      finalizingRecorderRef.current = null;
+      recorderMimeTypeRef.current = undefined;
       chunksRef.current = [];
 
       const stream = await getUserMedia({ audio: true });
@@ -404,10 +462,12 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
       }
 
       streamRef.current = stream;
+      startVisualizer(stream, preparedAudioContext);
 
-      const mimeType = selectSupportedAudioMimeType(MediaRecorderCtor);
-      const recorder = new MediaRecorderCtor(stream, mimeType ? { mimeType } : undefined);
+      const { recorder, requestedMimeType } = createRecorderWithFallback(MediaRecorderCtor, stream);
       mediaRecorderRef.current = recorder;
+      const fallbackMimeType = recorder.mimeType || requestedMimeType;
+      recorderMimeTypeRef.current = fallbackMimeType;
 
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0 && shouldStoreRecordingChunk(stopReasonRef.current)) {
@@ -430,25 +490,29 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
           if (recorder.state !== 'inactive') {
             recorder.stop();
           } else {
-            void finishRecorderStop(recorder, mimeType);
+            void finishRecorderStop(recorder, fallbackMimeType);
           }
         } catch {
-          void finishRecorderStop(recorder, mimeType);
+          void finishRecorderStop(recorder, fallbackMimeType);
         }
       };
 
       recorder.onstop = () => {
-        void finishRecorderStop(recorder, mimeType);
+        void finishRecorderStop(recorder, fallbackMimeType);
       };
 
-      startVisualizer(stream);
-      recorder.start();
+      try {
+        recorder.start(recorderTimesliceMs);
+      } catch {
+        recorder.start();
+      }
+
       setRecorderStatus('listening');
     } catch (error) {
       if (!isMountedRef.current || requestId !== startRequestIdRef.current) return;
       failRecording(mapMicrophoneStartError(error, environment));
     }
-  }, [clearStatusResetTimer, failRecording, finishRecorderStop, setRecorderStatus, startVisualizer, stopMediaStream, stopVisualizer]);
+  }, [clearStatusResetTimer, failRecording, finishRecorderStop, prepareVisualizerAudioContext, setRecorderStatus, startVisualizer, stopMediaStream, stopVisualizer]);
 
   const stopRecording = useCallback(() => {
     requestRecorderStop('accept');

@@ -114,6 +114,10 @@ transcribeRouter.post(
       throw new ApiError(400, 'Missing multipart form-data audio file field. Use field name "file".', 'MISSING_AUDIO_FILE');
     }
 
+    if (file.size <= 0) {
+      throw new ApiError(400, 'Uploaded audio file was empty.', 'EMPTY_AUDIO_FILE');
+    }
+
     const authenticatedUserId = req.auth?.user.id;
     if (!authenticatedUserId) {
       throw new ApiError(401, 'Authentication required.', 'AUTH_REQUIRED');

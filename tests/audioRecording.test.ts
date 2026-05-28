@@ -3,6 +3,7 @@ import {
   calculateAudioLevelFromTimeDomainData,
   audioMimeTypeToFileExtension,
   getMicrophoneRecordingSupportError,
+  getSupportedAudioMimeTypes,
   getTranscriptionFailureMessage,
   mapMicrophoneStartError,
   microphoneRecordingErrors,
@@ -71,6 +72,7 @@ describe('audio recording browser support detection', () => {
     const MediaRecorder = makeMediaRecorder(['audio/webm']);
 
     expect(selectSupportedAudioMimeType(MediaRecorder)).toBe('audio/webm');
+    expect(getSupportedAudioMimeTypes(MediaRecorder)).toEqual(['audio/webm']);
   });
 
   it('selects iOS-compatible MP4 or AAC recording MIME types when WebM is not supported', () => {
@@ -78,6 +80,9 @@ describe('audio recording browser support detection', () => {
     expect(selectSupportedAudioMimeType(makeMediaRecorder(['audio/mp4;codecs=mp4a.40.2']))).toBe(
       'audio/mp4;codecs=mp4a.40.2'
     );
+    expect(
+      selectSupportedAudioMimeType(makeMediaRecorder(['audio/mp4', 'audio/mp4;codecs=mp4a.40.2']))
+    ).toBe('audio/mp4;codecs=mp4a.40.2');
     expect(selectSupportedAudioMimeType(makeMediaRecorder(['audio/aac']))).toBe('audio/aac');
   });
 
