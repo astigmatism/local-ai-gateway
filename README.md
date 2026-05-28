@@ -42,8 +42,13 @@ Core features:
 - Optional local-LLM transcript punctuation/paragraph cleanup for unformatted STT output
 - Markdown-rendered assistant responses
 - Cached health/GPU telemetry for both AI VMs after login
+- Dedicated mobile chat layout below 768px with hidden conversation history and system health panels opened from mobile controls
 - PM2 startup after reboot
 - Deployment helper scripts
+
+### Responsive UI layout
+
+Desktop remains the default layout at 768px and wider, preserving the top bar, conversation history column, main chat pane, system health pane, and resizable composer/workspace behavior. Below 768px, the React app switches to a dedicated mobile layout focused on the active conversation: the Bear Castle AI top bar stays visible, mobile controls open conversation history and System Health as overlays, the message list scrolls independently, and the composer stays pinned to the bottom with text entry, microphone recording, Stop/Cancel recording, transcript append, and send controls.
 
 ## 2. Architecture
 

@@ -1,4 +1,4 @@
-import { forwardRef } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import type { ChangeEvent, KeyboardEvent } from 'react';
 import { VoiceCaptureControls } from './VoiceCaptureControls.js';
 import type { AudioRecordingStatus } from '../hooks/useAudioRecorder.js';
@@ -15,6 +15,7 @@ interface ChatInputProps {
   isSending: boolean;
   disabled: boolean;
   composerNotice?: string | null;
+  variant?: 'desktop' | 'mobile';
 }
 
 const MicrophoneIcon = () => (
@@ -33,7 +34,8 @@ const SendIcon = () => (
 const getComposerStatusText = (
   recordingStatus: AudioRecordingStatus,
   isSending: boolean,
-  composerNotice?: string | null
+  composerNotice?: string | null,
+  variant: ChatInputProps['variant'] = 'desktop'
 ) => {
   if (recordingStatus === 'requesting-permission') return 'Requesting microphone permission…';
   if (recordingStatus === 'listening') return 'Listening… Speak now, then choose Cancel or Transcribe.';
@@ -42,6 +44,7 @@ const getComposerStatusText = (
   if (recordingStatus === 'canceled') return 'Recording canceled.';
   if (isSending) return 'Thinking…';
   if (composerNotice) return composerNotice;
+  if (variant === 'mobile') return 'Tap Send to message. Transcripts are appended for editing first.';
   return 'Press Enter to send. Shift+Enter inserts a new line.';
 };
 
@@ -57,19 +60,42 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
     audioLevels,
     isSending,
     disabled,
-    composerNotice
+    composerNotice,
+    variant = 'desktop'
   },
   ref
 ) {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const canSend = draft.trim().length > 0 && !isSending && !disabled && recordingStatus === 'idle';
   const isListening = recordingStatus === 'listening';
-  const showVoiceCaptureControls = recordingStatus === 'listening' || recordingStatus === 'stopping' || recordingStatus === 'canceled';
+  const showVoiceCaptureControls =
+    recordingStatus === 'listening' || recordingStatus === 'stopping' || recordingStatus === 'canceled';
   const canStartRecording = !disabled && !isSending && recordingStatus === 'idle';
-  const statusText = getComposerStatusText(recordingStatus, isSending, composerNotice);
+  const isMobileVariant = variant === 'mobile';
+  const statusText = getComposerStatusText(recordingStatus, isSending, composerNotice, variant);
+
+  useImperativeHandle(ref, () => textareaRef.current as HTMLTextAreaElement);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    if (!isMobileVariant) {
+      textarea.style.height = '';
+      textarea.style.overflowY = '';
+      return;
+    }
+
+    textarea.style.height = 'auto';
+    const maxHeight = Math.max(104, Math.min(window.innerHeight * 0.24, 168));
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }, [draft, isMobileVariant, showVoiceCaptureControls]);
 
   return (
     <footer
-      className="composer"
+      className={`composer ${isMobileVariant ? 'composer-mobile' : ''}`}
       onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
         if (event.key === 'Escape' && isListening) {
           event.preventDefault();
@@ -79,7 +105,7 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
     >
       <div className={`composer-box ${showVoiceCaptureControls ? 'composer-box-listening' : ''}`}>
         <textarea
-          ref={ref}
+          ref={textareaRef}
           value={draft}
           onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setDraft(event.target.value)}
           onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -89,7 +115,7 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
             }
           }}
           placeholder="Message Bear Castle AI..."
-          rows={5}
+          rows={isMobileVariant ? 2 : 5}
           disabled={disabled || isSending}
         />
         <div className="composer-actions" aria-label="Message actions">

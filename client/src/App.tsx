@@ -3,6 +3,7 @@ import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent a
 import { AdminUserManagement } from './components/AdminUserManagement.js';
 import { ChatInput } from './components/ChatInput.js';
 import { LoginScreen } from './components/LoginScreen.js';
+import { MobileAppLayout } from './components/MobileAppLayout.js';
 import { MessageThread } from './components/MessageThread.js';
 import { PasswordChangeScreen } from './components/PasswordChangeScreen.js';
 import { SettingsModal } from './components/SettingsModal.js';
@@ -10,6 +11,7 @@ import { Sidebar } from './components/Sidebar.js';
 import { StatusCards } from './components/StatusCards.js';
 import { TopBar } from './components/TopBar.js';
 import { useAudioRecorder } from './hooks/useAudioRecorder.js';
+import { useMediaQuery } from './hooks/useMediaQuery.js';
 import { api, ApiClientError } from './lib/api.js';
 import { appendTranscript } from './lib/transcripts.js';
 import type { AuthUser, Conversation, ConversationSummary, GatewayStatus, Message, PasswordPolicy } from './lib/types.js';
@@ -28,6 +30,7 @@ const defaultLeftColumnWidth = 300;
 const defaultHealthPaneHeight = 190;
 const defaultComposerPaneHeight = 220;
 const defaultPasswordPolicy: PasswordPolicy = { minLength: 8 };
+const mobileLayoutMediaQuery = '(max-width: 767px)';
 
 interface WorkspaceLayout {
   leftColumnWidth: number;
@@ -154,19 +157,22 @@ const clampLayout = (layout: WorkspaceLayout, workspace: HTMLDivElement | null):
   };
 };
 
-const getInitialLayout = (): WorkspaceLayout =>
-  clampLayout(
-    {
-      leftColumnWidth: getStoredNumber(layoutStorageKeys.leftColumnWidth, defaultLeftColumnWidth),
-      healthPaneHeight: getStoredNumber(layoutStorageKeys.healthPaneHeight, defaultHealthPaneHeight),
-      composerPaneHeight: getStoredNumber(
-        layoutStorageKeys.composerPaneHeight,
-        getStoredNumber(layoutStorageKeys.legacyBottomRowHeight, defaultComposerPaneHeight)
-      ),
-      healthCollapsed: getStoredBoolean(layoutStorageKeys.healthCollapsed, false)
-    },
-    null
-  );
+const getInitialLayout = (): WorkspaceLayout => {
+  const storedLayout = {
+    leftColumnWidth: getStoredNumber(layoutStorageKeys.leftColumnWidth, defaultLeftColumnWidth),
+    healthPaneHeight: getStoredNumber(layoutStorageKeys.healthPaneHeight, defaultHealthPaneHeight),
+    composerPaneHeight: getStoredNumber(
+      layoutStorageKeys.composerPaneHeight,
+      getStoredNumber(layoutStorageKeys.legacyBottomRowHeight, defaultComposerPaneHeight)
+    ),
+    healthCollapsed: getStoredBoolean(layoutStorageKeys.healthCollapsed, false)
+  };
+
+  const startsInMobileLayout =
+    typeof window.matchMedia === 'function' && window.matchMedia(mobileLayoutMediaQuery).matches;
+
+  return startsInMobileLayout ? storedLayout : clampLayout(storedLayout, null);
+};
 
 const errorMessage = (error: unknown) => {
   if (error instanceof ApiClientError) return error.message;
@@ -348,6 +354,7 @@ export const App = () => {
   const [isSending, setIsSending] = useState(false);
   const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
   const [layout, setLayout] = useState<WorkspaceLayout>(() => getInitialLayout());
+  const isMobileLayout = useMediaQuery(mobileLayoutMediaQuery);
 
   const activeUserId = authUser?.id ?? null;
   const previousActiveUserIdRef = useRef<string | null>(activeUserId);
@@ -467,30 +474,37 @@ export const App = () => {
   }, []);
 
   useEffect(() => {
+    if (isMobileLayout) return;
     window.localStorage.setItem(layoutStorageKeys.leftColumnWidth, String(layout.leftColumnWidth));
-  }, [layout.leftColumnWidth]);
+  }, [isMobileLayout, layout.leftColumnWidth]);
 
   useEffect(() => {
+    if (isMobileLayout) return;
     window.localStorage.setItem(layoutStorageKeys.healthPaneHeight, String(layout.healthPaneHeight));
-  }, [layout.healthPaneHeight]);
+  }, [isMobileLayout, layout.healthPaneHeight]);
 
   useEffect(() => {
+    if (isMobileLayout) return;
     window.localStorage.setItem(layoutStorageKeys.composerPaneHeight, String(layout.composerPaneHeight));
-  }, [layout.composerPaneHeight]);
+  }, [isMobileLayout, layout.composerPaneHeight]);
 
   useEffect(() => {
+    if (isMobileLayout) return;
     window.localStorage.setItem(layoutStorageKeys.healthCollapsed, String(layout.healthCollapsed));
-  }, [layout.healthCollapsed]);
+  }, [isMobileLayout, layout.healthCollapsed]);
 
   useEffect(() => {
+    if (isMobileLayout) return undefined;
+
     const clampCurrentLayout = () => {
+      if (!workspaceRef.current) return;
       setLayout((current) => clampLayout(current, workspaceRef.current));
     };
 
     clampCurrentLayout();
     window.addEventListener('resize', clampCurrentLayout);
     return () => window.removeEventListener('resize', clampCurrentLayout);
-  }, []);
+  }, [isMobileLayout]);
 
   const updateLayout = useCallback((updater: (current: WorkspaceLayout) => WorkspaceLayout) => {
     setLayout((current) => clampLayout(updater(current), workspaceRef.current));
@@ -912,6 +926,13 @@ export const App = () => {
     ]
   );
 
+  const handleSelectConversation = useCallback((conversationId: string) => {
+    setError(null);
+    setOptimisticConversation(null);
+    setOptimisticMessages([]);
+    setActiveConversationId(conversationId);
+  }, []);
+
   const handleReusePrompt = useCallback(
     (content: string) => {
       if (content.trim().length === 0) return;
@@ -1156,6 +1177,70 @@ export const App = () => {
     );
   }
 
+  const modalLayers = (
+    <>
+      {showPasswordChange && (
+        <div className="modal-backdrop" role="presentation">
+          <PasswordChangeScreen
+            user={authUser}
+            passwordPolicy={passwordPolicy}
+            onChanged={handlePasswordChanged}
+            onCancel={() => setShowPasswordChange(false)}
+          />
+        </div>
+      )}
+
+      {showSettings && (
+        <SettingsModal currentUser={authUser} returnFocusRef={settingsButtonRef} onClose={closeSettings} />
+      )}
+
+      {showUserManagement && authUser.isAdmin && authUser.displayName.trim().toLowerCase() === 'eric' && (
+        <AdminUserManagement currentUser={authUser} onClose={() => setShowUserManagement(false)} />
+      )}
+    </>
+  );
+
+  if (isMobileLayout) {
+    return (
+      <>
+        <MobileAppLayout
+          activeUser={authUser}
+          activeUserId={activeUserId}
+          settingsButtonRef={settingsButtonRef}
+          conversations={conversations}
+          activeConversationId={activeConversationId}
+          activeConversation={visibleConversation}
+          loadingConversations={loadingConversations}
+          loadingConversation={loadingConversation}
+          deletingConversationId={deletingConversationId}
+          status={status}
+          error={error}
+          draft={draft}
+          composerNotice={composerNotice}
+          recordingStatus={recorder.status}
+          audioLevels={recorder.audioLevels}
+          isSending={isSending}
+          composerRef={composerRef}
+          setDraft={setDraft}
+          onCreateConversation={handleCreateConversation}
+          onSelectConversation={handleSelectConversation}
+          onDeleteConversation={handleDeleteConversation}
+          onDismissError={() => setError(null)}
+          onSend={handleSend}
+          onStartRecording={() => void recorder.startRecording()}
+          onStopRecording={recorder.stopRecording}
+          onCancelRecording={recorder.cancelRecording}
+          onReusePrompt={handleReusePrompt}
+          onOpenSettings={() => setShowSettings(true)}
+          onChangePassword={() => setShowPasswordChange(true)}
+          onOpenUserManagement={() => setShowUserManagement(true)}
+          onLogout={handleLogout}
+        />
+        {modalLayers}
+      </>
+    );
+  }
+
   return (
     <div className="app-shell">
       <TopBar
@@ -1174,12 +1259,7 @@ export const App = () => {
             conversations={conversations}
             activeConversationId={activeConversationId}
             onCreateConversation={handleCreateConversation}
-            onSelectConversation={(conversationId) => {
-              setError(null);
-              setOptimisticConversation(null);
-              setOptimisticMessages([]);
-              setActiveConversationId(conversationId);
-            }}
+            onSelectConversation={handleSelectConversation}
             onDeleteConversation={handleDeleteConversation}
             deletingConversationId={deletingConversationId}
             loadingConversations={loadingConversations}
@@ -1266,24 +1346,7 @@ export const App = () => {
         </div>
       </div>
 
-      {showPasswordChange && (
-        <div className="modal-backdrop" role="presentation">
-          <PasswordChangeScreen
-            user={authUser}
-            passwordPolicy={passwordPolicy}
-            onChanged={handlePasswordChanged}
-            onCancel={() => setShowPasswordChange(false)}
-          />
-        </div>
-      )}
-
-      {showSettings && (
-        <SettingsModal currentUser={authUser} returnFocusRef={settingsButtonRef} onClose={closeSettings} />
-      )}
-
-      {showUserManagement && authUser.isAdmin && authUser.displayName.trim().toLowerCase() === 'eric' && (
-        <AdminUserManagement currentUser={authUser} onClose={() => setShowUserManagement(false)} />
-      )}
+      {modalLayers}
     </div>
   );
 };
