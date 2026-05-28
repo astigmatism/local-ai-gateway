@@ -660,3 +660,129 @@ describe('api client voice VM settings requests', () => {
     expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-token');
   });
 });
+
+describe('api client chat streaming requests', () => {
+  it('streams chat deltas through the gateway with CSRF and returns the final done event', async () => {
+    const { api } = await loadApi();
+    const encoder = new TextEncoder();
+    const events = [
+      {
+        type: 'start',
+        conversationId: '22222222-2222-4222-8222-222222222222',
+        userMessage: {
+          id: '33333333-3333-4333-8333-333333333333',
+          conversationId: '22222222-2222-4222-8222-222222222222',
+          role: 'user',
+          content: 'Tell me about streaming.',
+          createdAt: '2026-05-28T12:00:00.000Z'
+        },
+        assistantMessageTempId: 'stream-assistant-temp',
+        model: 'qwen3:14b',
+        createdAt: '2026-05-28T12:00:00.000Z'
+      },
+      {
+        type: 'delta',
+        delta: 'Real',
+        content: 'Real',
+        generatedAt: '2026-05-28T12:00:01.000Z'
+      },
+      {
+        type: 'delta',
+        delta: ' streaming',
+        content: 'Real streaming',
+        generatedAt: '2026-05-28T12:00:02.000Z'
+      },
+      {
+        type: 'done',
+        assistantMessage: {
+          id: '44444444-4444-4444-8444-444444444444',
+          conversationId: '22222222-2222-4222-8222-222222222222',
+          role: 'assistant',
+          content: 'Real streaming',
+          createdAt: '2026-05-28T12:00:03.000Z'
+        },
+        conversation: {
+          id: '22222222-2222-4222-8222-222222222222',
+          userId: '11111111-1111-4111-8111-111111111111',
+          title: 'New conversation',
+          archived: false,
+          createdAt: '2026-05-28T12:00:00.000Z',
+          updatedAt: '2026-05-28T12:00:03.000Z'
+        },
+        titleGeneration: { needed: true }
+      }
+    ];
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(`${JSON.stringify(events[0])}\n${JSON.stringify(events[1])}\n`));
+        controller.enqueue(encoder.encode(`${JSON.stringify(events[2])}\n${JSON.stringify(events[3])}\n`));
+        controller.close();
+      }
+    });
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(stream, {
+          status: 201,
+          headers: {
+            'Content-Type': 'application/x-ndjson'
+          }
+        })
+    );
+    const onEvent = vi.fn();
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    const doneEvent = await api.sendMessageStream('22222222-2222-4222-8222-222222222222', 'Tell me about streaming.', {
+      onEvent
+    });
+
+    expect(doneEvent.type).toBe('done');
+    expect(doneEvent.assistantMessage.content).toBe('Real streaming');
+    expect(onEvent).toHaveBeenCalledTimes(4);
+    expect(onEvent.mock.calls.map((call) => call[0].type)).toEqual(['start', 'delta', 'delta', 'done']);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/conversations/22222222-2222-4222-8222-222222222222/messages/stream',
+      expect.objectContaining({
+        credentials: 'include',
+        method: 'POST'
+      })
+    );
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-token');
+    expect(new Headers(init.headers).get('Accept')).toBe('application/x-ndjson');
+    expect(JSON.parse(init.body as string)).toEqual({ content: 'Tell me about streaming.' });
+  });
+
+  it('turns chat stream error events into ApiClientError failures', async () => {
+    const { api } = await loadApi();
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            `${JSON.stringify({ type: 'error', message: 'The model stream failed.', code: 'LLM_STREAM_FAILED', generatedAt: '2026-05-28T12:00:00.000Z' })}\n`
+          )
+        );
+        controller.close();
+      }
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(stream, {
+            status: 201,
+            headers: { 'Content-Type': 'application/x-ndjson' }
+          })
+      )
+    );
+
+    await expect(api.sendMessageStream('22222222-2222-4222-8222-222222222222', 'Hello')).rejects.toMatchObject({
+      code: 'LLM_STREAM_FAILED',
+      message: 'The model stream failed.'
+    });
+  });
+});

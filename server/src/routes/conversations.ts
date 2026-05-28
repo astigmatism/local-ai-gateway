@@ -1,5 +1,7 @@
-import { MessageRole, Prisma } from '@prisma/client';
-import type { Request } from 'express';
+import { MessageRole, Prisma, type Message } from '@prisma/client';
+import { once } from 'node:events';
+import { randomUUID } from 'node:crypto';
+import type { Request, Response } from 'express';
 import { Router } from 'express';
 import { z } from 'zod';
 import { config } from '../config/env.js';
@@ -14,7 +16,7 @@ import {
   isPlaceholderConversationTitle,
   makeFallbackConversationTitle
 } from '../services/conversationTitle.js';
-import { generateWithLlm } from '../services/llmClient.js';
+import { generateWithLlm, generateWithLlmStream, type LlmStreamDoneEvent } from '../services/llmClient.js';
 import { resolveDefaultLlmModel } from '../services/modelSettingsService.js';
 import { buildConversationPrompt } from '../services/promptBuilder.js';
 
@@ -83,6 +85,84 @@ interface TitleGenerationEndpointResponse {
 }
 
 const titleGenerationInFlight = new Map<string, Promise<TitleGenerationEndpointResponse>>();
+
+
+interface ConversationStreamStartEvent {
+  type: 'start';
+  conversationId: string;
+  userMessage: Message;
+  assistantMessageTempId: string;
+  model: string;
+  createdAt: string;
+}
+
+interface ConversationStreamDeltaEvent {
+  type: 'delta';
+  delta: string;
+  content: string;
+  generatedAt: string;
+}
+
+interface ConversationStreamMetadataEvent {
+  type: 'metadata';
+  provider: 'ollama';
+  endpoint: '/api/generate';
+  model: string;
+  generatedAt: string;
+}
+
+interface ConversationStreamDoneEvent {
+  type: 'done';
+  assistantMessage: Message;
+  conversation: ConversationSummaryPayload;
+  titleGeneration: {
+    needed: boolean;
+  };
+  metadata?: Record<string, unknown>;
+}
+
+interface ConversationStreamErrorEvent {
+  type: 'error';
+  message: string;
+  code?: string;
+  generatedAt: string;
+}
+
+type ConversationStreamEvent =
+  | ConversationStreamStartEvent
+  | ConversationStreamDeltaEvent
+  | ConversationStreamMetadataEvent
+  | ConversationStreamDoneEvent
+  | ConversationStreamErrorEvent;
+
+const isStreamingResponseClosed = (res: Response) => res.writableEnded || res.destroyed;
+
+const flushStreamingResponse = (res: Response) => {
+  (res as Response & { flush?: () => void }).flush?.();
+};
+
+const writeNdjsonEvent = async (res: Response, event: ConversationStreamEvent) => {
+  if (isStreamingResponseClosed(res)) return false;
+
+  const canContinue = res.write(`${JSON.stringify(event)}\n`);
+  flushStreamingResponse(res);
+
+  if (!canContinue && !isStreamingResponseClosed(res)) {
+    await Promise.race([once(res, 'drain'), once(res, 'close')]);
+  }
+
+  return !isStreamingResponseClosed(res);
+};
+
+const streamErrorMessage = (error: unknown) => {
+  if (error instanceof ApiError && error.expose) return error.message;
+  if (error instanceof Error && error.message) return error.message;
+  return 'The model stream failed.';
+};
+
+const streamErrorCode = (error: unknown) => (error instanceof ApiError ? error.code : undefined);
+
+const isClientAbortError = (error: unknown) => error instanceof ApiError && error.code === 'LLM_REQUEST_ABORTED';
 
 const currentUserId = (req: Request) => {
   const userId = req.auth?.user.id;
@@ -438,6 +518,234 @@ conversationsRouter.post(
       if (titleGenerationInFlight.get(conversationId) === request) {
         titleGenerationInFlight.delete(conversationId);
       }
+    }
+  })
+);
+
+
+conversationsRouter.post(
+  '/conversations/:conversationId/messages/stream',
+  chatRateLimiter,
+  asyncHandler(async (req, res) => {
+    const startedAt = Date.now();
+    const conversationId = uuidParamSchema.parse(req.params.conversationId);
+    const body = sendMessageSchema.parse(req.body ?? {});
+    const userId = currentUserId(req);
+
+    const conversation = await prisma.conversation.findFirst({
+      where: {
+        id: conversationId,
+        userId,
+        archived: false
+      },
+      include: {
+        _count: {
+          select: { messages: true }
+        }
+      }
+    });
+
+    if (!conversation) {
+      throw new ApiError(404, 'Conversation not found.', 'CONVERSATION_NOT_FOUND');
+    }
+
+    const completedMessageCount = conversation._count.messages + 2;
+    const titleGenerationNeeded = conversationNeedsGeneratedTitle({
+      title: conversation.title,
+      messageCount: completedMessageCount,
+      firstUserPrompt: body.content
+    });
+    const fallbackTitleShouldUpdate = isPlaceholderConversationTitle(conversation.title, body.content);
+    const shouldPersistFallbackTitleNow =
+      !config.conversationTitle.enabled &&
+      conversationNeedsGeneratedTitle({
+        title: conversation.title,
+        messageCount: completedMessageCount,
+        firstUserPrompt: body.content,
+        titleGenerationEnabled: true
+      });
+    const now = new Date();
+
+    const userMessage = await prisma.message.create({
+      data: {
+        conversationId,
+        role: MessageRole.user,
+        content: body.content,
+        metadata: {
+          submittedAt: now.toISOString()
+        }
+      }
+    });
+
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { updatedAt: now }
+    });
+
+    const recentMessagesDesc = await prisma.message.findMany({
+      where: { conversationId },
+      orderBy: { createdAt: 'desc' },
+      take: config.conversation.contextMaxMessages
+    });
+
+    const recentMessages = recentMessagesDesc.reverse().map((message) => ({
+      role: message.role,
+      content: message.content
+    }));
+
+    const llmModel = await resolveDefaultLlmModel();
+    const prompt = buildConversationPrompt(recentMessages, {
+      maxMessages: config.conversation.contextMaxMessages,
+      maxChars: config.conversation.contextMaxChars,
+      modelName: llmModel
+    });
+
+    const abortController = new AbortController();
+    let streamFinished = false;
+    const abortOnClose = () => {
+      if (!streamFinished) {
+        abortController.abort();
+      }
+    };
+    res.on('close', abortOnClose);
+
+    res.status(201);
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('X-Accel-Buffering', 'no');
+    (res as Response & { flushHeaders?: () => void }).flushHeaders?.();
+
+    try {
+      const startWritten = await writeNdjsonEvent(res, {
+        type: 'start',
+        conversationId,
+        userMessage,
+        assistantMessageTempId: `stream-assistant-${randomUUID()}`,
+        model: llmModel,
+        createdAt: new Date().toISOString()
+      });
+
+      if (!startWritten) {
+        abortController.abort();
+        streamFinished = true;
+        return;
+      }
+
+      let llmDone: LlmStreamDoneEvent | null = null;
+
+      for await (const event of generateWithLlmStream(prompt, { model: llmModel, signal: abortController.signal })) {
+        if (event.type === 'metadata') {
+          const keepStreaming = await writeNdjsonEvent(res, event);
+          if (!keepStreaming) {
+            abortController.abort();
+            streamFinished = true;
+            return;
+          }
+          continue;
+        }
+
+        if (event.type === 'delta') {
+          const keepStreaming = await writeNdjsonEvent(res, {
+            type: 'delta',
+            delta: event.delta,
+            content: event.content,
+            generatedAt: event.generatedAt
+          });
+          if (!keepStreaming) {
+            abortController.abort();
+            streamFinished = true;
+            return;
+          }
+          continue;
+        }
+
+        llmDone = event;
+      }
+
+      if (!llmDone) {
+        throw new ApiError(502, 'LLM stream ended without a completed response.', 'LLM_STREAM_INCOMPLETE');
+      }
+
+      const assistantMessage = await prisma.message.create({
+        data: {
+          conversationId,
+          role: MessageRole.assistant,
+          content: llmDone.content,
+          metadata: llmDone.metadata as Prisma.InputJsonValue
+        }
+      });
+
+      const updatedConversation = await prisma.conversation.update({
+        where: { id: conversationId },
+        data: {
+          updatedAt: new Date(),
+          ...(shouldPersistFallbackTitleNow ? { title: makeFallbackConversationTitle(body.content) } : {})
+        },
+        include: conversationSummaryInclude
+      });
+
+      await writeNdjsonEvent(res, {
+        type: 'done',
+        assistantMessage,
+        conversation: updatedConversation,
+        titleGeneration: {
+          needed: titleGenerationNeeded
+        },
+        metadata: llmDone.metadata
+      });
+
+      streamFinished = true;
+      res.end();
+
+      logger.info(
+        {
+          conversationId,
+          durationMs: Date.now() - startedAt,
+          titleGenerationDeferred: titleGenerationNeeded,
+          streaming: true
+        },
+        'chat_response_stream_completed'
+      );
+    } catch (error) {
+      if (abortController.signal.aborted || isClientAbortError(error) || res.destroyed) {
+        streamFinished = true;
+        logger.info(
+          {
+            conversationId,
+            durationMs: Date.now() - startedAt,
+            streaming: true
+          },
+          'chat_response_stream_aborted'
+        );
+        if (!res.writableEnded && !res.destroyed) res.end();
+        return;
+      }
+
+      if (fallbackTitleShouldUpdate) {
+        await applyFallbackTitleAfterSendFailure(conversationId, body.content);
+      }
+
+      logger.error(
+        {
+          conversationId,
+          durationMs: Date.now() - startedAt,
+          errorMessage: error instanceof Error ? error.message : 'Unknown stream error',
+          code: streamErrorCode(error)
+        },
+        'chat_response_stream_failed'
+      );
+
+      await writeNdjsonEvent(res, {
+        type: 'error',
+        message: `${streamErrorMessage(error)} Your user message was saved in the conversation.`,
+        code: streamErrorCode(error),
+        generatedAt: new Date().toISOString()
+      });
+
+      streamFinished = true;
+      res.end();
+    } finally {
+      res.off('close', abortOnClose);
     }
   })
 );

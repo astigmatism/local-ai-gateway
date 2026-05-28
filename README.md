@@ -117,6 +117,36 @@ VOICE_BASE_URL=http://192.168.1.8:8000
 
 These are gateway defaults only. Change the service URLs in `.env` if the VM IPs or ports change. Mutable STT/TTS defaults now live in the local-ai-voice `/api/config` API and can be updated from Settings > Voice when supported by the voice VM.
 
+## True LLM response streaming
+
+Bear Castle AI streams real generated text from Ollama into the conversation UI. The browser posts prompts to the authenticated gateway route `POST /api/conversations/:conversationId/messages/stream`; the browser never calls Ollama or the local-ai-llm monitor directly. The gateway validates the session, CSRF token, rate limit, and conversation ownership, persists the user message, then calls `POST {LLM_BASE_URL}/api/generate` with `stream: true` using the current/default model resolved from local-ai-llm model management.
+
+The gateway returns `application/x-ndjson` to the browser. Events are newline-delimited JSON with these stable shapes:
+
+```json
+{"type":"start","conversationId":"...","userMessage":{"id":"..."},"assistantMessageTempId":"...","model":"qwen3:14b","createdAt":"..."}
+{"type":"metadata","provider":"ollama","endpoint":"/api/generate","model":"qwen3:14b","generatedAt":"..."}
+{"type":"delta","delta":"Hello","content":"Hello","generatedAt":"..."}
+{"type":"done","assistantMessage":{"id":"..."},"conversation":{"id":"..."},"titleGeneration":{"needed":true}}
+```
+
+Ollama's response is parsed incrementally as NDJSON. The gateway appends only normal `/api/generate` `response` text to the visible assistant message and ignores separate `thinking` fields so hidden reasoning is not shown as assistant content. The browser reads the response with `fetch()` and `ReadableStream.getReader()`, parses NDJSON boundaries safely, and appends each `delta` to the same temporary assistant message. The old local “Thinking…” indicator remains only as a placeholder before the first real delta arrives; completed responses are no longer locally animated to mimic streaming.
+
+The assistant message is persisted only after Ollama sends `done: true`. On success the final `done` event carries the saved assistant message id and updated conversation summary, the UI reconciles the temporary message, and deferred title generation is scheduled after stream completion. If the stream fails, the saved user message remains, the assistant placeholder is marked failed, and partial assistant text is not saved as a successful response. If the browser disconnects or the request is aborted, the gateway aborts the upstream Ollama fetch so generation does not continue unnecessarily.
+
+Example curl shape for an already authenticated session with a valid CSRF token:
+
+```bash
+curl -N \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/x-ndjson' \
+  -H 'X-CSRF-Token: <token-from-/api/auth/me>' \
+  -b '<session-cookie>' \
+  -d '{"content":"Write a long explanation of streaming NDJSON."}' \
+  http://127.0.0.1:3000/api/conversations/<conversation-id>/messages/stream
+```
+
+Keep `LLM_BASE_URL`, `LLM_MONITOR_BASE_URL`, Ollama, and local-ai-llm monitor endpoints private to the gateway network. Do not expose Ollama or local-ai-llm directly to browsers or the public internet.
 
 ## Model Manager
 

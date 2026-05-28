@@ -14,7 +14,7 @@ import { useAudioRecorder } from './hooks/useAudioRecorder.js';
 import { useMediaQuery } from './hooks/useMediaQuery.js';
 import { api, ApiClientError } from './lib/api.js';
 import { appendTranscript } from './lib/transcripts.js';
-import type { AuthUser, Conversation, ConversationSummary, GatewayStatus, Message, PasswordPolicy } from './lib/types.js';
+import type { AuthUser, Conversation, ConversationSummary, GatewayStatus, LlmStreamDoneEvent, Message, PasswordPolicy } from './lib/types.js';
 
 const layoutStorageKeys = {
   leftColumnWidth: 'bearCastleAi.layout.leftColumnWidth',
@@ -182,7 +182,7 @@ const errorMessage = (error: unknown) => {
 
 const newConversationTitle = 'New conversation';
 
-type OptimisticDeliveryStatus = 'pending' | 'thinking' | 'error';
+type OptimisticDeliveryStatus = 'pending' | 'thinking' | 'streaming' | 'error';
 
 const createTemporaryId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
@@ -191,7 +191,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const getDeliveryStatus = (message: Message): OptimisticDeliveryStatus | null => {
   const status = message.metadata?.deliveryStatus;
-  return status === 'pending' || status === 'thinking' || status === 'error' ? status : null;
+  return status === 'pending' || status === 'thinking' || status === 'streaming' || status === 'error' ? status : null;
 };
 
 const isOptimisticMessage = (message: Message) => message.metadata?.optimistic === true;
@@ -284,7 +284,7 @@ const shouldShowOptimisticMessage = (message: Message, persistedMessages: Messag
     );
   }
 
-  if (message.role === 'assistant' && deliveryStatus === 'thinking') {
+  if (message.role === 'assistant' && (deliveryStatus === 'thinking' || deliveryStatus === 'streaming' || deliveryStatus === 'error')) {
     return !persistedMessages.some(
       (persistedMessage) =>
         persistedMessage.role === 'assistant' &&
@@ -333,6 +333,7 @@ export const App = () => {
   const titleGenerationFramesRef = useRef<Map<string, number>>(new Map());
   const titleGenerationTimersRef = useRef<Map<string, number>>(new Map());
   const titleGenerationInFlightRef = useRef<Set<string>>(new Set());
+  const activeSendAbortRef = useRef<AbortController | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [passwordPolicy, setPasswordPolicy] = useState<PasswordPolicy>(defaultPasswordPolicy);
@@ -387,6 +388,8 @@ export const App = () => {
   }, []);
 
   const resetConversationState = useCallback(() => {
+    activeSendAbortRef.current?.abort();
+    activeSendAbortRef.current = null;
     clearScheduledTitleGenerations();
     setConversations([]);
     setActiveConversationId(null);
@@ -512,6 +515,8 @@ export const App = () => {
 
   useEffect(
     () => () => {
+      activeSendAbortRef.current?.abort();
+      activeSendAbortRef.current = null;
       if (composerNoticeTimerRef.current) window.clearTimeout(composerNoticeTimerRef.current);
       clearScheduledTitleGenerations();
     },
@@ -981,6 +986,10 @@ export const App = () => {
       createdAt: submittedAtIso
     });
 
+    const abortController = new AbortController();
+    activeSendAbortRef.current?.abort();
+    activeSendAbortRef.current = abortController;
+
     setIsSending(true);
     setError(null);
     setDraft('');
@@ -989,12 +998,16 @@ export const App = () => {
 
     let conversationId = activeConversationId;
     let createdConversation: ConversationSummary | null = null;
+    let persistedUserMessage: Message | null = null;
+    let completedStream: LlmStreamDoneEvent | null = null;
+    let assistantMessageTempId = optimisticThinkingMessage.id;
 
     try {
       if (!conversationId) {
         const createResponse = await api.createConversation(activeUserId);
         createdConversation = createResponse.conversation;
         conversationId = createResponse.conversation.id;
+        setActiveConversationId(createResponse.conversation.id);
         setOptimisticConversation(createConversationFromSummary(createResponse.conversation, []));
         setOptimisticMessages((current) =>
           current.map((message) =>
@@ -1005,31 +1018,96 @@ export const App = () => {
         );
       }
 
-      const response = await api.sendMessage(conversationId, content);
-      setActiveConversationId(response.conversation.id);
+      const doneEvent = await api.sendMessageStream(conversationId, content, {
+        signal: abortController.signal,
+        onEvent: (event) => {
+          if (event.type === 'start') {
+            persistedUserMessage = event.userMessage;
+            const previousAssistantMessageTempId = assistantMessageTempId;
+            assistantMessageTempId = event.assistantMessageTempId || assistantMessageTempId;
+            setActiveConversationId(event.conversationId);
+            setOptimisticMessages((current) =>
+              current.map((message) => {
+                if (message.id === previousAssistantMessageTempId) {
+                  return {
+                    ...message,
+                    id: assistantMessageTempId,
+                    conversationId: event.conversationId,
+                    metadata: {
+                      ...(message.metadata ?? {}),
+                      deliveryStatus: 'thinking',
+                      model: event.model,
+                      streaming: true
+                    }
+                  };
+                }
+
+                return message.conversationId === optimisticConversationId
+                  ? { ...message, conversationId: event.conversationId }
+                  : message;
+              })
+            );
+            return;
+          }
+
+          if (event.type === 'delta') {
+            setOptimisticMessages((current) =>
+              current.map((message) =>
+                message.id === assistantMessageTempId
+                  ? {
+                      ...message,
+                      content: event.content,
+                      metadata: {
+                        ...(message.metadata ?? {}),
+                        deliveryStatus: event.content.length > 0 ? 'streaming' : 'thinking',
+                        streaming: true
+                      }
+                    }
+                  : message
+              )
+            );
+            return;
+          }
+
+          if (event.type === 'done') {
+            completedStream = event;
+          }
+        }
+      });
+
+      const finalDoneEvent = completedStream ?? doneEvent;
+
+      setActiveConversationId(finalDoneEvent.conversation.id);
       setActiveConversation((current) => {
-        const currentConversation = current?.id === response.conversation.id ? current : null;
+        const currentConversation = current?.id === finalDoneEvent.conversation.id ? current : null;
         const baseMessages = currentConversation
           ? currentConversation.messages.filter((message) => !isOptimisticMessage(message))
           : [];
-        const messages = appendUniqueMessages(baseMessages, [response.userMessage, response.assistantMessage]);
-        return createConversationFromSummary(response.conversation, messages, currentConversation);
+        const messages = appendUniqueMessages(baseMessages, [finalDoneEvent.assistantMessage]);
+        const messagesWithUser = persistedUserMessage
+          ? appendUniqueMessages(baseMessages, [persistedUserMessage, finalDoneEvent.assistantMessage])
+          : messages;
+        return createConversationFromSummary(finalDoneEvent.conversation, messagesWithUser, currentConversation);
       });
       setOptimisticMessages([]);
       setOptimisticConversation(null);
-      setConversations((current) => upsertConversationSummary(current, response.conversation));
+      setConversations((current) => upsertConversationSummary(current, finalDoneEvent.conversation));
 
-      if (response.titleGeneration?.needed) {
-        scheduleDeferredTitleGeneration(response.conversation.id);
+      if (finalDoneEvent.titleGeneration?.needed) {
+        scheduleDeferredTitleGeneration(finalDoneEvent.conversation.id);
       }
     } catch (sendError) {
-      const savedUserMessage = savedUserMessageFromError(sendError);
+      if (abortController.signal.aborted) {
+        return;
+      }
+
+      const savedUserMessage = persistedUserMessage ?? savedUserMessageFromError(sendError);
       const failedConversationId = savedUserMessage?.conversationId ?? conversationId ?? optimisticConversationId;
       const failedAt = new Date();
       const assistantErrorMessage = createOptimisticMessage({
         conversationId: failedConversationId,
         role: 'assistant',
-        content: 'Could not send message.',
+        content: `Could not complete response: ${errorMessage(sendError)}`,
         deliveryStatus: 'error',
         createdAt: failedAt,
         submittedAt: submittedAtIso
@@ -1100,6 +1178,9 @@ export const App = () => {
       if (conversationId) void loadConversation(conversationId);
       if (activeUserId) void loadConversations(activeUserId);
     } finally {
+      if (activeSendAbortRef.current === abortController) {
+        activeSendAbortRef.current = null;
+      }
       setIsSending(false);
     }
   }, [

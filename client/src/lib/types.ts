@@ -309,6 +309,52 @@ export interface GenerateConversationTitleResponse {
   titleGeneration: ConversationTitleGenerationResult;
 }
 
+export interface LlmStreamStartEvent {
+  type: 'start';
+  conversationId: string;
+  userMessage: Message;
+  assistantMessageTempId: string;
+  model: string;
+  createdAt: string;
+}
+
+export interface LlmStreamDeltaEvent {
+  type: 'delta';
+  delta: string;
+  content: string;
+  generatedAt: string;
+}
+
+export interface LlmStreamMetadataEvent {
+  type: 'metadata';
+  provider: 'ollama';
+  endpoint: '/api/generate';
+  model: string;
+  generatedAt: string;
+}
+
+export interface LlmStreamDoneEvent {
+  type: 'done';
+  assistantMessage: Message;
+  conversation: ConversationSummary;
+  titleGeneration?: ConversationTitleGenerationResult;
+  metadata?: Record<string, unknown>;
+}
+
+export interface LlmStreamErrorEvent {
+  type: 'error';
+  message: string;
+  code?: string;
+  generatedAt: string;
+}
+
+export type LlmStreamEvent =
+  | LlmStreamStartEvent
+  | LlmStreamDeltaEvent
+  | LlmStreamMetadataEvent
+  | LlmStreamDoneEvent
+  | LlmStreamErrorEvent;
+
 export interface TranscribeSegment extends Record<string, unknown> {
   start?: number;
   end?: number;

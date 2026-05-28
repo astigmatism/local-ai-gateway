@@ -595,7 +595,8 @@ textarea {
 }
 
 .message-row.pending .message-bubble,
-.message-row.thinking .message-bubble {
+.message-row.thinking .message-bubble,
+.message-row.streaming .message-bubble {
   border-color: rgba(143, 180, 255, 0.34);
 }
 
@@ -738,6 +739,21 @@ textarea {
 
 .error-message-content {
   color: #fecaca;
+}
+
+.streaming-message-content {
+  position: relative;
+}
+
+.streaming-cursor {
+  display: inline-block;
+  width: 0.55rem;
+  height: 1.1em;
+  margin-left: 0.2rem;
+  border-radius: 999px;
+  background: var(--accent);
+  vertical-align: -0.15em;
+  animation: pulse 1s infinite ease-in-out;
 }
 
 .markdown-content > :first-child {

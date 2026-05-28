@@ -42,7 +42,7 @@ const getComposerStatusText = (
   if (recordingStatus === 'stopping') return 'Stopping recording…';
   if (recordingStatus === 'transcribing') return 'Transcribing…';
   if (recordingStatus === 'canceled') return 'Recording canceled.';
-  if (isSending) return 'Thinking…';
+  if (isSending) return 'Generating response…';
   if (composerNotice) return composerNotice;
   if (variant === 'mobile') return 'Tap Send to message. Transcripts are appended for editing first.';
   return 'Press Enter to send. Shift+Enter inserts a new line.';

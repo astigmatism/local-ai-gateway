@@ -4,6 +4,9 @@ import type {
   Conversation,
   ConversationSummary,
   GenerateConversationTitleResponse,
+  LlmStreamDoneEvent,
+  LlmStreamErrorEvent,
+  LlmStreamEvent,
   LoadSttModelRequest,
   LoadTtsModelRequest,
   LoginUser,
@@ -61,6 +64,11 @@ interface TranscribeAudioOptions {
   minSilenceDurationMs?: number;
   beamSize?: number;
   wordTimestamps?: boolean;
+}
+
+interface SendMessageStreamOptions {
+  signal?: AbortSignal;
+  onEvent?: (event: LlmStreamEvent) => void;
 }
 
 export class ApiClientError extends Error {
@@ -212,6 +220,97 @@ const parseJsonErrorResponse = async (response: Response, options: RequestOption
   );
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const isLlmStreamEvent = (value: unknown): value is LlmStreamEvent => {
+  if (!isRecord(value) || typeof value.type !== 'string') return false;
+
+  switch (value.type) {
+    case 'start':
+      return typeof value.conversationId === 'string' && isRecord(value.userMessage);
+    case 'metadata':
+      return value.provider === 'ollama' && value.endpoint === '/api/generate' && typeof value.model === 'string';
+    case 'delta':
+      return typeof value.delta === 'string' && typeof value.content === 'string';
+    case 'done':
+      return isRecord(value.assistantMessage) && isRecord(value.conversation);
+    case 'error':
+      return typeof value.message === 'string';
+    default:
+      return false;
+  }
+};
+
+const parseLlmStreamEventLine = (line: string): LlmStreamEvent | null => {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed) as unknown;
+  } catch {
+    throw new ApiClientError('Chat stream included invalid JSON.', 502, 'CHAT_STREAM_INVALID_JSON');
+  }
+
+  if (!isLlmStreamEvent(parsed)) {
+    throw new ApiClientError('Chat stream included an unknown event.', 502, 'CHAT_STREAM_INVALID_EVENT', parsed);
+  }
+
+  return parsed;
+};
+
+const parseLlmChatStream = async (
+  response: Response,
+  onEvent?: (event: LlmStreamEvent) => void
+): Promise<LlmStreamDoneEvent> => {
+  if (!response.body) {
+    throw new ApiClientError('Chat response did not include a stream.', 502, 'CHAT_STREAM_MISSING');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let doneEvent: LlmStreamDoneEvent | null = null;
+  let errorEvent: LlmStreamErrorEvent | null = null;
+
+  const handleLine = (line: string) => {
+    const event = parseLlmStreamEventLine(line);
+    if (!event) return;
+
+    onEvent?.(event);
+
+    if (event.type === 'done') {
+      doneEvent = event;
+    } else if (event.type === 'error') {
+      errorEvent = event;
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) handleLine(line);
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) handleLine(buffer);
+
+  if (errorEvent) {
+    throw new ApiClientError(errorEvent.message, 502, errorEvent.code ?? 'CHAT_STREAM_FAILED', errorEvent);
+  }
+
+  if (!doneEvent) {
+    throw new ApiClientError('Chat stream ended before the assistant response completed.', 502, 'CHAT_STREAM_INCOMPLETE');
+  }
+
+  return doneEvent;
+};
+
 const parseModelPullStream = async (
   response: Response,
   onProgress?: (event: ModelPullProgressEvent) => void
@@ -361,6 +460,28 @@ export const api = {
 
   async sendMessage(conversationId: string, content: string) {
     return jsonRequest<SendMessageResponse>(`/api/conversations/${conversationId}/messages`, 'POST', { content });
+  },
+
+  async sendMessageStream(conversationId: string, content: string, options: SendMessageStreamOptions = {}) {
+    const headers = new Headers({
+      'Content-Type': 'application/json',
+      Accept: 'application/x-ndjson'
+    });
+    if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
+
+    const response = await fetch(`/api/conversations/${conversationId}/messages/stream`, {
+      method: 'POST',
+      headers,
+      credentials: 'include',
+      body: JSON.stringify({ content }),
+      signal: options.signal
+    });
+
+    if (!response.ok) {
+      return parseJsonErrorResponse(response);
+    }
+
+    return parseLlmChatStream(response, options.onEvent);
   },
 
   async generateConversationTitle(conversationId: string, source = 'first-message') {

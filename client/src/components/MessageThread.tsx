@@ -11,7 +11,7 @@ interface MessageThreadProps {
   onReusePrompt: (content: string) => void;
 }
 
-type DeliveryStatus = 'pending' | 'thinking' | 'error';
+type DeliveryStatus = 'pending' | 'thinking' | 'streaming' | 'error';
 
 const formatTime = (value: string) =>
   new Intl.DateTimeFormat(undefined, {
@@ -29,13 +29,14 @@ const roleLabel = (role: Message['role']) => {
 
 const deliveryStatus = (message: Message): DeliveryStatus | null => {
   const status = message.metadata?.deliveryStatus;
-  return status === 'pending' || status === 'thinking' || status === 'error' ? status : null;
+  return status === 'pending' || status === 'thinking' || status === 'streaming' || status === 'error' ? status : null;
 };
 
 const timestampLabel = (message: Message) => {
   const status = deliveryStatus(message);
   if (status === 'pending') return 'Sending...';
-  if (status === 'thinking') return 'Working...';
+  if (status === 'thinking') return 'Starting...';
+  if (status === 'streaming') return 'Streaming...';
   if (status === 'error') return 'Needs attention';
   return formatTime(message.createdAt);
 };
@@ -44,7 +45,7 @@ const canCopyMessage = (message: Message) => {
   const status = deliveryStatus(message);
 
   if (message.content.trim().length === 0) return false;
-  if (status === 'thinking') return false;
+  if (status === 'thinking' || status === 'streaming') return false;
   if (message.role === 'assistant' && status === 'error') return false;
 
   return message.role === 'assistant' || message.role === 'user';
@@ -53,7 +54,7 @@ const canCopyMessage = (message: Message) => {
 const canSpeakMessage = (message: Message) => canCopyMessage(message);
 
 const canReusePrompt = (message: Message) =>
-  message.role === 'user' && message.content.trim().length > 0 && deliveryStatus(message) !== 'thinking';
+  message.role === 'user' && message.content.trim().length > 0 && !['thinking', 'streaming'].includes(deliveryStatus(message) ?? '');
 
 const MessageContent = ({ message }: { message: Message }) => {
   const status = deliveryStatus(message);
@@ -67,6 +68,28 @@ const MessageContent = ({ message }: { message: Message }) => {
           <span />
         </div>
         <p>{'Thinking\u2026'}</p>
+      </div>
+    );
+  }
+
+  if (status === 'streaming') {
+    if (message.content.trim().length === 0) {
+      return (
+        <div className="message-content plain-message-content pending-message-content" aria-live="polite">
+          <div className="typing-indicator" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+          <p>Starting response…</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="message-content markdown-content streaming-message-content" aria-live="polite">
+        <MarkdownMessageContent content={message.content} />
+        <span className="streaming-cursor" aria-hidden="true" />
       </div>
     );
   }
@@ -108,7 +131,7 @@ const MessageBubble = ({
       <div className="message-avatar" aria-hidden="true">
         {message.role === 'assistant' ? 'AI' : message.role === 'system' ? 'S' : 'You'}
       </div>
-      <div className="message-bubble" aria-live={status === 'thinking' || status === 'error' ? 'polite' : undefined}>
+      <div className="message-bubble" aria-live={status === 'thinking' || status === 'streaming' || status === 'error' ? 'polite' : undefined}>
         <div className="message-meta">
           <span>{roleLabel(message.role)}</span>
           <span>{timestampLabel(message)}</span>
@@ -132,13 +155,16 @@ const MessageBubble = ({
 
 export const MessageThread = ({ conversation, loading, onReusePrompt }: MessageThreadProps) => {
   const bottomRef = useRef<HTMLDivElement | null>(null);
-  const lastMessageId = conversation?.messages.at(-1)?.id;
-  const messageCount = conversation?.messages.filter((message) => deliveryStatus(message) !== 'thinking').length ?? 0;
+  const lastMessage = conversation?.messages.at(-1);
+  const lastMessageId = lastMessage?.id;
+  const lastMessageContentLength = lastMessage?.content.length ?? 0;
+  const messageCount =
+    conversation?.messages.filter((message) => !['thinking', 'streaming'].includes(deliveryStatus(message) ?? '')).length ?? 0;
   const { speakMessage, getMessageSpeechState, speechError } = useTextToSpeechPlayback(conversation?.id ?? null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [conversation?.id, conversation?.messages.length, lastMessageId]);
+  }, [conversation?.id, conversation?.messages.length, lastMessageContentLength, lastMessageId]);
 
   if (loading && !conversation) {
     return <main className="thread empty-state">Loading conversation...</main>;
