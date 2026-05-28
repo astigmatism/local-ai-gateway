@@ -54,6 +54,7 @@ const upload = multer({
     const allowed =
       mime.startsWith('audio/') ||
       mime === 'video/webm' ||
+      mime === 'video/mp4' ||
       mime === 'application/octet-stream' ||
       mime === 'application/x-mpegURL';
 

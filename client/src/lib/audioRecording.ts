@@ -1,11 +1,11 @@
 export const preferredAudioMimeTypes = [
-  'audio/ogg;codecs=opus',
-  'audio/ogg',
   'audio/webm;codecs=opus',
   'audio/webm',
   'audio/mp4',
-  'audio/mpeg',
-  'audio/wav'
+  'audio/mp4;codecs=mp4a.40.2',
+  'audio/aac',
+  'audio/ogg;codecs=opus',
+  'audio/ogg'
 ] as const;
 
 export const microphoneRecordingErrors = {
@@ -17,6 +17,7 @@ export const microphoneRecordingErrors = {
   securityPolicy: "Microphone access is blocked by the application's security policy.",
   constraints: 'No microphone matched the requested recording constraints.',
   aborted: 'Microphone recording was interrupted before it could start.',
+  unsupportedRecordingFormat: 'This browser recording format is not supported.',
   startFailed: 'Could not start microphone recording.',
   recordingFailed: 'Browser recording failed. Try again.',
   noAudioCaptured: 'No audio was captured.',
@@ -123,6 +124,7 @@ export const selectSupportedAudioMimeType = (
 const audioMimeTypeExtensionMap: Record<string, string> = {
   'audio/webm': 'webm',
   'video/webm': 'webm',
+  'video/mp4': 'mp4',
   'audio/ogg': 'ogg',
   'application/ogg': 'ogg',
   'audio/mp4': 'm4a',
@@ -140,17 +142,17 @@ const audioMimeTypeExtensionMap: Record<string, string> = {
 
 export const audioMimeTypeToFileExtension = (mimeType: string | undefined | null) => {
   const normalizedMimeType = mimeType?.split(';')[0]?.trim().toLowerCase();
-  if (!normalizedMimeType) return 'webm';
+  if (!normalizedMimeType) return 'dat';
 
   const knownExtension = audioMimeTypeExtensionMap[normalizedMimeType];
   if (knownExtension) return knownExtension;
 
   if (normalizedMimeType.startsWith('audio/')) {
     const subtype = normalizedMimeType.slice('audio/'.length).replace(/^x-/, '').replace(/[^a-z0-9]/g, '');
-    return subtype || 'webm';
+    return subtype || 'dat';
   }
 
-  return 'webm';
+  return 'dat';
 };
 
 export const getTranscriptionFailureMessage = (error: unknown) => {
@@ -212,6 +214,8 @@ export const mapMicrophoneStartError = (
       return microphoneRecordingErrors.constraints;
     case 'AbortError':
       return microphoneRecordingErrors.aborted;
+    case 'NotSupportedError':
+      return microphoneRecordingErrors.unsupportedRecordingFormat;
     default:
       return microphoneRecordingErrors.startFailed;
   }

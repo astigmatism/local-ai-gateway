@@ -44,6 +44,16 @@ const stopTracks = (stream: MediaStream | null) => {
   stream?.getTracks().forEach((track) => track.stop());
 };
 
+const waitForPendingRecorderEvents = () =>
+  new Promise<void>((resolve) => {
+    if (typeof window === 'undefined') {
+      resolve();
+      return;
+    }
+
+    window.setTimeout(resolve, 0);
+  });
+
 export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecorderOptions) => {
   const [status, setStatus] = useState<AudioRecordingStatus>('idle');
   const [audioLevels, setAudioLevels] = useState<number[]>(() => createIdleAudioLevels());
@@ -206,14 +216,22 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
 
   const finishRecorderStop = useCallback(
     async (recorder: MediaRecorder, fallbackMimeType?: string) => {
+      if (mediaRecorderRef.current !== recorder) return;
+
+      await waitForPendingRecorderEvents();
+
+      if (mediaRecorderRef.current !== recorder) return;
+
       const stopReason = stopReasonRef.current;
       const recordingFailed = recordingFailedRef.current;
       const shouldTranscribe = shouldTranscribeRecordingStop(stopReason, recordingFailed);
       const shouldShowCanceledStatus = shouldShowUserCanceledRecordingStatus(stopReason);
       const stoppedStatus = statusRef.current;
       const chunkMimeType = chunksRef.current.find((chunk) => chunk.type)?.type;
+      const blobType = recorder.mimeType || chunkMimeType || fallbackMimeType || undefined;
+      const chunks = chunksRef.current.slice();
       const blob = shouldTranscribe
-        ? new Blob(chunksRef.current, { type: recorder.mimeType || chunkMimeType || fallbackMimeType || 'audio/webm' })
+        ? new Blob(chunks, blobType ? { type: blobType } : undefined)
         : null;
 
       stopVisualizer();
@@ -339,7 +357,9 @@ export const useAudioRecorder = ({ onRecordingComplete, onError }: UseAudioRecor
         setRecorderStatus('error');
         void finishRecorderStop(recorder);
       } finally {
-        stopMediaStream();
+        if (reason !== 'accept') {
+          stopMediaStream();
+        }
       }
     },
     [clearStatusResetTimer, finishRecorderStop, resetRecordingRefs, setRecorderStatus, stopMediaStream, stopVisualizer, transitionToIdleSoon]

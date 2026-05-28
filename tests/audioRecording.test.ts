@@ -73,12 +73,24 @@ describe('audio recording browser support detection', () => {
     expect(selectSupportedAudioMimeType(MediaRecorder)).toBe('audio/webm');
   });
 
+  it('selects iOS-compatible MP4 or AAC recording MIME types when WebM is not supported', () => {
+    expect(selectSupportedAudioMimeType(makeMediaRecorder(['audio/mp4']))).toBe('audio/mp4');
+    expect(selectSupportedAudioMimeType(makeMediaRecorder(['audio/mp4;codecs=mp4a.40.2']))).toBe(
+      'audio/mp4;codecs=mp4a.40.2'
+    );
+    expect(selectSupportedAudioMimeType(makeMediaRecorder(['audio/aac']))).toBe('audio/aac');
+  });
+
   it('maps recording MIME types to matching file extensions', () => {
     expect(audioMimeTypeToFileExtension('audio/webm;codecs=opus')).toBe('webm');
     expect(audioMimeTypeToFileExtension('audio/mp4')).toBe('m4a');
+    expect(audioMimeTypeToFileExtension('video/mp4')).toBe('mp4');
+    expect(audioMimeTypeToFileExtension('audio/aac')).toBe('aac');
     expect(audioMimeTypeToFileExtension('audio/mpeg')).toBe('mp3');
     expect(audioMimeTypeToFileExtension('audio/wav')).toBe('wav');
     expect(audioMimeTypeToFileExtension('audio/ogg;codecs=opus')).toBe('ogg');
+    expect(audioMimeTypeToFileExtension(undefined)).toBe('dat');
+    expect(audioMimeTypeToFileExtension('application/octet-stream')).toBe('dat');
   });
 
   it('maps permission denial to a permission-specific message', () => {
@@ -91,6 +103,12 @@ describe('audio recording browser support detection', () => {
     expect(mapMicrophoneStartError(new DOMException('No devices found', 'NotFoundError'), makeSupportedEnvironment())).toBe(
       microphoneRecordingErrors.noMicrophone
     );
+  });
+
+  it('maps unsupported recorder formats to a format-specific message', () => {
+    expect(
+      mapMicrophoneStartError(new DOMException('Unsupported MIME type', 'NotSupportedError'), makeSupportedEnvironment())
+    ).toBe(microphoneRecordingErrors.unsupportedRecordingFormat);
   });
 
   it('maps document Permissions-Policy blocks to a security-policy message', () => {
