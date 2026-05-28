@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import type { CSSProperties, FormEvent } from 'react';
 import { api, ApiClientError } from '../lib/api.js';
+import { useReferenceWavRecorder } from '../hooks/useReferenceWavRecorder.js';
+import {
+  formatReferenceRecordingDuration,
+  referenceAudioRecordingScript,
+  recommendedReferenceRecordingSeconds
+} from '../lib/referenceAudioRecording.js';
 import type {
   VoiceModelCatalogResponse,
   VoiceModelDescriptor,
@@ -110,6 +116,16 @@ const isWavFile = (file: File) => {
   return file.name.toLowerCase().endsWith('.wav') || type === 'audio/wav' || type === 'audio/x-wav' || type === 'audio/wave';
 };
 
+const referenceRecordingUploadAction = 'Reference recording upload';
+
+const defaultReferenceRecordingDisplayName = () => {
+  const date = new Date();
+  return `Recorded reference ${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+};
+
+const clampLevel = (level: number) => Math.min(1, Math.max(0.12, Number.isFinite(level) ? level : 0.12));
+
+
 const referenceDetails = (reference: VoiceReferenceDescriptor) => {
   const uploaded = formatDateTime(reference.createdAt);
   const modified = !uploaded ? formatDateTime(reference.modifiedAt) : null;
@@ -151,6 +167,8 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
   const [ttsDefaultLanguage, setTtsDefaultLanguage] = useState('en');
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
   const [referenceDisplayName, setReferenceDisplayName] = useState('');
+  const [referenceRecorderOpen, setReferenceRecorderOpen] = useState(false);
+  const [referenceRecordingDisplayName, setReferenceRecordingDisplayName] = useState('');
   const [referenceDeleteUnsupported, setReferenceDeleteUnsupported] = useState(false);
   const referenceInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -222,6 +240,45 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
     } finally {
       setBusyAction(null);
     }
+  };
+
+  const referenceRecorder = useReferenceWavRecorder({
+    displayName: referenceRecordingDisplayName,
+    onError: (message) => setError(`Reference recording failed: ${message}`),
+    onRecordingComplete: async (recording) => {
+      const displayName = referenceRecordingDisplayName.trim() || recording.filename;
+      await runMutation(referenceRecordingUploadAction, async () => {
+        const response = await api.uploadReferenceAudio(recording.blob, {
+          filename: recording.filename,
+          displayName
+        });
+        setReferenceFile(null);
+        setReferenceDisplayName('');
+        setReferenceRecorderOpen(false);
+        setReferenceRecordingDisplayName('');
+        if (referenceInputRef.current) referenceInputRef.current.value = '';
+        return {
+          ...response,
+          message: response.message ?? `Reference recording uploaded: ${displayName}.`
+        };
+      });
+    }
+  });
+
+  const openReferenceRecorder = () => {
+    if (!canManageVoice || busyAction) return;
+    setError(null);
+    setNotice(null);
+    setReferenceRecordingDisplayName(referenceDisplayName.trim() || defaultReferenceRecordingDisplayName());
+    setReferenceRecorderOpen(true);
+  };
+
+  const closeReferenceRecorder = () => {
+    if (referenceRecorder.isEncoding || busyAction === referenceRecordingUploadAction) return;
+    if (referenceRecorder.isRecording || referenceRecorder.isRequestingPermission) {
+      referenceRecorder.cancelRecording();
+    }
+    setReferenceRecorderOpen(false);
   };
 
   const submitSttLoad = (event: FormEvent<HTMLFormElement>) => {
@@ -617,6 +674,14 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
             <button className="primary-button" type="submit" disabled={!canManageVoice || !referenceFile || Boolean(busyAction)}>
               {busyAction === 'Reference audio upload' ? 'Uploading...' : 'Upload reference'}
             </button>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={openReferenceRecorder}
+              disabled={!canManageVoice || Boolean(busyAction)}
+            >
+              Record reference
+            </button>
           </div>
           <label className="field-label" htmlFor="voice-reference-display-name">
             Display name
@@ -630,10 +695,124 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
             disabled={!canManageVoice || Boolean(busyAction)}
           />
           <small className="auth-help">
-            Uploading adds the WAV clip to the list and keeps the currently loaded reference unchanged. Click Load next to a reference to use it for future TTS. Delete is disabled for the loaded reference and uses VoiceVM descriptor-provided delete links or Bear Castle's conservative reference-audio delete fallback when supported.
+            Uploading or recording adds a WAV clip to the list and keeps the currently loaded reference unchanged. Click Load next to a reference to use it for future TTS. Browser recordings are converted to a mono PCM WAV before upload. Delete is disabled for the loaded reference and uses VoiceVM descriptor-provided delete links or Bear Castle's conservative reference-audio delete fallback when supported.
           </small>
         </form>
       </article>
+
+
+      {referenceRecorderOpen && (
+        <div className="voice-reference-recording-backdrop" role="presentation">
+          <div
+            className="voice-reference-recording-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="voice-reference-recording-title"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header voice-reference-recording-header">
+              <div>
+                <p className="eyebrow">Reference audio recorder</p>
+                <h3 id="voice-reference-recording-title">Record a Chatterbox reference sample</h3>
+              </div>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={closeReferenceRecorder}
+                disabled={referenceRecorder.isEncoding || busyAction === referenceRecordingUploadAction}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="voice-reference-recording-body">
+              <label className="field-label" htmlFor="voice-reference-recording-display-name">
+                Display name
+              </label>
+              <input
+                id="voice-reference-recording-display-name"
+                value={referenceRecordingDisplayName}
+                maxLength={180}
+                onChange={(event) => setReferenceRecordingDisplayName(event.target.value)}
+                placeholder="Recorded reference"
+                disabled={
+                  !canManageVoice ||
+                  referenceRecorder.isRecording ||
+                  referenceRecorder.isRequestingPermission ||
+                  referenceRecorder.isEncoding ||
+                  busyAction === referenceRecordingUploadAction
+                }
+              />
+
+              <div className="voice-reference-script" aria-label="Read this script while recording">
+                <span className="settings-status-label">Read this script</span>
+                <p>{referenceAudioRecordingScript}</p>
+              </div>
+
+              <p className="auth-help">
+                Aim for at least {recommendedReferenceRecordingSeconds} seconds, one speaker, a steady natural pace, and a quiet room.
+                The browser records from your microphone and prepares a mono 16-bit PCM WAV before sending it through Bear Castle.
+              </p>
+
+              <div className="voice-reference-recorder-status" aria-live="polite">
+                <strong>
+                  {referenceRecorder.isRecording
+                    ? 'Recording...'
+                    : referenceRecorder.isRequestingPermission
+                      ? 'Requesting microphone permission...'
+                      : referenceRecorder.isEncoding || busyAction === referenceRecordingUploadAction
+                        ? 'Preparing and uploading WAV...'
+                        : 'Ready to record'}
+                </strong>
+                <span>{formatReferenceRecordingDuration(referenceRecorder.elapsedSeconds)}</span>
+              </div>
+
+              <div className="voice-level-meter voice-reference-level-meter" aria-hidden="true">
+                {referenceRecorder.audioLevels.map((level, index) => (
+                  <span
+                    key={index}
+                    style={{ '--voice-level-scale': clampLevel(level).toFixed(3) } as CSSProperties}
+                  />
+                ))}
+              </div>
+
+              <div className="button-row voice-reference-recording-actions">
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={() => void referenceRecorder.startRecording()}
+                  disabled={
+                    !canManageVoice ||
+                    referenceRecorder.isRecording ||
+                    referenceRecorder.isRequestingPermission ||
+                    referenceRecorder.isEncoding ||
+                    Boolean(busyAction)
+                  }
+                >
+                  {referenceRecorder.isRequestingPermission ? 'Opening microphone...' : 'Start recording'}
+                </button>
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={() => void referenceRecorder.stopRecording()}
+                  disabled={!referenceRecorder.isRecording || Boolean(busyAction)}
+                >
+                  Done
+                </button>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={closeReferenceRecorder}
+                  disabled={referenceRecorder.isEncoding || busyAction === referenceRecordingUploadAction}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {!canManageVoice && <div className="settings-admin-note">Only Eric/admin can change voice models, defaults, or reference audio.</div>}
 

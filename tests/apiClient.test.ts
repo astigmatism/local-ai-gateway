@@ -607,6 +607,9 @@ describe('api client voice VM settings requests', () => {
     expect(init.body).toBeInstanceOf(FormData);
     const formData = init.body as FormData;
     expect(formData.get('displayName')).toBe('Eric sample.wav');
+    const uploadedFile = formData.get('reference_audio') as File;
+    expect(uploadedFile.name).toBe('sample.wav');
+    expect(uploadedFile.type).toBe('audio/wav');
     expect(formData.has('useAfterUpload')).toBe(false);
   });
 

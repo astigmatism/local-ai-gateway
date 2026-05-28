@@ -2721,6 +2721,90 @@ textarea {
   width: 100%;
 }
 
+.voice-reference-recording-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 96;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background: rgba(5, 10, 20, 0.68);
+  backdrop-filter: blur(14px);
+}
+
+.voice-reference-recording-dialog {
+  width: min(100%, 720px);
+  max-height: min(860px, calc(100vh - 2rem));
+  overflow-y: auto;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 1.25rem;
+  background: rgba(12, 18, 30, 0.96);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.42);
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.voice-reference-recording-header {
+  align-items: flex-start;
+}
+
+.voice-reference-recording-body {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.voice-reference-recording-body input {
+  width: 100%;
+}
+
+.voice-reference-script {
+  display: grid;
+  gap: 0.4rem;
+  border: 1px solid rgba(250, 204, 21, 0.28);
+  border-radius: 1rem;
+  background: rgba(250, 204, 21, 0.07);
+  padding: 0.9rem 1rem;
+}
+
+.voice-reference-script p {
+  margin: 0;
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1.65;
+}
+
+.voice-reference-recorder-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 0.9rem;
+  background: rgba(15, 23, 42, 0.36);
+  padding: 0.7rem 0.85rem;
+}
+
+.voice-reference-recorder-status strong {
+  color: var(--text);
+}
+
+.voice-reference-recorder-status span {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+.voice-reference-level-meter {
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+}
+
+.voice-reference-recording-actions {
+  justify-content: flex-end;
+}
+
 @media (max-width: 720px) {
   .voice-reference-current,
   .voice-reference-card {
@@ -2738,6 +2822,24 @@ textarea {
   .voice-reference-card .secondary-button,
   .voice-reference-card .danger-button {
     width: fit-content;
+  }
+  .voice-reference-recording-backdrop {
+    padding: 0.75rem;
+  }
+
+  .voice-reference-recording-dialog {
+    max-height: calc(100vh - 1.5rem);
+    padding: 0.85rem;
+  }
+
+  .voice-reference-recorder-status,
+  .voice-reference-recording-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .voice-reference-recording-actions button {
+    width: 100%;
   }
 }
 
