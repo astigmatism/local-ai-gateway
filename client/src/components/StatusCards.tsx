@@ -1,4 +1,9 @@
 import { useId } from 'react';
+import {
+  getGpuTemperaturePercentage,
+  getGpuTemperatureSeverity,
+  type GpuTemperatureSeverity
+} from '../lib/gpuTemperature.js';
 import type {
   GatewayStatus,
   HealthStatusState,
@@ -18,6 +23,7 @@ interface MetricBarProps {
   displayText: string;
   percentage: number | null;
   variant?: 'default' | 'temperature';
+  temperatureSeverity?: GpuTemperatureSeverity;
 }
 
 interface DetailRow {
@@ -112,11 +118,6 @@ const ratioPercentage = (value: number | undefined, max: number | undefined) => 
   return clampPercentage((value / max) * 100);
 };
 
-const temperaturePercentage = (temperatureC: number | undefined) => {
-  if (temperatureC === undefined) return null;
-  return clampPercentage(((temperatureC - 20) / (90 - 20)) * 100);
-};
-
 const fixed = (value: number, digits = 0) => value.toFixed(digits).replace(/\.0$/, '');
 const formatMemoryGiB = (value: number) => (value / 1024).toFixed(1);
 const formatPercent = (value: number) => `${fixed(value)}%`;
@@ -189,17 +190,35 @@ const badgeClass = (state: HealthStatusState) => {
   return 'warn';
 };
 
-const MetricBar = ({ label, displayText, percentage, variant = 'default' }: MetricBarProps) => (
-  <div className={`gpu-metric ${variant === 'temperature' ? 'temperature' : ''}`}>
-    <div className="gpu-metric-label">
-      <span>{label}</span>
-      <strong>{displayText}</strong>
+const MetricBar = ({ label, displayText, percentage, variant = 'default', temperatureSeverity }: MetricBarProps) => {
+  const isTemperature = variant === 'temperature';
+  const metricClassName = ['gpu-metric', isTemperature ? 'temperature' : ''].filter(Boolean).join(' ');
+  const barClassName = [
+    'gpu-bar',
+    isTemperature ? 'temperature' : '',
+    isTemperature && temperatureSeverity ? `temperature-${temperatureSeverity}` : '',
+    percentage === null ? 'unknown' : ''
+  ]
+    .filter(Boolean)
+    .join(' ');
+  const temperatureTitle =
+    isTemperature && temperatureSeverity ? `${label}: ${displayText}, ${temperatureSeverity}` : undefined;
+
+  return (
+    <div className={metricClassName} title={temperatureTitle}>
+      <div className="gpu-metric-label">
+        <span>{label}</span>
+        <strong>{displayText}</strong>
+        {isTemperature && temperatureSeverity && (
+          <span className="gpu-metric-accessible-note">Temperature severity: {temperatureSeverity}</span>
+        )}
+      </div>
+      <div className={barClassName} aria-hidden="true">
+        <span style={{ width: `${percentage ?? 0}%` }} />
+      </div>
     </div>
-    <div className={`gpu-bar ${variant === 'temperature' ? 'temperature' : ''} ${percentage === null ? 'unknown' : ''}`} aria-hidden="true">
-      <span style={{ width: `${percentage ?? 0}%` }} />
-    </div>
-  </div>
-);
+  );
+};
 
 const StatusPill = ({ label, state }: { label: string; state: HealthStatusState }) => {
   const displayState = normalizeEntryState(state);
@@ -377,8 +396,9 @@ const GpuStatusCard = ({ gpu }: { gpu: NormalizedGpuHealth }) => {
         <MetricBar
           label="Temperature"
           displayText={formatTemperature(gpu.temperatureC!)}
-          percentage={temperaturePercentage(gpu.temperatureC)}
+          percentage={getGpuTemperaturePercentage(gpu.temperatureC!)}
           variant="temperature"
+          temperatureSeverity={getGpuTemperatureSeverity(gpu.temperatureC!)}
         />
       )}
 

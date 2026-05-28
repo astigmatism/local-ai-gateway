@@ -1470,8 +1470,32 @@ textarea {
   background: linear-gradient(90deg, rgba(143, 180, 255, 0.65), rgba(143, 180, 255, 0.95));
 }
 
-.gpu-bar.temperature span {
-  background: linear-gradient(90deg, rgba(56, 189, 248, 0.58), rgba(251, 191, 36, 0.7), rgba(248, 113, 113, 0.82));
+.gpu-bar.temperature-normal span {
+  background: rgba(56, 189, 248, 0.82);
+}
+
+.gpu-bar.temperature-warm span {
+  background: rgba(251, 191, 36, 0.84);
+}
+
+.gpu-bar.temperature-hot span {
+  background: rgba(251, 146, 60, 0.9);
+}
+
+.gpu-bar.temperature-emergency span {
+  background: rgba(248, 113, 113, 0.96);
+}
+
+.gpu-metric-accessible-note {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .gpu-bar.unknown span {
