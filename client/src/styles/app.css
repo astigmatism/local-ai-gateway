@@ -596,7 +596,8 @@ textarea {
 
 .message-row.pending .message-bubble,
 .message-row.thinking .message-bubble,
-.message-row.streaming .message-bubble {
+.message-row.streaming .message-bubble,
+.message-row.imageGenerating .message-bubble {
   border-color: rgba(143, 180, 255, 0.34);
 }
 
@@ -754,6 +755,63 @@ textarea {
   background: var(--accent);
   vertical-align: -0.15em;
   animation: pulse 1s infinite ease-in-out;
+}
+
+.generated-image-message {
+  display: grid;
+  gap: 0.7rem;
+  min-width: 0;
+  margin: 0;
+}
+
+.generated-image-frame {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(143, 180, 255, 0.2);
+  border-radius: 18px;
+  background: rgba(3, 7, 18, 0.32);
+}
+
+.generated-image-frame img {
+  display: block;
+  width: 100%;
+  max-width: min(100%, 720px);
+  height: auto;
+  margin: 0 auto;
+}
+
+.generated-image-caption {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.generated-image-prompt {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.generated-image-details {
+  font-size: 0.76rem;
+}
+
+.generated-image-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  font-size: 0.8rem;
+}
+
+.generated-image-links a {
+  color: var(--accent);
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.generated-image-links a:hover,
+.generated-image-links a:focus-visible {
+  text-decoration: underline;
 }
 
 .markdown-content > :first-child {
@@ -3377,4 +3435,16 @@ body.mobile-panel-open {
     clip: rect(0 0 0 0);
     white-space: nowrap;
   }
+}
+
+.mobile-chat-panel .generated-image-message {
+  max-width: 100%;
+}
+
+.mobile-chat-panel .generated-image-frame img {
+  max-width: 100%;
+}
+
+.mobile-chat-panel .generated-image-links {
+  gap: 0.6rem;
 }

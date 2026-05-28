@@ -25,6 +25,23 @@ const ollamaGenerateResponseSchema = z
 
 type OllamaGenerateResponse = z.infer<typeof ollamaGenerateResponseSchema>;
 
+const localAiGeneratedImageSchema = z.object({
+  mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+  base64: z.string().min(1),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional()
+});
+
+const localAiImageResponseSchema = z.object({
+  ok: z.literal(true),
+  model: z.string().min(1),
+  images: z.array(localAiGeneratedImageSchema).min(1),
+  metadata: z.record(z.string(), z.unknown()).optional()
+});
+
+type LocalAiImageResponse = z.infer<typeof localAiImageResponseSchema>;
+
+
 export interface OllamaGenerateStreamChunk extends Record<string, unknown> {
   model?: string;
   created_at?: string;
@@ -55,6 +72,20 @@ export interface LlmStreamOptions extends LlmGenerateOptions {
   signal?: AbortSignal;
 }
 
+export interface ImageGenerateOptions {
+  width?: number;
+  height?: number;
+  steps?: number;
+  signal?: AbortSignal;
+}
+
+export interface ImageGenerateResult {
+  model: string;
+  image: LocalAiImageResponse['images'][number];
+  images: LocalAiImageResponse['images'];
+  metadata: Record<string, unknown>;
+}
+
 export interface LlmStreamMetadataEvent {
   type: 'metadata';
   provider: 'ollama';
@@ -81,6 +112,15 @@ export type LlmStreamEvent = LlmStreamMetadataEvent | LlmStreamDeltaEvent | LlmS
 const client = axios.create({
   baseURL: config.llm.baseUrl,
   timeout: config.llm.timeoutMs,
+  headers: {
+    'Content-Type': 'application/json'
+  },
+  validateStatus: (status) => status >= 200 && status < 300
+});
+
+const localAiClient = axios.create({
+  baseURL: config.llm.monitorBaseUrl,
+  timeout: config.imageGeneration.timeoutMs,
   headers: {
     'Content-Type': 'application/json'
   },
@@ -212,6 +252,97 @@ export const generateWithLlm = async (
       'LLM request failed'
     );
     throw new ApiError(502, `LLM request failed: ${message}`, 'LLM_REQUEST_FAILED');
+  }
+};
+
+export const generateImageWithLlm = async (
+  prompt: string,
+  options: ImageGenerateOptions = {}
+): Promise<ImageGenerateResult> => {
+  const trimmedPrompt = prompt.trim();
+
+  if (!config.imageGeneration.enabled) {
+    throw new ApiError(503, 'Image generation is disabled in Bear Castle AI.', 'IMAGE_GENERATION_DISABLED');
+  }
+
+  if (!trimmedPrompt) {
+    throw new ApiError(400, 'Add an image prompt after /image.', 'IMAGE_PROMPT_REQUIRED');
+  }
+
+  if (trimmedPrompt.length > config.imageGeneration.maxPromptChars) {
+    throw new ApiError(413, `Image prompt must be ${config.imageGeneration.maxPromptChars} characters or fewer.`, 'IMAGE_PROMPT_TOO_LONG');
+  }
+
+  const { signal, ...generationOptions } = options;
+
+  try {
+    const response = await localAiClient.post(
+      '/api/images/generate',
+      {
+        prompt: trimmedPrompt,
+        options: generationOptions
+      },
+      { timeout: config.imageGeneration.timeoutMs, signal }
+    );
+
+    const parsed = localAiImageResponseSchema.parse(response.data);
+    const [image] = parsed.images;
+    if (!image) {
+      throw new ApiError(502, 'local-ai-llm returned no image data.', 'IMAGE_GENERATION_EMPTY_RESULT');
+    }
+
+    return {
+      model: parsed.model,
+      image,
+      images: parsed.images,
+      metadata: parsed.metadata ?? {}
+    };
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+
+    if (error instanceof z.ZodError) {
+      throw new ApiError(502, 'local-ai-llm returned an invalid image-generation response.', 'IMAGE_GENERATION_RESPONSE_INVALID', {
+        issues: error.issues
+      });
+    }
+
+    if (axios.isAxiosError(error)) {
+      const statusCode = error.response?.status ?? (error.code === 'ECONNABORTED' ? 504 : 503);
+      const responseData = error.response?.data as unknown;
+      const responseRecord = responseData && typeof responseData === 'object' && !Array.isArray(responseData)
+        ? responseData as Record<string, unknown>
+        : null;
+      const errorRecord = responseRecord?.error && typeof responseRecord.error === 'object' && !Array.isArray(responseRecord.error)
+        ? responseRecord.error as Record<string, unknown>
+        : null;
+      const message = typeof errorRecord?.message === 'string'
+        ? errorRecord.message
+        : error.code === 'ECONNABORTED'
+          ? `Image generation timed out after ${config.imageGeneration.timeoutMs} ms.`
+          : axiosErrorMessage(error, config.imageGeneration.timeoutMs);
+      const code = typeof errorRecord?.code === 'string' ? errorRecord.code : 'IMAGE_GENERATION_REQUEST_FAILED';
+
+      logger.error(
+        {
+          errorMessage: message,
+          errorCode: error.code,
+          localAiBaseUrl: config.llm.monitorBaseUrl,
+          statusCode
+        },
+        'local-ai-llm image-generation request failed'
+      );
+
+      throw new ApiError(statusCode >= 400 && statusCode < 600 ? statusCode : 502, message, code, {
+        provider: 'local-ai-llm',
+        response: responseData
+      });
+    }
+
+    const message = error instanceof Error ? error.message : 'unknown error';
+    logger.error({ errorMessage: message, localAiBaseUrl: config.llm.monitorBaseUrl }, 'local-ai-llm image-generation request failed');
+    throw new ApiError(502, `Image generation request failed: ${message}`, 'IMAGE_GENERATION_REQUEST_FAILED');
   }
 };
 

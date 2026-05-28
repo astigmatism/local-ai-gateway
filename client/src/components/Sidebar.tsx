@@ -19,6 +19,17 @@ const formatTimestamp = (value: string) =>
     minute: '2-digit'
   }).format(new Date(value));
 
+const conversationPreview = (conversation: ConversationSummary) => {
+  const latestMessage = conversation.messages?.[0];
+  const image = latestMessage?.metadata?.image;
+  if (image && typeof image === 'object' && !Array.isArray(image)) {
+    const prompt = typeof image.prompt === 'string' ? image.prompt.trim() : '';
+    return prompt ? `Generated image: ${prompt}` : 'Generated image';
+  }
+  const content = latestMessage?.content?.trim();
+  return content || 'Empty conversation';
+};
+
 const TrashIcon = () => (
   <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
     <path d="M9.25 3.5a2 2 0 0 1 2-2h1.5a2 2 0 0 1 2 2v.75h4a.75.75 0 0 1 0 1.5h-.82l-.76 13.15a3 3 0 0 1-3 2.85H9.83a3 3 0 0 1-3-2.85L6.07 5.75h-.82a.75.75 0 0 1 0-1.5h4V3.5Zm1.5.75h2.5V3.5a.5.5 0 0 0-.5-.5h-1.5a.5.5 0 0 0-.5.5v.75Zm-3.18 1.5.75 13.06a1.5 1.5 0 0 0 1.5 1.44h4.36a1.5 1.5 0 0 0 1.5-1.44l.75-13.06H7.57Zm2.68 2.75a.75.75 0 0 1 .75.75v7.5a.75.75 0 0 1-1.5 0v-7.5a.75.75 0 0 1 .75-.75Zm3.5 0a.75.75 0 0 1 .75.75v7.5a.75.75 0 0 1-1.5 0v-7.5a.75.75 0 0 1 .75-.75Z" />
@@ -55,7 +66,7 @@ export const Sidebar = ({
       {!loadingConversations && conversations.length === 0 && <div className="muted padded">No conversations yet.</div>}
       {conversations.map((conversation) => {
         const selected = conversation.id === activeConversationId;
-        const preview = conversation.messages?.[0]?.content ?? 'Empty conversation';
+        const preview = conversationPreview(conversation);
         const deleting = deletingConversationId === conversation.id;
         return (
           <div key={conversation.id} className={`conversation-item ${selected ? 'selected' : ''}`}>

@@ -11,6 +11,8 @@ interface MessageActionsProps {
   speechState: TextToSpeechMessageState;
   speechError?: string | null;
   canReusePrompt: boolean;
+  copyLabel?: string;
+  copiedLabel?: string;
   onSpeak?: () => void;
   onReusePrompt?: (content: string) => void;
 }
@@ -57,8 +59,8 @@ const LoadingIcon = () => (
   </svg>
 );
 
-const copyStatusLabel = (status: CopyStatus, role: MessageRole) => {
-  if (status === 'copied') return role === 'assistant' ? 'Response copied' : 'Prompt copied';
+const copyStatusLabel = (status: CopyStatus, role: MessageRole, copiedLabel?: string) => {
+  if (status === 'copied') return copiedLabel ?? (role === 'assistant' ? 'Response copied' : 'Prompt copied');
   if (status === 'failed') return 'Could not copy';
   return '';
 };
@@ -78,16 +80,18 @@ export const MessageActions = ({
   speechState,
   speechError,
   canReusePrompt,
+  copyLabel: copyLabelOverride,
+  copiedLabel,
   onSpeak,
   onReusePrompt
 }: MessageActionsProps) => {
   const [copyStatus, setCopyStatus] = useState<CopyStatus>('idle');
   const resetTimerRef = useRef<number | null>(null);
   const hasActions = canCopy || canSpeak || canReusePrompt;
-  const copyLabel = role === 'assistant' ? 'Copy response' : 'Copy prompt';
+  const copyLabel = copyLabelOverride ?? (role === 'assistant' ? 'Copy response' : 'Copy prompt');
   const speakLabel = role === 'assistant' ? 'Speak response' : 'Speak prompt';
   const stopSpeakLabel = role === 'assistant' ? 'Stop speaking response' : 'Stop speaking prompt';
-  const copyFeedback = copyStatusLabel(copyStatus, role);
+  const copyFeedback = copyStatusLabel(copyStatus, role, copiedLabel);
   const speechFeedback = speakStatusLabel(speechState, speechError);
   const copyButtonClassName = [
     'message-action-button',

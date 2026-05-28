@@ -52,6 +52,25 @@ export interface Message {
   createdAt: string;
 }
 
+export interface GeneratedImageMessageMetadata extends Record<string, unknown> {
+  type: 'image';
+  image: {
+    url: string;
+    fileName?: string;
+    mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+    sizeBytes?: number;
+    prompt: string;
+    model: string;
+    provider?: string;
+    localAiEndpoint?: string;
+    ollamaEndpoint?: string;
+    generatedAt?: string;
+    width?: number;
+    height?: number;
+  };
+  generation?: Record<string, unknown>;
+}
+
 export interface ConversationSummary {
   id: string;
   userId: string;
@@ -316,6 +335,8 @@ export interface LlmStreamStartEvent {
   assistantMessageTempId: string;
   model: string;
   createdAt: string;
+  requestKind?: 'chat' | 'image';
+  statusMessage?: string;
 }
 
 export interface LlmStreamDeltaEvent {

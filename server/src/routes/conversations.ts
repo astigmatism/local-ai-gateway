@@ -1,5 +1,6 @@
 import { MessageRole, Prisma, type Message } from '@prisma/client';
 import { once } from 'node:events';
+import fs from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
 import { Router } from 'express';
@@ -16,7 +17,9 @@ import {
   isPlaceholderConversationTitle,
   makeFallbackConversationTitle
 } from '../services/conversationTitle.js';
-import { generateWithLlm, generateWithLlmStream, type LlmStreamDoneEvent } from '../services/llmClient.js';
+import { generateImageWithLlm, generateWithLlm, generateWithLlmStream, type LlmStreamDoneEvent } from '../services/llmClient.js';
+import { generatedImageMetadataFromMessage, generatedImagePath, saveGeneratedImage, type GeneratedImageMessageMetadata } from '../services/generatedImages.js';
+import { detectImageIntent, type ImageIntentDetection } from '../services/imageIntent.js';
 import { resolveDefaultLlmModel } from '../services/modelSettingsService.js';
 import { buildConversationPrompt } from '../services/promptBuilder.js';
 
@@ -94,6 +97,8 @@ interface ConversationStreamStartEvent {
   assistantMessageTempId: string;
   model: string;
   createdAt: string;
+  requestKind?: 'chat' | 'image';
+  statusMessage?: string;
 }
 
 interface ConversationStreamDeltaEvent {
@@ -244,6 +249,76 @@ const loadFirstExchangeMessages = async (conversationId: string) => {
   ]);
 
   return { firstUserMessage, firstAssistantMessage };
+};
+
+const messageMetadataForDetection = (detection: ImageIntentDetection, submittedAt: Date) => ({
+  submittedAt: submittedAt.toISOString(),
+  requestKind: detection.kind,
+  routingReason: detection.reason,
+  ...(detection.forcedBy ? { forcedBy: detection.forcedBy } : {}),
+  ...(detection.originalPrompt.trim() !== detection.prompt ? { originalContent: detection.originalPrompt.trim() } : {})
+});
+
+const generatedImageUrl = (conversationId: string, messageId: string) =>
+  `/api/conversations/${conversationId}/messages/${messageId}/image`;
+
+const imageAssistantContent = (prompt: string) => `Generated image for: ${prompt}`;
+
+const createImageAssistantMessage = async (conversationId: string, prompt: string, signal?: AbortSignal) => {
+  const imageResult = await generateImageWithLlm(prompt, { signal });
+  const storedImage = await saveGeneratedImage(imageResult.image);
+  const assistantMessageId = randomUUID();
+  const metadata: GeneratedImageMessageMetadata = {
+    type: 'image',
+    image: {
+      url: generatedImageUrl(conversationId, assistantMessageId),
+      fileName: storedImage.fileName,
+      mimeType: storedImage.mimeType,
+      sizeBytes: storedImage.sizeBytes,
+      prompt,
+      model: imageResult.model,
+      provider: 'local-ai-llm',
+      localAiEndpoint: '/api/images/generate',
+      ...(imageResult.metadata.endpoint === '/api/generate' ? { ollamaEndpoint: '/api/generate' as const } : {}),
+      generatedAt: new Date().toISOString(),
+      ...(storedImage.width !== undefined ? { width: storedImage.width } : {}),
+      ...(storedImage.height !== undefined ? { height: storedImage.height } : {})
+    },
+    generation: imageResult.metadata
+  };
+
+  return prisma.message.create({
+    data: {
+      id: assistantMessageId,
+      conversationId,
+      role: MessageRole.assistant,
+      content: imageAssistantContent(prompt),
+      metadata: metadata as unknown as Prisma.InputJsonValue
+    }
+  });
+};
+
+const serveGeneratedImage = async (res: Response, message: Message) => {
+  const metadata = generatedImageMetadataFromMessage(message);
+  if (!metadata) {
+    throw new ApiError(404, 'Generated image not found for this message.', 'GENERATED_IMAGE_NOT_FOUND');
+  }
+
+  const filePath = generatedImagePath(metadata.image.fileName);
+  let imageBytes: Buffer;
+  try {
+    imageBytes = await fs.readFile(filePath);
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      throw new ApiError(404, 'Generated image file not found.', 'GENERATED_IMAGE_FILE_NOT_FOUND');
+    }
+    throw error;
+  }
+
+  res.setHeader('Content-Type', metadata.image.mimeType);
+  res.setHeader('Content-Length', imageBytes.length.toString());
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  res.send(imageBytes);
 };
 
 const noTitleGenerationNeededResponse = async (
@@ -523,6 +598,34 @@ conversationsRouter.post(
 );
 
 
+conversationsRouter.get(
+  '/conversations/:conversationId/messages/:messageId/image',
+  asyncHandler(async (req, res) => {
+    const conversationId = uuidParamSchema.parse(req.params.conversationId);
+    const messageId = uuidParamSchema.parse(req.params.messageId);
+    const userId = currentUserId(req);
+
+    const message = await prisma.message.findFirst({
+      where: {
+        id: messageId,
+        conversationId,
+        role: MessageRole.assistant,
+        conversation: {
+          userId,
+          archived: false
+        }
+      }
+    });
+
+    if (!message) {
+      throw new ApiError(404, 'Generated image not found.', 'GENERATED_IMAGE_NOT_FOUND');
+    }
+
+    await serveGeneratedImage(res, message);
+  })
+);
+
+
 conversationsRouter.post(
   '/conversations/:conversationId/messages/stream',
   chatRateLimiter,
@@ -530,6 +633,11 @@ conversationsRouter.post(
     const startedAt = Date.now();
     const conversationId = uuidParamSchema.parse(req.params.conversationId);
     const body = sendMessageSchema.parse(req.body ?? {});
+    const detection = detectImageIntent(body.content);
+    const content = detection.prompt;
+    if (!content) {
+      throw new ApiError(400, 'Add a prompt after the slash command before sending.', 'PROMPT_REQUIRED');
+    }
     const userId = currentUserId(req);
 
     const conversation = await prisma.conversation.findFirst({
@@ -553,15 +661,15 @@ conversationsRouter.post(
     const titleGenerationNeeded = conversationNeedsGeneratedTitle({
       title: conversation.title,
       messageCount: completedMessageCount,
-      firstUserPrompt: body.content
+      firstUserPrompt: content
     });
-    const fallbackTitleShouldUpdate = isPlaceholderConversationTitle(conversation.title, body.content);
+    const fallbackTitleShouldUpdate = isPlaceholderConversationTitle(conversation.title, content);
     const shouldPersistFallbackTitleNow =
       !config.conversationTitle.enabled &&
       conversationNeedsGeneratedTitle({
         title: conversation.title,
         messageCount: completedMessageCount,
-        firstUserPrompt: body.content,
+        firstUserPrompt: content,
         titleGenerationEnabled: true
       });
     const now = new Date();
@@ -570,34 +678,14 @@ conversationsRouter.post(
       data: {
         conversationId,
         role: MessageRole.user,
-        content: body.content,
-        metadata: {
-          submittedAt: now.toISOString()
-        }
+        content,
+        metadata: messageMetadataForDetection(detection, now)
       }
     });
 
     await prisma.conversation.update({
       where: { id: conversationId },
       data: { updatedAt: now }
-    });
-
-    const recentMessagesDesc = await prisma.message.findMany({
-      where: { conversationId },
-      orderBy: { createdAt: 'desc' },
-      take: config.conversation.contextMaxMessages
-    });
-
-    const recentMessages = recentMessagesDesc.reverse().map((message) => ({
-      role: message.role,
-      content: message.content
-    }));
-
-    const llmModel = await resolveDefaultLlmModel();
-    const prompt = buildConversationPrompt(recentMessages, {
-      maxMessages: config.conversation.contextMaxMessages,
-      maxChars: config.conversation.contextMaxChars,
-      modelName: llmModel
     });
 
     const abortController = new AbortController();
@@ -616,13 +704,86 @@ conversationsRouter.post(
     (res as Response & { flushHeaders?: () => void }).flushHeaders?.();
 
     try {
+      if (detection.kind === 'image') {
+        const startWritten = await writeNdjsonEvent(res, {
+          type: 'start',
+          conversationId,
+          userMessage,
+          assistantMessageTempId: `stream-assistant-${randomUUID()}`,
+          model: 'local-ai-llm:image-generation',
+          createdAt: new Date().toISOString(),
+          requestKind: 'image',
+          statusMessage: 'Generating image...'
+        });
+
+        if (!startWritten) {
+          abortController.abort();
+          streamFinished = true;
+          return;
+        }
+
+        const assistantMessage = await createImageAssistantMessage(conversationId, content, abortController.signal);
+        const updatedConversation = await prisma.conversation.update({
+          where: { id: conversationId },
+          data: {
+            updatedAt: new Date(),
+            ...(shouldPersistFallbackTitleNow ? { title: makeFallbackConversationTitle(content) } : {})
+          },
+          include: conversationSummaryInclude
+        });
+
+        await writeNdjsonEvent(res, {
+          type: 'done',
+          assistantMessage,
+          conversation: updatedConversation,
+          titleGeneration: {
+            needed: titleGenerationNeeded
+          },
+          metadata: assistantMessage.metadata as Record<string, unknown>
+        });
+
+        streamFinished = true;
+        res.end();
+
+        logger.info(
+          {
+            conversationId,
+            durationMs: Date.now() - startedAt,
+            titleGenerationDeferred: titleGenerationNeeded,
+            streaming: true,
+            requestKind: 'image'
+          },
+          'image_response_stream_completed'
+        );
+        return;
+      }
+
+      const recentMessagesDesc = await prisma.message.findMany({
+        where: { conversationId },
+        orderBy: { createdAt: 'desc' },
+        take: config.conversation.contextMaxMessages
+      });
+
+      const recentMessages = recentMessagesDesc.reverse().map((message) => ({
+        role: message.role,
+        content: message.content
+      }));
+
+      const llmModel = await resolveDefaultLlmModel();
+      const prompt = buildConversationPrompt(recentMessages, {
+        maxMessages: config.conversation.contextMaxMessages,
+        maxChars: config.conversation.contextMaxChars,
+        modelName: llmModel
+      });
+
       const startWritten = await writeNdjsonEvent(res, {
         type: 'start',
         conversationId,
         userMessage,
         assistantMessageTempId: `stream-assistant-${randomUUID()}`,
         model: llmModel,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        requestKind: 'chat'
       });
 
       if (!startWritten) {
@@ -679,7 +840,7 @@ conversationsRouter.post(
         where: { id: conversationId },
         data: {
           updatedAt: new Date(),
-          ...(shouldPersistFallbackTitleNow ? { title: makeFallbackConversationTitle(body.content) } : {})
+          ...(shouldPersistFallbackTitleNow ? { title: makeFallbackConversationTitle(content) } : {})
         },
         include: conversationSummaryInclude
       });
@@ -702,7 +863,8 @@ conversationsRouter.post(
           conversationId,
           durationMs: Date.now() - startedAt,
           titleGenerationDeferred: titleGenerationNeeded,
-          streaming: true
+          streaming: true,
+          requestKind: 'chat'
         },
         'chat_response_stream_completed'
       );
@@ -713,7 +875,8 @@ conversationsRouter.post(
           {
             conversationId,
             durationMs: Date.now() - startedAt,
-            streaming: true
+            streaming: true,
+            requestKind: detection.kind
           },
           'chat_response_stream_aborted'
         );
@@ -722,7 +885,7 @@ conversationsRouter.post(
       }
 
       if (fallbackTitleShouldUpdate) {
-        await applyFallbackTitleAfterSendFailure(conversationId, body.content);
+        await applyFallbackTitleAfterSendFailure(conversationId, content);
       }
 
       logger.error(
@@ -730,9 +893,10 @@ conversationsRouter.post(
           conversationId,
           durationMs: Date.now() - startedAt,
           errorMessage: error instanceof Error ? error.message : 'Unknown stream error',
-          code: streamErrorCode(error)
+          code: streamErrorCode(error),
+          requestKind: detection.kind
         },
-        'chat_response_stream_failed'
+        detection.kind === 'image' ? 'image_response_stream_failed' : 'chat_response_stream_failed'
       );
 
       await writeNdjsonEvent(res, {
@@ -757,6 +921,11 @@ conversationsRouter.post(
     const startedAt = Date.now();
     const conversationId = uuidParamSchema.parse(req.params.conversationId);
     const body = sendMessageSchema.parse(req.body ?? {});
+    const detection = detectImageIntent(body.content);
+    const content = detection.prompt;
+    if (!content) {
+      throw new ApiError(400, 'Add a prompt after the slash command before sending.', 'PROMPT_REQUIRED');
+    }
     const userId = currentUserId(req);
 
     const conversation = await prisma.conversation.findFirst({
@@ -780,15 +949,15 @@ conversationsRouter.post(
     const titleGenerationNeeded = conversationNeedsGeneratedTitle({
       title: conversation.title,
       messageCount: completedMessageCount,
-      firstUserPrompt: body.content
+      firstUserPrompt: content
     });
-    const fallbackTitleShouldUpdate = isPlaceholderConversationTitle(conversation.title, body.content);
+    const fallbackTitleShouldUpdate = isPlaceholderConversationTitle(conversation.title, content);
     const shouldPersistFallbackTitleNow =
       !config.conversationTitle.enabled &&
       conversationNeedsGeneratedTitle({
         title: conversation.title,
         messageCount: completedMessageCount,
-        firstUserPrompt: body.content,
+        firstUserPrompt: content,
         titleGenerationEnabled: true
       });
     const now = new Date();
@@ -797,10 +966,8 @@ conversationsRouter.post(
       data: {
         conversationId,
         role: MessageRole.user,
-        content: body.content,
-        metadata: {
-          submittedAt: now.toISOString()
-        }
+        content,
+        metadata: messageMetadataForDetection(detection, now)
       }
     });
 
@@ -809,30 +976,46 @@ conversationsRouter.post(
       data: { updatedAt: now }
     });
 
-    const recentMessagesDesc = await prisma.message.findMany({
-      where: { conversationId },
-      orderBy: { createdAt: 'desc' },
-      take: config.conversation.contextMaxMessages
-    });
+    let assistantMessage: Message;
+    let responseMetadata: Record<string, unknown> | undefined;
 
-    const recentMessages = recentMessagesDesc.reverse().map((message) => ({
-      role: message.role,
-      content: message.content
-    }));
-
-    const llmModel = await resolveDefaultLlmModel();
-    const prompt = buildConversationPrompt(recentMessages, {
-      maxMessages: config.conversation.contextMaxMessages,
-      maxChars: config.conversation.contextMaxChars,
-      modelName: llmModel
-    });
-
-    let llmResult;
     try {
-      llmResult = await generateWithLlm(prompt, { model: llmModel });
+      if (detection.kind === 'image') {
+        assistantMessage = await createImageAssistantMessage(conversationId, content);
+        responseMetadata = assistantMessage.metadata as Record<string, unknown>;
+      } else {
+        const recentMessagesDesc = await prisma.message.findMany({
+          where: { conversationId },
+          orderBy: { createdAt: 'desc' },
+          take: config.conversation.contextMaxMessages
+        });
+
+        const recentMessages = recentMessagesDesc.reverse().map((message) => ({
+          role: message.role,
+          content: message.content
+        }));
+
+        const llmModel = await resolveDefaultLlmModel();
+        const prompt = buildConversationPrompt(recentMessages, {
+          maxMessages: config.conversation.contextMaxMessages,
+          maxChars: config.conversation.contextMaxChars,
+          modelName: llmModel
+        });
+
+        const llmResult = await generateWithLlm(prompt, { model: llmModel });
+        assistantMessage = await prisma.message.create({
+          data: {
+            conversationId,
+            role: MessageRole.assistant,
+            content: llmResult.content,
+            metadata: llmResult.metadata as Prisma.InputJsonValue
+          }
+        });
+        responseMetadata = llmResult.metadata;
+      }
     } catch (error) {
       if (fallbackTitleShouldUpdate) {
-        await applyFallbackTitleAfterSendFailure(conversationId, body.content);
+        await applyFallbackTitleAfterSendFailure(conversationId, content);
       }
 
       if (error instanceof ApiError) {
@@ -847,20 +1030,11 @@ conversationsRouter.post(
       throw error;
     }
 
-    const assistantMessage = await prisma.message.create({
-      data: {
-        conversationId,
-        role: MessageRole.assistant,
-        content: llmResult.content,
-        metadata: llmResult.metadata as Prisma.InputJsonValue
-      }
-    });
-
     const updatedConversation = await prisma.conversation.update({
       where: { id: conversationId },
       data: {
         updatedAt: new Date(),
-        ...(shouldPersistFallbackTitleNow ? { title: makeFallbackConversationTitle(body.content) } : {})
+        ...(shouldPersistFallbackTitleNow ? { title: makeFallbackConversationTitle(content) } : {})
       },
       include: conversationSummaryInclude
     });
@@ -869,9 +1043,10 @@ conversationsRouter.post(
       {
         conversationId,
         durationMs: Date.now() - startedAt,
-        titleGenerationDeferred: titleGenerationNeeded
+        titleGenerationDeferred: titleGenerationNeeded,
+        requestKind: detection.kind
       },
-      'chat_response_completed'
+      detection.kind === 'image' ? 'image_response_completed' : 'chat_response_completed'
     );
 
     res.status(201).json({
@@ -880,7 +1055,8 @@ conversationsRouter.post(
       conversation: updatedConversation,
       titleGeneration: {
         needed: titleGenerationNeeded
-      }
+      },
+      metadata: responseMetadata
     });
   })
 );

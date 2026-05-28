@@ -86,6 +86,10 @@ const envSchema = z.object({
     .trim()
     .regex(/^\/[A-Za-z0-9/_-]*$/, 'must be a monitor path such as /storage or /disk')
     .default('/storage'),
+  IMAGE_GENERATION_ENABLED: booleanFromString.default(false),
+  IMAGE_GENERATION_TIMEOUT_MS: z.coerce.number().int().positive().default(600000),
+  IMAGE_GENERATION_MAX_PROMPT_CHARS: z.coerce.number().int().positive().default(4000),
+  IMAGE_GENERATION_STORAGE_DIR: z.string().min(1).default('./storage/generated-images'),
   STORAGE_LOW_DISK_WARNING_PERCENT: z.coerce.number().min(1).max(100).default(85),
   STORAGE_LOW_DISK_WARNING_BYTES: z.coerce.number().int().positive().default(50 * 1024 * 1024 * 1024),
 
@@ -298,6 +302,12 @@ export const config = {
     monitorBaseUrl: stripTrailingSlash(env.LLM_MONITOR_BASE_URL),
     model: env.LLM_MODEL,
     timeoutMs: env.LLM_TIMEOUT_MS
+  },
+  imageGeneration: {
+    enabled: env.IMAGE_GENERATION_ENABLED,
+    timeoutMs: env.IMAGE_GENERATION_TIMEOUT_MS,
+    maxPromptChars: env.IMAGE_GENERATION_MAX_PROMPT_CHARS,
+    storageDir: path.resolve(process.cwd(), env.IMAGE_GENERATION_STORAGE_DIR)
   },
   modelManagement: {
     discoveryTimeoutMs: Math.min(env.MODEL_DISCOVERY_TIMEOUT_MS, env.LLM_TIMEOUT_MS),

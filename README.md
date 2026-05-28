@@ -128,6 +128,7 @@ The gateway returns `application/x-ndjson` to the browser. Events are newline-de
 {"type":"metadata","provider":"ollama","endpoint":"/api/generate","model":"qwen3:14b","generatedAt":"..."}
 {"type":"delta","delta":"Hello","content":"Hello","generatedAt":"..."}
 {"type":"done","assistantMessage":{"id":"..."},"conversation":{"id":"..."},"titleGeneration":{"needed":true}}
+
 ```
 
 Ollama's response is parsed incrementally as NDJSON. The gateway appends only normal `/api/generate` `response` text to the visible assistant message and ignores separate `thinking` fields so hidden reasoning is not shown as assistant content. The browser reads the response with `fetch()` and `ReadableStream.getReader()`, parses NDJSON boundaries safely, and appends each `delta` to the same temporary assistant message. The old local “Thinking…” indicator remains only as a placeholder before the first real delta arrives; completed responses are no longer locally animated to mimic streaming.
@@ -147,6 +148,20 @@ curl -N \
 ```
 
 Keep `LLM_BASE_URL`, `LLM_MONITOR_BASE_URL`, Ollama, and local-ai-llm monitor endpoints private to the gateway network. Do not expose Ollama or local-ai-llm directly to browsers or the public internet.
+
+## Image generation in conversations
+
+Bear Castle AI can route clear image-generation prompts to the local-ai-llm image workflow instead of normal text chat. The browser still talks only to the authenticated gateway route `POST /api/conversations/:conversationId/messages/stream`; the gateway persists the user message, detects the image intent server-side, calls local-ai-llm `POST /api/images/generate`, stores the returned image under `IMAGE_GENERATION_STORAGE_DIR`, persists an assistant image message using existing message JSON metadata, and serves the image through `GET /api/conversations/:conversationId/messages/:messageId/image` after verifying session and conversation ownership.
+
+Prompts such as "generate an image of a bear castle at sunset", "create a picture of a retro computer desk", "draw me a bear wearing armor", and "render an image showing a GPU test bench" trigger the image workflow. Conceptual prompts such as "explain how image generation works", "write a prompt to generate an image", and "what models generate images" stay on normal text chat.
+
+Slash overrides are available for ambiguous requests:
+
+- `/image <prompt>` forces image generation and strips the command before sending the prompt to local-ai-llm.
+- `/chat <prompt>` forces normal text chat and strips the command before building the chat prompt.
+
+The local-ai-llm service must have image generation enabled and an installed image-capable Ollama model configured with `IMAGE_GENERATION_MODEL`. If local-ai-llm reports that image generation is disabled, no model is configured, the model is not installed, Ollama is unavailable, or Ollama returns no image data, Bear Castle AI preserves the user message and shows a clear assistant error instead of silently falling back to text chat.
+
 
 ## Model Manager
 
@@ -1006,6 +1021,10 @@ scripts/restart.sh
 | `MODEL_DELETE_TIMEOUT_MS` | `120000` | Timeout for Ollama `/api/delete` requests. |
 | `MODEL_MAX_CONCURRENT_PULLS` | `1` | Maximum simultaneous model pulls allowed by the gateway. |
 | `LLM_STORAGE_ENDPOINT` | `/storage` | Optional local-ai-llm monitor path for disk free/total. When `/storage`, the gateway also tries `/disk` as a fallback. |
+| `IMAGE_GENERATION_ENABLED` | `false` | Enables server-side image intent routing in Bear Castle AI. local-ai-llm must still enable and configure its image model. |
+| `IMAGE_GENERATION_TIMEOUT_MS` | `600000` | Timeout for the gateway request to local-ai-llm `POST /api/images/generate`. |
+| `IMAGE_GENERATION_MAX_PROMPT_CHARS` | `4000` | Maximum cleaned prompt length accepted by the image workflow. |
+| `IMAGE_GENERATION_STORAGE_DIR` | `./storage/generated-images` | Persistent server-side directory where the gateway stores generated image files. |
 | `STORAGE_LOW_DISK_WARNING_PERCENT` | `85` | Warn in Settings when reported local-ai-llm disk used percent is at or above this value. |
 | `STORAGE_LOW_DISK_WARNING_BYTES` | `53687091200` | Warn in Settings when reported local-ai-llm available bytes are at or below this value. |
 | `VOICE_BASE_URL` | `http://192.168.1.8:8000` | local-ai-voice Node gateway base URL. Bear Castle AI targets modern `/api` routes under this URL and never calls worker-only ports. |

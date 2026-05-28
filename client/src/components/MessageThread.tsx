@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useTextToSpeechPlayback } from '../hooks/useTextToSpeechPlayback.js';
 import type { TextToSpeechMessageState } from '../hooks/useTextToSpeechPlayback.js';
-import type { Conversation, Message } from '../lib/types.js';
+import type { Conversation, GeneratedImageMessageMetadata, Message } from '../lib/types.js';
 import { MarkdownMessageContent } from './MarkdownMessageContent.js';
 import { MessageActions } from './MessageActions.js';
 
@@ -11,7 +11,7 @@ interface MessageThreadProps {
   onReusePrompt: (content: string) => void;
 }
 
-type DeliveryStatus = 'pending' | 'thinking' | 'streaming' | 'error';
+type DeliveryStatus = 'pending' | 'thinking' | 'streaming' | 'imageGenerating' | 'error';
 
 const formatTime = (value: string) =>
   new Intl.DateTimeFormat(undefined, {
@@ -29,35 +29,110 @@ const roleLabel = (role: Message['role']) => {
 
 const deliveryStatus = (message: Message): DeliveryStatus | null => {
   const status = message.metadata?.deliveryStatus;
-  return status === 'pending' || status === 'thinking' || status === 'streaming' || status === 'error' ? status : null;
+  return status === 'pending' ||
+    status === 'thinking' ||
+    status === 'streaming' ||
+    status === 'imageGenerating' ||
+    status === 'error'
+    ? status
+    : null;
 };
+
+const isGeneratedImageMetadata = (value: unknown): value is GeneratedImageMessageMetadata => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (record.type !== 'image') return false;
+  const image = record.image;
+  if (!image || typeof image !== 'object' || Array.isArray(image)) return false;
+  const imageRecord = image as Record<string, unknown>;
+  return typeof imageRecord.url === 'string' && typeof imageRecord.prompt === 'string' && typeof imageRecord.model === 'string';
+};
+
+const generatedImageMetadata = (message: Message) => (isGeneratedImageMetadata(message.metadata) ? message.metadata : null);
 
 const timestampLabel = (message: Message) => {
   const status = deliveryStatus(message);
   if (status === 'pending') return 'Sending...';
   if (status === 'thinking') return 'Starting...';
   if (status === 'streaming') return 'Streaming...';
+  if (status === 'imageGenerating') return 'Generating image...';
   if (status === 'error') return 'Needs attention';
   return formatTime(message.createdAt);
 };
 
+const copyContent = (message: Message) => generatedImageMetadata(message)?.image.prompt ?? message.content;
+
 const canCopyMessage = (message: Message) => {
   const status = deliveryStatus(message);
+  const imageMetadata = generatedImageMetadata(message);
+  const textToCopy = imageMetadata?.image.prompt ?? message.content;
 
-  if (message.content.trim().length === 0) return false;
-  if (status === 'thinking' || status === 'streaming') return false;
+  if (textToCopy.trim().length === 0) return false;
+  if (status === 'thinking' || status === 'streaming' || status === 'imageGenerating') return false;
   if (message.role === 'assistant' && status === 'error') return false;
 
   return message.role === 'assistant' || message.role === 'user';
 };
 
-const canSpeakMessage = (message: Message) => canCopyMessage(message);
+const canSpeakMessage = (message: Message) => canCopyMessage(message) && !generatedImageMetadata(message);
 
 const canReusePrompt = (message: Message) =>
-  message.role === 'user' && message.content.trim().length > 0 && !['thinking', 'streaming'].includes(deliveryStatus(message) ?? '');
+  message.role === 'user' &&
+  message.content.trim().length > 0 &&
+  !['thinking', 'streaming', 'imageGenerating'].includes(deliveryStatus(message) ?? '');
+
+const imageDimensionsLabel = (image: GeneratedImageMessageMetadata['image']) => {
+  if (image.width && image.height) return `${image.width}x${image.height}`;
+  return null;
+};
+
+const GeneratedImageContent = ({ metadata, fallbackContent }: { metadata: GeneratedImageMessageMetadata; fallbackContent: string }) => {
+  const image = metadata.image;
+  const altText = `Generated image for: ${image.prompt || fallbackContent}`;
+  const dimensions = imageDimensionsLabel(image);
+
+  return (
+    <figure className="generated-image-message">
+      <div className="generated-image-frame">
+        <img src={image.url} alt={altText} loading="lazy" />
+      </div>
+      <figcaption className="generated-image-caption">
+        <span className="generated-image-prompt">{image.prompt}</span>
+        <span className="generated-image-details">
+          {image.model}
+          {dimensions ? ` - ${dimensions}` : ''}
+        </span>
+        <span className="generated-image-links">
+          <a href={image.url} target="_blank" rel="noreferrer" aria-label="Open generated image">
+            Open image
+          </a>
+          <a href={image.url} download aria-label="Download generated image">
+            Download image
+          </a>
+        </span>
+      </figcaption>
+    </figure>
+  );
+};
+
+const PendingImageContent = () => (
+  <div className="message-content plain-message-content pending-message-content" aria-live="polite">
+    <div className="typing-indicator" aria-hidden="true">
+      <span />
+      <span />
+      <span />
+    </div>
+    <p>Generating image...</p>
+  </div>
+);
 
 const MessageContent = ({ message }: { message: Message }) => {
   const status = deliveryStatus(message);
+  const imageMetadata = generatedImageMetadata(message);
+
+  if (status === 'imageGenerating') {
+    return <PendingImageContent />;
+  }
 
   if (status === 'thinking') {
     return (
@@ -81,7 +156,7 @@ const MessageContent = ({ message }: { message: Message }) => {
             <span />
             <span />
           </div>
-          <p>Starting response…</p>
+          <p>Starting response...</p>
         </div>
       );
     }
@@ -96,6 +171,10 @@ const MessageContent = ({ message }: { message: Message }) => {
 
   if (status === 'error') {
     return <div className="message-content plain-message-content error-message-content">{message.content}</div>;
+  }
+
+  if (imageMetadata) {
+    return <GeneratedImageContent metadata={imageMetadata} fallbackContent={message.content} />;
   }
 
   if (message.role === 'assistant') {
@@ -123,15 +202,20 @@ const MessageBubble = ({
   speechError: { messageId: string; message: string } | null;
 }) => {
   const status = deliveryStatus(message);
+  const imageMetadata = generatedImageMetadata(message);
+  const copiedContent = copyContent(message);
   const canSpeak = canSpeakMessage(message);
   const speechState = canSpeak ? getMessageSpeechState(message.id) : 'idle';
 
   return (
-    <div className={`message-row ${message.role} ${status ? status : ''}`}>
+    <div className={`message-row ${message.role} ${status ? status : ''} ${imageMetadata ? 'image-message' : ''}`}>
       <div className="message-avatar" aria-hidden="true">
         {message.role === 'assistant' ? 'AI' : message.role === 'system' ? 'S' : 'You'}
       </div>
-      <div className="message-bubble" aria-live={status === 'thinking' || status === 'streaming' || status === 'error' ? 'polite' : undefined}>
+      <div
+        className="message-bubble"
+        aria-live={status === 'thinking' || status === 'streaming' || status === 'imageGenerating' || status === 'error' ? 'polite' : undefined}
+      >
         <div className="message-meta">
           <span>{roleLabel(message.role)}</span>
           <span>{timestampLabel(message)}</span>
@@ -139,12 +223,14 @@ const MessageBubble = ({
         <MessageContent message={message} />
         <MessageActions
           role={message.role}
-          content={message.content}
+          content={copiedContent}
           canCopy={canCopyMessage(message)}
           canSpeak={canSpeak}
           speechState={speechState}
           speechError={speechError?.messageId === message.id ? speechError.message : null}
           canReusePrompt={canReusePrompt(message)}
+          copyLabel={imageMetadata ? 'Copy image prompt' : undefined}
+          copiedLabel={imageMetadata ? 'Image prompt copied' : undefined}
           onSpeak={() => onSpeakMessage(message.id, message.content)}
           onReusePrompt={onReusePrompt}
         />
@@ -159,7 +245,7 @@ export const MessageThread = ({ conversation, loading, onReusePrompt }: MessageT
   const lastMessageId = lastMessage?.id;
   const lastMessageContentLength = lastMessage?.content.length ?? 0;
   const messageCount =
-    conversation?.messages.filter((message) => !['thinking', 'streaming'].includes(deliveryStatus(message) ?? '')).length ?? 0;
+    conversation?.messages.filter((message) => !['thinking', 'streaming', 'imageGenerating'].includes(deliveryStatus(message) ?? '')).length ?? 0;
   const { speakMessage, getMessageSpeechState, speechError } = useTextToSpeechPlayback(conversation?.id ?? null);
 
   useEffect(() => {

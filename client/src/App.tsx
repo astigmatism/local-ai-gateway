@@ -182,7 +182,7 @@ const errorMessage = (error: unknown) => {
 
 const newConversationTitle = 'New conversation';
 
-type OptimisticDeliveryStatus = 'pending' | 'thinking' | 'streaming' | 'error';
+type OptimisticDeliveryStatus = 'pending' | 'thinking' | 'streaming' | 'imageGenerating' | 'error';
 
 const createTemporaryId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
@@ -191,7 +191,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const getDeliveryStatus = (message: Message): OptimisticDeliveryStatus | null => {
   const status = message.metadata?.deliveryStatus;
-  return status === 'pending' || status === 'thinking' || status === 'streaming' || status === 'error' ? status : null;
+  return status === 'pending' || status === 'thinking' || status === 'streaming' || status === 'imageGenerating' || status === 'error' ? status : null;
 };
 
 const isOptimisticMessage = (message: Message) => message.metadata?.optimistic === true;
@@ -216,7 +216,7 @@ const createOptimisticMessage = ({
   createdAt: Date;
   submittedAt: string;
 }): Message => ({
-  id: createTemporaryId(deliveryStatus === 'thinking' ? 'temp-assistant-thinking' : `temp-${role}`),
+  id: createTemporaryId(deliveryStatus === 'thinking' || deliveryStatus === 'imageGenerating' ? 'temp-assistant-thinking' : `temp-${role}`),
   conversationId,
   role,
   content,
@@ -284,7 +284,7 @@ const shouldShowOptimisticMessage = (message: Message, persistedMessages: Messag
     );
   }
 
-  if (message.role === 'assistant' && (deliveryStatus === 'thinking' || deliveryStatus === 'streaming' || deliveryStatus === 'error')) {
+  if (message.role === 'assistant' && (deliveryStatus === 'thinking' || deliveryStatus === 'streaming' || deliveryStatus === 'imageGenerating' || deliveryStatus === 'error')) {
     return !persistedMessages.some(
       (persistedMessage) =>
         persistedMessage.role === 'assistant' &&
@@ -1033,11 +1033,13 @@ export const App = () => {
                     ...message,
                     id: assistantMessageTempId,
                     conversationId: event.conversationId,
+                    content: event.requestKind === 'image' ? event.statusMessage || 'Generating image...' : message.content,
                     metadata: {
                       ...(message.metadata ?? {}),
-                      deliveryStatus: 'thinking',
+                      deliveryStatus: event.requestKind === 'image' ? 'imageGenerating' : 'thinking',
                       model: event.model,
-                      streaming: true
+                      streaming: event.requestKind !== 'image',
+                      requestKind: event.requestKind ?? 'chat'
                     }
                   };
                 }
