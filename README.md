@@ -160,7 +160,7 @@ Slash overrides are available for ambiguous requests:
 - `/image <prompt>` forces image generation and strips the command before sending the prompt to local-ai-llm.
 - `/chat <prompt>` forces normal text chat and strips the command before building the chat prompt.
 
-The local-ai-llm service must have image generation enabled and an installed image-capable Ollama model configured with `IMAGE_GENERATION_MODEL`. If local-ai-llm reports that image generation is disabled, no model is configured, the model is not installed, Ollama is unavailable, or Ollama returns no image data, Bear Castle AI preserves the user message and shows a clear assistant error instead of silently falling back to text chat.
+The local-ai-llm service must have image generation enabled and its current/default model must be installed and report Ollama image-generation capability `image`. Bear Castle AI checks `GET {LLM_MONITOR_BASE_URL}/api/capabilities` before calling `POST /api/images/generate`, so vision/image-input models are not treated as image-output models. If local-ai-llm reports that image generation is disabled, no model is selected, the model is not installed, the model lacks capability `image`, Ollama is unavailable, or Ollama returns no image data after capability gating, Bear Castle AI preserves the user message and shows a clear assistant error instead of silently falling back to text chat.
 
 
 ## Model Manager
@@ -1024,7 +1024,7 @@ scripts/restart.sh
 | `MODEL_DELETE_TIMEOUT_MS` | `120000` | Timeout for Ollama `/api/delete` requests. |
 | `MODEL_MAX_CONCURRENT_PULLS` | `1` | Maximum simultaneous model pulls allowed by the gateway. |
 | `LLM_STORAGE_ENDPOINT` | `/storage` | Optional local-ai-llm monitor path for disk free/total. When `/storage`, the gateway also tries `/disk` as a fallback. |
-| `IMAGE_GENERATION_ENABLED` | `false` | Enables server-side image intent routing in Bear Castle AI. local-ai-llm must still enable and configure its image model. |
+| `IMAGE_GENERATION_ENABLED` | `false` | Enables server-side image intent routing in Bear Castle AI. local-ai-llm must still enable image generation and select a model that reports Ollama capability `image`. |
 | `IMAGE_GENERATION_TIMEOUT_MS` | `600000` | Timeout for the gateway request to local-ai-llm `POST /api/images/generate`. |
 | `IMAGE_GENERATION_MAX_PROMPT_CHARS` | `4000` | Maximum cleaned prompt length accepted by the image workflow. |
 | `IMAGE_GENERATION_STORAGE_DIR` | `./storage/generated-images` | Persistent server-side directory where the gateway stores generated image files. |

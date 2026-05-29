@@ -41,6 +41,34 @@ const localAiImageResponseSchema = z.object({
 
 type LocalAiImageResponse = z.infer<typeof localAiImageResponseSchema>;
 
+const localAiImageGenerationCapabilitySchema = z
+  .object({
+    enabled: z.boolean(),
+    available: z.boolean(),
+    currentModel: z.string().nullable().optional(),
+    installed: z.boolean().nullable().optional(),
+    loaded: z.boolean().nullable().optional(),
+    endpoint: z.literal('/api/images/generate').optional(),
+    ollamaEndpoint: z.literal('/api/generate').optional(),
+    maxPromptChars: z.number().optional(),
+    provider: z.literal('ollama').optional(),
+    requiredCapability: z.literal('image').optional(),
+    modelCapabilities: z.array(z.string()).optional(),
+    supportsImageGeneration: z.boolean().nullable().optional(),
+    supportsImageInput: z.boolean().nullable().optional(),
+    reason: z.string().optional()
+  })
+  .passthrough();
+
+const localAiCapabilitiesResponseSchema = z
+  .object({
+    ok: z.literal(true),
+    imageGeneration: localAiImageGenerationCapabilitySchema
+  })
+  .passthrough();
+
+type LocalAiImageGenerationCapability = z.infer<typeof localAiImageGenerationCapabilitySchema>;
+
 
 export interface OllamaGenerateStreamChunk extends Record<string, unknown> {
   model?: string;
@@ -127,6 +155,8 @@ const localAiClient = axios.create({
   validateStatus: (status) => status >= 200 && status < 300
 });
 
+const imageCapabilityCheckTimeoutMs = () => Math.min(config.imageGeneration.timeoutMs, 30000);
+
 const axiosErrorMessage = (error: unknown, timeoutMs = config.llm.timeoutMs) => {
   if (axios.isAxiosError(error)) {
     if (error.response) {
@@ -205,6 +235,95 @@ const fetchErrorMessage = (error: unknown, timeoutMs: number) => {
   return error instanceof Error ? error.message : 'unknown error';
 };
 
+const imageCapabilityUnavailableMessage = (capability: LocalAiImageGenerationCapability) =>
+  capability.reason ??
+  (capability.supportsImageGeneration === false
+    ? `The selected local-ai-llm model${capability.currentModel ? ` (${capability.currentModel})` : ''} does not support image generation output through Ollama.`
+    : 'local-ai-llm reports image generation is not available for the selected provider/model.');
+
+const imageCapabilityUnavailableCode = (capability: LocalAiImageGenerationCapability) => {
+  if (!capability.enabled) return 'IMAGE_GENERATION_DISABLED';
+  if (capability.supportsImageGeneration === false) return 'IMAGE_GENERATION_UNSUPPORTED_MODEL';
+  return 'IMAGE_GENERATION_UNAVAILABLE';
+};
+
+const imageCapabilityUnavailableStatus = (capability: LocalAiImageGenerationCapability) => {
+  if (!capability.enabled) return 503;
+  if (capability.supportsImageGeneration === false) return 422;
+  return 503;
+};
+
+const assertLocalAiImageGenerationAvailable = async (signal?: AbortSignal) => {
+  try {
+    const response = await localAiClient.get('/api/capabilities', {
+      timeout: imageCapabilityCheckTimeoutMs(),
+      signal
+    });
+    const parsed = localAiCapabilitiesResponseSchema.parse(response.data);
+    const capability = parsed.imageGeneration;
+
+    if (capability.enabled && capability.available) return;
+
+    throw new ApiError(
+      imageCapabilityUnavailableStatus(capability),
+      imageCapabilityUnavailableMessage(capability),
+      imageCapabilityUnavailableCode(capability),
+      {
+        provider: 'local-ai-llm',
+        imageGeneration: capability
+      }
+    );
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+
+    if (error instanceof z.ZodError) {
+      throw new ApiError(502, 'local-ai-llm returned an invalid capability response.', 'IMAGE_CAPABILITY_RESPONSE_INVALID', {
+        issues: error.issues
+      });
+    }
+
+    if (axios.isAxiosError(error)) {
+      if (error.response?.status === 404) {
+        logger.warn(
+          { localAiBaseUrl: config.llm.monitorBaseUrl },
+          'local-ai-llm capability endpoint was not found; proceeding with image request for backward compatibility'
+        );
+        return;
+      }
+
+      const statusCode = error.response?.status ?? (error.code === 'ECONNABORTED' ? 504 : 503);
+      const message = error.code === 'ECONNABORTED'
+        ? `Capability check timed out after ${imageCapabilityCheckTimeoutMs()} ms.`
+        : axiosErrorMessage(error, imageCapabilityCheckTimeoutMs());
+
+      logger.error(
+        {
+          errorMessage: message,
+          errorCode: error.code,
+          localAiBaseUrl: config.llm.monitorBaseUrl,
+          statusCode
+        },
+        'local-ai-llm image-generation capability check failed'
+      );
+
+      throw new ApiError(
+        statusCode >= 400 && statusCode < 600 ? statusCode : 503,
+        `Unable to verify local-ai-llm image-generation capability: ${message}`,
+        'IMAGE_CAPABILITY_CHECK_FAILED',
+        {
+          provider: 'local-ai-llm',
+          response: error.response?.data as unknown
+        }
+      );
+    }
+
+    const message = error instanceof Error ? error.message : 'unknown error';
+    throw new ApiError(502, `Unable to verify local-ai-llm image-generation capability: ${message}`, 'IMAGE_CAPABILITY_CHECK_FAILED');
+  }
+};
+
 export const generateWithLlm = async (
   prompt: string,
   options: LlmGenerateOptions = {}
@@ -276,6 +395,8 @@ export const generateImageWithLlm = async (
   const { signal, ...generationOptions } = options;
 
   try {
+    await assertLocalAiImageGenerationAvailable(signal);
+
     const response = await localAiClient.post(
       '/api/images/generate',
       {
