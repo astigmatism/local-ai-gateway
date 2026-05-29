@@ -1,36 +1,46 @@
-import fs from 'node:fs';
-import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const readSource = (relativePath: string) =>
+  readFileSync(fileURLToPath(new URL(`../${relativePath}`, import.meta.url)), 'utf8');
 
-const readProjectFile = (relativePath: string) => fs.readFileSync(path.join(projectRoot, relativePath), 'utf8');
+describe('chat message scroll behavior', () => {
+  it('does not auto-scroll the message thread when streaming message content updates', () => {
+    const source = readSource('client/src/components/MessageThread.tsx');
 
-describe('chat message viewport behavior', () => {
-  it('does not auto-scroll the message thread when message content changes', () => {
-    const source = readProjectFile('client/src/components/MessageThread.tsx');
+    expect(source).not.toMatch(/scrollIntoView|scrollTop\s*=|bottomRef|lastMessageContentLength|requestAnimationFrame/);
+    expect(source).toContain('getPromptStartSnapKey(conversation?.messages ?? [])');
+    expect(source).toContain('}, [promptStartSnapKey]);');
+  });
 
-    expect(source).not.toContain('bottomRef');
-    expect(source).not.toMatch(/scrollIntoView|scrollTop|scrollTo\(|scrollHeight/);
+  it('keeps the only automatic scroll constrained to the initial prompt-start message pair', () => {
+    const source = readSource('client/src/components/MessageThread.tsx');
+
+    expect(source).toContain("const promptStartStatuses: DeliveryStatus[] = ['thinking', 'streaming', 'imageGenerating'];");
+    expect(source).toContain("if (userMessage.role !== 'user' || assistantMessage.role !== 'assistant') return null;");
+    expect(source).toContain('if (!isOptimisticMessage(userMessage) || !isOptimisticMessage(assistantMessage)) return null;');
+    expect(source).toContain('if (!userSubmittedAt || userSubmittedAt !== assistantSubmittedAt) return null;');
+    expect(source).toContain('return userSubmittedAt;');
+    expect(source).toContain("thread.scrollTo({ top: thread.scrollHeight, behavior: 'auto' });");
   });
 });
 
-describe('chat message horizontal overflow behavior', () => {
-  it('renders Markdown tables inside a horizontal scroll container', () => {
-    const source = readProjectFile('client/src/components/MarkdownMessageContent.tsx');
+describe('chat message overflow handling', () => {
+  it('wraps markdown tables in a horizontally scrollable region', () => {
+    const source = readSource('client/src/components/MarkdownMessageContent.tsx');
 
-    expect(source).toContain('markdown-scroll-container markdown-table-scroll');
+    expect(source).toContain('className="markdown-table-scroll"');
     expect(source).toContain('aria-label="Scrollable table"');
     expect(source).toContain('tabIndex={0}');
   });
 
-  it('keeps Markdown, tables, and code blocks horizontally scrollable', () => {
-    const css = readProjectFile('client/src/styles/app.css');
+  it('keeps wide message content, tables, and preformatted blocks horizontally accessible', () => {
+    const styles = readSource('client/src/styles/app.css');
 
-    expect(css).toMatch(/\.markdown-content\s*\{[\s\S]*overflow-x:\s*auto;[\s\S]*-webkit-overflow-scrolling:\s*touch;/);
-    expect(css).toMatch(/\.markdown-content\s+\.markdown-scroll-container\s*\{[\s\S]*overflow-x:\s*auto;/);
-    expect(css).toMatch(/\.markdown-content\s+pre\s*\{[\s\S]*overflow-x:\s*auto;/);
-    expect(css).toMatch(/\.mobile-chat-panel\s+\.markdown-content,[\s\S]*overflow-x:\s*auto;/);
+    expect(styles).toMatch(/\.message-content\s*\{[\s\S]*overflow-x:\s*auto;/);
+    expect(styles).toMatch(/\.markdown-content pre\s*\{[\s\S]*overflow-x:\s*auto;/);
+    expect(styles).toMatch(/\.markdown-table-scroll\s*\{[\s\S]*overflow-x:\s*auto;/);
+    expect(styles).toMatch(/\.mobile-chat-panel \.markdown-table-scroll\s*\{[\s\S]*overflow-x:\s*auto;/);
   });
 });

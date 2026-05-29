@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { useTextToSpeechPlayback } from '../hooks/useTextToSpeechPlayback.js';
 import type { TextToSpeechMessageState } from '../hooks/useTextToSpeechPlayback.js';
 import type { Conversation, GeneratedImageMessageMetadata, Message } from '../lib/types.js';
@@ -83,6 +84,33 @@ const canReusePrompt = (message: Message) =>
 const imageDimensionsLabel = (image: GeneratedImageMessageMetadata['image']) => {
   if (image.width && image.height) return `${image.width}x${image.height}`;
   return null;
+};
+
+const promptStartStatuses: DeliveryStatus[] = ['thinking', 'streaming', 'imageGenerating'];
+
+const isOptimisticMessage = (message: Message) => message.metadata?.optimistic === true;
+
+const submittedAtMetadata = (message: Message) => {
+  const submittedAt = message.metadata?.submittedAt;
+  return typeof submittedAt === 'string' ? submittedAt : null;
+};
+
+const getPromptStartSnapKey = (messages: Message[]) => {
+  const userMessage = messages.at(-2);
+  const assistantMessage = messages.at(-1);
+
+  if (!userMessage || !assistantMessage) return null;
+  if (userMessage.role !== 'user' || assistantMessage.role !== 'assistant') return null;
+  if (!isOptimisticMessage(userMessage) || !isOptimisticMessage(assistantMessage)) return null;
+
+  const assistantStatus = deliveryStatus(assistantMessage);
+  if (!assistantStatus || !promptStartStatuses.includes(assistantStatus)) return null;
+
+  const userSubmittedAt = submittedAtMetadata(userMessage);
+  const assistantSubmittedAt = submittedAtMetadata(assistantMessage);
+  if (!userSubmittedAt || userSubmittedAt !== assistantSubmittedAt) return null;
+
+  return userSubmittedAt;
 };
 
 const GeneratedImageContent = ({ metadata, fallbackContent }: { metadata: GeneratedImageMessageMetadata; fallbackContent: string }) => {
@@ -239,17 +267,35 @@ const MessageBubble = ({
 };
 
 export const MessageThread = ({ conversation, loading, onReusePrompt }: MessageThreadProps) => {
+  const threadRef = useRef<HTMLElement | null>(null);
+  const snappedPromptStartKeysRef = useRef<Set<string>>(new Set());
   const messageCount =
     conversation?.messages.filter((message) => !['thinking', 'streaming', 'imageGenerating'].includes(deliveryStatus(message) ?? '')).length ?? 0;
   const { speakMessage, getMessageSpeechState, speechError } = useTextToSpeechPlayback(conversation?.id ?? null);
+  const promptStartSnapKey = getPromptStartSnapKey(conversation?.messages ?? []);
+
+  useEffect(() => {
+    if (!promptStartSnapKey) return;
+    if (snappedPromptStartKeysRef.current.has(promptStartSnapKey)) return;
+
+    const thread = threadRef.current;
+    if (!thread) return;
+
+    snappedPromptStartKeysRef.current.add(promptStartSnapKey);
+    thread.scrollTo({ top: thread.scrollHeight, behavior: 'auto' });
+  }, [promptStartSnapKey]);
 
   if (loading && !conversation) {
-    return <main className="thread empty-state">Loading conversation...</main>;
+    return (
+      <main className="thread empty-state" ref={threadRef}>
+        Loading conversation...
+      </main>
+    );
   }
 
   if (!conversation) {
     return (
-      <main className="thread empty-state">
+      <main className="thread empty-state" ref={threadRef}>
         <div className="empty-state-card">
           <span className="empty-state-mark">BC</span>
           <h2>Start a new conversation</h2>
@@ -260,7 +306,7 @@ export const MessageThread = ({ conversation, loading, onReusePrompt }: MessageT
   }
 
   return (
-    <main className="thread">
+    <main className="thread" ref={threadRef}>
       <div className="thread-title">
         <h2>{conversation.title}</h2>
         <p>{messageCount} messages</p>
