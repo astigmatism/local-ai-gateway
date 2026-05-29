@@ -566,6 +566,7 @@ textarea {
 
 .message-row {
   display: grid;
+  min-width: 0;
   grid-template-columns: 42px minmax(0, 920px);
   gap: 0.85rem;
   align-items: flex-start;
@@ -633,6 +634,7 @@ textarea {
 
 .message-content {
   min-width: 0;
+  max-width: 100%;
   line-height: 1.62;
   overflow-wrap: anywhere;
 }
@@ -814,6 +816,14 @@ textarea {
   text-decoration: underline;
 }
 
+.markdown-content {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-inline: contain;
+}
+
 .markdown-content > :first-child {
   margin-top: 0;
 }
@@ -896,6 +906,12 @@ textarea {
   text-underline-offset: 0.18em;
 }
 
+.markdown-content img,
+.markdown-content svg {
+  max-width: 100%;
+  height: auto;
+}
+
 .markdown-content code {
   border: 1px solid var(--border-soft);
   border-radius: 0.38rem;
@@ -909,11 +925,14 @@ textarea {
 .markdown-content pre {
   max-width: 100%;
   overflow-x: auto;
+  overflow-y: visible;
   margin: 0.8rem 0;
   border: 1px solid var(--border-soft);
   border-radius: 14px;
   padding: 0.85rem;
   background: rgba(7, 10, 15, 0.88);
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-inline: contain;
 }
 
 .markdown-content pre code {
@@ -926,13 +945,31 @@ textarea {
   white-space: pre;
 }
 
-.markdown-content table {
-  display: block;
-  width: max-content;
+.markdown-content pre:focus-visible,
+.markdown-content .markdown-scroll-container:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.markdown-content .markdown-scroll-container {
+  min-width: 0;
   max-width: 100%;
   overflow-x: auto;
-  border-collapse: collapse;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-inline: contain;
+}
+
+.markdown-content .markdown-table-scroll {
   margin: 0.85rem 0;
+}
+
+.markdown-content table {
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+  border-collapse: collapse;
+  margin: 0;
   font-size: 0.92rem;
 }
 
@@ -942,6 +979,8 @@ textarea {
   padding: 0.5rem 0.65rem;
   text-align: left;
   vertical-align: top;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .markdown-content th {
@@ -3145,10 +3184,12 @@ body.mobile-panel-open {
   line-height: 1.58;
 }
 
+.mobile-chat-panel .markdown-content,
 .mobile-chat-panel .markdown-content pre,
-.mobile-chat-panel .markdown-content table {
+.mobile-chat-panel .markdown-content .markdown-scroll-container {
   max-width: 100%;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .mobile-chat-panel .message-actions {

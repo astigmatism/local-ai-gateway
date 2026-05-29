@@ -1,4 +1,3 @@
-import { useEffect, useRef } from 'react';
 import { useTextToSpeechPlayback } from '../hooks/useTextToSpeechPlayback.js';
 import type { TextToSpeechMessageState } from '../hooks/useTextToSpeechPlayback.js';
 import type { Conversation, GeneratedImageMessageMetadata, Message } from '../lib/types.js';
@@ -240,17 +239,9 @@ const MessageBubble = ({
 };
 
 export const MessageThread = ({ conversation, loading, onReusePrompt }: MessageThreadProps) => {
-  const bottomRef = useRef<HTMLDivElement | null>(null);
-  const lastMessage = conversation?.messages.at(-1);
-  const lastMessageId = lastMessage?.id;
-  const lastMessageContentLength = lastMessage?.content.length ?? 0;
   const messageCount =
     conversation?.messages.filter((message) => !['thinking', 'streaming', 'imageGenerating'].includes(deliveryStatus(message) ?? '')).length ?? 0;
   const { speakMessage, getMessageSpeechState, speechError } = useTextToSpeechPlayback(conversation?.id ?? null);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [conversation?.id, conversation?.messages.length, lastMessageContentLength, lastMessageId]);
 
   if (loading && !conversation) {
     return <main className="thread empty-state">Loading conversation...</main>;
@@ -292,8 +283,6 @@ export const MessageThread = ({ conversation, loading, onReusePrompt }: MessageT
           speechError={speechError}
         />
       ))}
-
-      <div ref={bottomRef} />
     </main>
   );
 };
