@@ -1,6 +1,7 @@
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { generateWithLlm } from './llmClient.js';
+import { resolveOptionalLlmFeatureModel } from './modelSettingsService.js';
 
 const genericConversationTitles = new Set([
   'new conversation',
@@ -22,7 +23,7 @@ export interface ConversationTitleResult {
   title: string;
   generated: boolean;
   fallbackUsed: boolean;
-  reason?: 'disabled' | 'empty_prompt' | 'empty_model_response' | 'invalid_model_response' | 'llm_failed';
+  reason?: 'disabled' | 'empty_prompt' | 'model_unavailable' | 'empty_model_response' | 'invalid_model_response' | 'llm_failed';
   model?: string;
 }
 
@@ -225,9 +226,29 @@ export const generateConversationTitle = async (
   const promptInput = trimmedPrompt.slice(0, config.conversationTitle.maxPromptChars);
   const assistantInput = trimmedAssistantResponse?.slice(0, config.conversationTitle.maxPromptChars);
 
+  let model: string | undefined;
   try {
+    model = await resolveOptionalLlmFeatureModel(config.conversationTitle.model);
+    if (!model) {
+      logger.warn(
+        {
+          promptLength: trimmedPrompt.length,
+          assistantResponseLength: trimmedAssistantResponse?.length ?? 0,
+          maxPromptChars: config.conversationTitle.maxPromptChars
+        },
+        'Conversation title generation unavailable because no LLM model could be resolved; using fallback title'
+      );
+
+      return {
+        title: fallbackTitle,
+        generated: false,
+        fallbackUsed: true,
+        reason: 'model_unavailable'
+      };
+    }
+
     const result = await generateWithLlm(buildConversationTitlePrompt(promptInput, assistantInput), {
-      model: config.conversationTitle.model,
+      model,
       timeoutMs: config.conversationTitle.timeoutMs
     });
     const title = sanitizeConversationTitle(result.content);
@@ -238,7 +259,7 @@ export const generateConversationTitle = async (
         generated: false,
         fallbackUsed: true,
         reason: result.content.trim() ? 'invalid_model_response' : 'empty_model_response',
-        model: config.conversationTitle.model
+        model
       };
     }
 
@@ -246,13 +267,13 @@ export const generateConversationTitle = async (
       title,
       generated: true,
       fallbackUsed: false,
-      model: config.conversationTitle.model
+      model
     };
   } catch (error) {
     logger.warn(
       {
         errorMessage: error instanceof Error ? error.message : 'Unknown title generation error',
-        model: config.conversationTitle.model,
+        model,
         promptLength: trimmedPrompt.length,
         assistantResponseLength: trimmedAssistantResponse?.length ?? 0,
         maxPromptChars: config.conversationTitle.maxPromptChars
@@ -265,7 +286,7 @@ export const generateConversationTitle = async (
       generated: false,
       fallbackUsed: true,
       reason: 'llm_failed',
-      model: config.conversationTitle.model
+      model
     };
   }
 };

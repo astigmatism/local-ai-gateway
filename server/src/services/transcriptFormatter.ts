@@ -1,6 +1,7 @@
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { generateWithLlm } from './llmClient.js';
+import { resolveOptionalLlmFeatureModel } from './modelSettingsService.js';
 
 export interface TranscriptFormattingMetadata {
   enabled: boolean;
@@ -8,11 +9,13 @@ export interface TranscriptFormattingMetadata {
   model?: string;
   rawTranscriptLength: number;
   formattedTranscriptLength?: number;
-  skippedReason?: 'disabled' | 'empty' | 'too_long' | 'empty_formatter_response';
+  skippedReason?: 'disabled' | 'empty' | 'too_long' | 'model_unavailable' | 'empty_formatter_response';
   failed?: boolean;
   error?: string;
   formattedAt?: string;
 }
+
+const missingModelMessage = 'Transcript formatting model is not configured and no default LLM model is available.';
 
 export interface TranscriptFormattingResult {
   transcript: string;
@@ -89,9 +92,32 @@ export const maybeFormatTranscript = async (rawTranscript: string): Promise<Tran
     };
   }
 
+  let model: string | undefined;
   try {
+    model = await resolveOptionalLlmFeatureModel(config.transcriptFormatting.model);
+    if (!model) {
+      logger.warn(
+        {
+          rawTranscriptLength
+        },
+        'Transcript formatting skipped because no LLM model could be resolved'
+      );
+
+      return {
+        transcript: rawTranscript,
+        metadata: {
+          enabled: true,
+          applied: false,
+          rawTranscriptLength,
+          skippedReason: 'model_unavailable',
+          failed: true,
+          error: missingModelMessage
+        }
+      };
+    }
+
     const result = await generateWithLlm(buildTranscriptFormattingPrompt(trimmed), {
-      model: config.transcriptFormatting.model,
+      model,
       timeoutMs: config.transcriptFormatting.timeoutMs
     });
     const formattedTranscript = unwrapAccidentalFence(result.content);
@@ -102,7 +128,7 @@ export const maybeFormatTranscript = async (rawTranscript: string): Promise<Tran
         metadata: {
           enabled: true,
           applied: false,
-          model: config.transcriptFormatting.model,
+          model,
           rawTranscriptLength,
           skippedReason: 'empty_formatter_response'
         }
@@ -114,7 +140,7 @@ export const maybeFormatTranscript = async (rawTranscript: string): Promise<Tran
       metadata: {
         enabled: true,
         applied: true,
-        model: config.transcriptFormatting.model,
+        model,
         rawTranscriptLength,
         formattedTranscriptLength: formattedTranscript.length,
         formattedAt: new Date().toISOString()
@@ -125,7 +151,7 @@ export const maybeFormatTranscript = async (rawTranscript: string): Promise<Tran
       {
         errorMessage: error instanceof Error ? error.message : 'Unknown transcript formatting error',
         rawTranscriptLength,
-        model: config.transcriptFormatting.model
+        model
       },
       'Transcript formatting failed; using raw voice transcript'
     );
@@ -135,7 +161,7 @@ export const maybeFormatTranscript = async (rawTranscript: string): Promise<Tran
       metadata: {
         enabled: true,
         applied: false,
-        model: config.transcriptFormatting.model,
+        model,
         rawTranscriptLength,
         failed: true,
         error: error instanceof Error ? error.message : 'Unknown transcript formatting error'

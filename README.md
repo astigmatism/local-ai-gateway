@@ -507,7 +507,8 @@ If the voice/STT service returns a raw unpunctuated transcript, the gateway can 
 ```env
 TRANSCRIPT_FORMATTING_ENABLED=true
 TRANSCRIPT_FORMATTING_TIMEOUT_MS=120000
-TRANSCRIPT_FORMATTING_MODEL=qwen3:30b
+# Optional. Leave blank to use the current default LLM model at request time.
+TRANSCRIPT_FORMATTING_MODEL=
 TRANSCRIPT_FORMATTING_MAX_CHARS=12000
 ```
 
@@ -517,13 +518,15 @@ New conversation titles are generated from the first user prompt through the con
 
 ```env
 CONVERSATION_TITLE_GENERATION_ENABLED=true
-CONVERSATION_TITLE_MODEL=qwen3:30b
+# Optional. Leave blank to use the current default LLM model at request time.
+CONVERSATION_TITLE_MODEL=
 CONVERSATION_TITLE_TIMEOUT_MS=120000
 CONVERSATION_TITLE_MAX_CHARS=4000
 CONVERSATION_TITLE_MAX_LENGTH=80
 ```
 
 If title generation fails or is disabled, the gateway saves a concise fallback title from the first prompt.
+Blank or whitespace-only `TRANSCRIPT_FORMATTING_MODEL` and `CONVERSATION_TITLE_MODEL` values are treated as not configured; explicit non-empty values continue to select a feature-specific model.
 
 ## 10. Install dependencies
 
@@ -1031,10 +1034,10 @@ scripts/restart.sh
 | `VOICE_TIMEOUT_MS` | `300000` | General voice VM request timeout, including STT transcription and settings reads when a more specific timeout is not used. |
 | `TRANSCRIPT_FORMATTING_ENABLED` | `false` | Enable optional local-LLM cleanup for raw voice transcripts. |
 | `TRANSCRIPT_FORMATTING_TIMEOUT_MS` | `120000` | Timeout for optional transcript cleanup requests. |
-| `TRANSCRIPT_FORMATTING_MODEL` | `LLM_MODEL` | Ollama model used for optional transcript cleanup. |
+| `TRANSCRIPT_FORMATTING_MODEL` | empty | Optional Ollama model used for transcript cleanup. Blank or whitespace-only values use the current default LLM model at request time. |
 | `TRANSCRIPT_FORMATTING_MAX_CHARS` | `12000` | Maximum transcript length eligible for optional cleanup. |
 | `CONVERSATION_TITLE_GENERATION_ENABLED` | `true` | Enable local-LLM title generation for new or untitled conversations. |
-| `CONVERSATION_TITLE_MODEL` | `LLM_MODEL` | Ollama model used for conversation title generation. |
+| `CONVERSATION_TITLE_MODEL` | empty | Optional Ollama model used for conversation title generation. Blank or whitespace-only values use the current default LLM model at request time. |
 | `CONVERSATION_TITLE_TIMEOUT_MS` | `120000` | Timeout for conversation title generation requests. |
 | `CONVERSATION_TITLE_MAX_CHARS` | `4000` | Maximum first-prompt characters sent to the title prompt. |
 | `CONVERSATION_TITLE_MAX_LENGTH` | `80` | Maximum stored conversation title length. |

@@ -836,6 +836,14 @@ export const resolveDefaultLlmModel = async () => {
   return runtimeDefaultModel || config.llm.model;
 };
 
+export const resolveOptionalLlmFeatureModel = async (explicitModel: string | undefined) => {
+  const trimmedExplicitModel = explicitModel?.trim();
+  if (trimmedExplicitModel) return trimmedExplicitModel;
+
+  const defaultModel = await resolveDefaultLlmModel();
+  return defaultModel.trim() || undefined;
+};
+
 export const loadModel = async ({ model, makeDefault }: ModelLoadOptions) => {
   const validModel = assertValidModelName(model);
 

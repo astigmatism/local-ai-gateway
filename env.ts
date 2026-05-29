@@ -35,6 +35,7 @@ const sameSiteSchema = z
   .default('lax');
 
 const optionalSecret = z.string().trim().optional();
+const optionalNonEmptyString = z.preprocess(emptyStringToUndefined, z.string().trim().min(1).optional());
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('production'),
@@ -79,11 +80,11 @@ const envSchema = z.object({
 
   TRANSCRIPT_FORMATTING_ENABLED: booleanFromString.default(false),
   TRANSCRIPT_FORMATTING_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
-  TRANSCRIPT_FORMATTING_MODEL: z.string().trim().min(1).optional(),
+  TRANSCRIPT_FORMATTING_MODEL: optionalNonEmptyString,
   TRANSCRIPT_FORMATTING_MAX_CHARS: z.coerce.number().int().positive().default(12000),
 
   CONVERSATION_TITLE_GENERATION_ENABLED: booleanFromString.default(true),
-  CONVERSATION_TITLE_MODEL: z.string().trim().min(1).optional(),
+  CONVERSATION_TITLE_MODEL: optionalNonEmptyString,
   CONVERSATION_TITLE_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
   CONVERSATION_TITLE_MAX_CHARS: z.coerce.number().int().positive().default(4000),
   CONVERSATION_TITLE_MAX_LENGTH: z.coerce.number().int().positive().default(80),
@@ -276,12 +277,12 @@ export const config = {
   transcriptFormatting: {
     enabled: env.TRANSCRIPT_FORMATTING_ENABLED,
     timeoutMs: env.TRANSCRIPT_FORMATTING_TIMEOUT_MS,
-    model: env.TRANSCRIPT_FORMATTING_MODEL ?? env.LLM_MODEL,
+    model: env.TRANSCRIPT_FORMATTING_MODEL,
     maxChars: env.TRANSCRIPT_FORMATTING_MAX_CHARS
   },
   conversationTitle: {
     enabled: env.CONVERSATION_TITLE_GENERATION_ENABLED,
-    model: env.CONVERSATION_TITLE_MODEL ?? env.LLM_MODEL,
+    model: env.CONVERSATION_TITLE_MODEL,
     timeoutMs: env.CONVERSATION_TITLE_TIMEOUT_MS,
     maxPromptChars: env.CONVERSATION_TITLE_MAX_CHARS,
     maxLength: env.CONVERSATION_TITLE_MAX_LENGTH
