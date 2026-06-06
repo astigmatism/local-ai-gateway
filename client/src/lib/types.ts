@@ -43,6 +43,28 @@ export interface AdminUser extends AuthUser {
   deletedAt: string | null;
 }
 
+export interface AdminUsersResponse {
+  users: AdminUser[];
+  newUserTemporaryPassword?: string | null;
+}
+
+export interface AdminUserPurgeResponse {
+  deletedUserId: string;
+  purgedUser: AdminUser;
+  deleted: {
+    authSessions: number;
+    messages: number;
+    conversations: number;
+    audioSnippets: number;
+    generatedImageFiles: {
+      referenced: number;
+      deleted: number;
+      missing: number;
+      failed: number;
+    };
+  };
+}
+
 export interface Message {
   id: string;
   conversationId: string;

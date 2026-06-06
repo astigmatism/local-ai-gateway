@@ -1,5 +1,7 @@
 import type {
   AdminUser,
+  AdminUserPurgeResponse,
+  AdminUsersResponse,
   AuthResponse,
   Conversation,
   ConversationSummary,
@@ -424,15 +426,15 @@ export const api = {
   },
 
   async listAdminUsers() {
-    return request<{ users: AdminUser[] }>('/api/admin/users');
+    return request<AdminUsersResponse>('/api/admin/users');
   },
 
   async createAdminUser(displayName: string) {
     return jsonRequest<{ user: AdminUser }>('/api/admin/users', 'POST', { displayName });
   },
 
-  async deactivateAdminUser(userId: string) {
-    return jsonRequest<{ user: AdminUser }>(`/api/admin/users/${userId}/deactivate`, 'PATCH');
+  async purgeAdminUser(userId: string) {
+    return jsonRequest<AdminUserPurgeResponse>(`/api/admin/users/${userId}`, 'DELETE');
   },
 
   async resetAdminUserPassword(userId: string) {

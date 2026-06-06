@@ -26,6 +26,7 @@ const formatDate = (value: string | null) => {
 
 export const AdminUserManagement = ({ currentUser, onClose }: AdminUserManagementProps) => {
   const [users, setUsers] = useState<AdminUser[]>([]);
+  const [newUserTemporaryPassword, setNewUserTemporaryPassword] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState('');
   const [loading, setLoading] = useState(true);
   const [busyUserId, setBusyUserId] = useState<string | null>(null);
@@ -39,6 +40,7 @@ export const AdminUserManagement = ({ currentUser, onClose }: AdminUserManagemen
     try {
       const response = await api.listAdminUsers();
       setUsers(response.users);
+      setNewUserTemporaryPassword(response.newUserTemporaryPassword || null);
     } catch (loadError) {
       setError(errorMessage(loadError));
     } finally {
@@ -62,7 +64,7 @@ export const AdminUserManagement = ({ currentUser, onClose }: AdminUserManagemen
       const response = await api.createAdminUser(name);
       setUsers((current) => [response.user, ...current]);
       setDisplayName('');
-      setNotice('User created. They must log in with the configured default password and change it immediately.');
+      setNotice('User created. They must log in with the configured temporary password and change it immediately.');
     } catch (createError) {
       setError(errorMessage(createError));
     } finally {
@@ -70,25 +72,31 @@ export const AdminUserManagement = ({ currentUser, onClose }: AdminUserManagemen
     }
   };
 
-  const deactivateUser = async (user: AdminUser) => {
-    if (!window.confirm('Delete this user? They will no longer be able to sign in.')) return;
+  const deleteUser = async (user: AdminUser) => {
+    if (
+      !window.confirm(
+        'Delete this user permanently?\n\nThis will remove the user account and all conversation history for this user. This cannot be undone.'
+      )
+    ) {
+      return;
+    }
 
     setBusyUserId(user.id);
     setError(null);
     setNotice(null);
     try {
-      const response = await api.deactivateAdminUser(user.id);
-      setUsers((current) => current.map((item) => (item.id === response.user.id ? response.user : item)));
-      setNotice(`${user.displayName} was deactivated.`);
-    } catch (deactivateError) {
-      setError(errorMessage(deactivateError));
+      const response = await api.purgeAdminUser(user.id);
+      setUsers((current) => current.filter((item) => item.id !== response.deletedUserId));
+      setNotice(`${user.displayName} was permanently deleted.`);
+    } catch (deleteError) {
+      setError(errorMessage(deleteError));
     } finally {
       setBusyUserId(null);
     }
   };
 
   const resetPassword = async (user: AdminUser) => {
-    if (!window.confirm(`Reset ${user.displayName}'s password to the configured default password?`)) return;
+    if (!window.confirm(`Reset ${user.displayName}'s password to the configured temporary password?`)) return;
 
     setBusyUserId(user.id);
     setError(null);
@@ -103,6 +111,11 @@ export const AdminUserManagement = ({ currentUser, onClose }: AdminUserManagemen
       setBusyUserId(null);
     }
   };
+
+  const activeAdminCount = users.filter((user) => user.isAdmin && user.isActive && !user.deletedAt).length;
+  const temporaryPasswordHint = newUserTemporaryPassword
+    ? `Temporary password: ${newUserTemporaryPassword}`
+    : 'Temporary password is not configured.';
 
   return (
     <div className="modal-backdrop" role="presentation">
@@ -128,11 +141,15 @@ export const AdminUserManagement = ({ currentUser, onClose }: AdminUserManagemen
               onChange={(event) => setDisplayName(event.target.value)}
               placeholder="Display name"
               maxLength={80}
+              aria-describedby="new-user-temporary-password-hint"
             />
             <button type="submit" disabled={creating || !displayName.trim()}>
               {creating ? 'Adding...' : 'Add'}
             </button>
           </div>
+          <p id="new-user-temporary-password-hint" className="auth-help">
+            {temporaryPasswordHint}
+          </p>
         </form>
 
         {error && (
@@ -151,8 +168,19 @@ export const AdminUserManagement = ({ currentUser, onClose }: AdminUserManagemen
           {!loading &&
             users.map((user) => {
               const isSelf = user.id === currentUser.id;
-              const isProtectedAdmin = user.isAdmin || user.displayName.toLowerCase() === 'eric';
+              const isBootstrapAdmin = user.isAdmin && user.displayName.trim().toLowerCase() === 'eric';
+              const isProtectedAdmin = user.isAdmin || user.displayName.trim().toLowerCase() === 'eric';
+              const isLastAdmin = user.isAdmin && user.isActive && !user.deletedAt && activeAdminCount <= 1;
               const busy = busyUserId === user.id;
+              const deleteDisabledReason = busy
+                ? 'Deleting user...'
+                : isSelf
+                  ? 'You cannot delete your own account.'
+                  : isBootstrapAdmin
+                    ? 'The default administrator cannot be deleted.'
+                    : isLastAdmin
+                      ? 'You cannot delete the last administrator.'
+                      : undefined;
 
               return (
                 <article key={user.id} className={`admin-user-row ${user.isActive ? '' : 'inactive'}`}>
@@ -187,10 +215,11 @@ export const AdminUserManagement = ({ currentUser, onClose }: AdminUserManagemen
                     <button
                       className="secondary-button danger-button"
                       type="button"
-                      onClick={() => void deactivateUser(user)}
-                      disabled={busy || isSelf || isProtectedAdmin || !user.isActive}
+                      onClick={() => void deleteUser(user)}
+                      disabled={Boolean(deleteDisabledReason)}
+                      title={deleteDisabledReason}
                     >
-                      Delete user
+                      {busy ? 'Deleting...' : 'Delete user'}
                     </button>
                   </div>
                 </article>

@@ -848,3 +848,93 @@ describe('api client chat streaming requests', () => {
     });
   });
 });
+
+describe('api client admin user management', () => {
+  it('reads temporary-password metadata and calls the purge endpoint with DELETE', async () => {
+    const { api } = await loadApi();
+    const userId = '22222222-2222-4222-8222-222222222222';
+    const adminUser = {
+      id: userId,
+      displayName: 'Ada Lovelace',
+      loginName: 'ada_lovelace',
+      isAdmin: false,
+      mustChangePassword: true,
+      isActive: true,
+      lockedUntil: null,
+      lastLoginAt: null,
+      passwordChangedAt: null,
+      createdAt: '2026-05-29T12:00:00.000Z',
+      updatedAt: '2026-05-29T12:00:00.000Z',
+      deletedAt: null
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestPath = String(input);
+      const method = init?.method ?? 'GET';
+
+      if (requestPath === '/api/admin/users' && method === 'GET') {
+        return new Response(
+          JSON.stringify({
+            users: [adminUser],
+            newUserTemporaryPassword: 'new-user-password'
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          }
+        );
+      }
+
+      if (requestPath === `/api/admin/users/${userId}` && method === 'DELETE') {
+        return new Response(
+          JSON.stringify({
+            deletedUserId: userId,
+            purgedUser: adminUser,
+            deleted: {
+              authSessions: 1,
+              messages: 2,
+              conversations: 1,
+              audioSnippets: 0,
+              generatedImageFiles: {
+                referenced: 0,
+                deleted: 0,
+                missing: 0,
+                failed: 0
+              }
+            }
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          }
+        );
+      }
+
+      return new Response(JSON.stringify({ error: { code: 'UNEXPECTED_ROUTE', message: requestPath } }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    await expect(api.listAdminUsers()).resolves.toEqual({
+      users: [adminUser],
+      newUserTemporaryPassword: 'new-user-password'
+    });
+    await expect(api.purgeAdminUser(userId)).resolves.toMatchObject({ deletedUserId: userId });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/admin/users',
+      expect.objectContaining({ credentials: 'include', method: 'GET' })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      `/api/admin/users/${userId}`,
+      expect.objectContaining({ credentials: 'include', method: 'DELETE' })
+    );
+    const deleteRequest = fetchMock.mock.calls[1]?.[1] as RequestInit;
+    expect(new Headers(deleteRequest.headers).get('X-CSRF-Token')).toBe('csrf-token');
+  });
+});

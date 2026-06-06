@@ -9,6 +9,7 @@ import { ADMIN_DISPLAY_NAME, isEricDisplayName, makeUniqueLoginName, toAdminUser
 import { hashPassword } from '../auth/password.js';
 import { createRateLimiter } from '../auth/rateLimit.js';
 import { destroySessionsForUser } from '../auth/session.js';
+import { purgeUser } from '../services/userPurge.js';
 
 export const adminUsersRouter = Router();
 
@@ -49,7 +50,10 @@ adminUsersRouter.get(
       orderBy: [{ isAdmin: 'desc' }, { isActive: 'desc' }, { displayName: 'asc' }]
     });
 
-    res.json({ users: users.map(toAdminUserSummary) });
+    res.json({
+      users: users.map(toAdminUserSummary),
+      newUserTemporaryPassword: config.auth.newUserDefaultPassword
+    });
   })
 );
 
@@ -135,29 +139,23 @@ adminUsersRouter.delete(
   '/:userId',
   asyncHandler(async (req, res) => {
     const userId = userIdSchema.parse(req.params.userId);
-    const user = await findUserOr404(userId);
-    ensureCanModifyTarget(req.auth!.user.id, user);
-
-    const deactivatedUser = await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        isActive: false,
-        deletedAt: new Date(),
-        lockedUntil: null
-      }
-    });
-    await destroySessionsForUser(user.id);
+    const result = await purgeUser({ currentUserId: req.auth!.user.id, targetUserId: userId });
 
     logger.info(
       {
         adminUserId: req.auth?.user.id,
-        deactivatedUserId: user.id,
-        displayName: user.displayName
+        purgedUserId: result.user.id,
+        displayName: result.user.displayName,
+        deleted: result.deleted
       },
-      'Admin deleted user by soft deactivation'
+      'Admin purged user and user-owned data'
     );
 
-    res.json({ user: toAdminUserSummary(deactivatedUser) });
+    res.json({
+      deletedUserId: result.user.id,
+      purgedUser: toAdminUserSummary(result.user),
+      deleted: result.deleted
+    });
   })
 );
 
