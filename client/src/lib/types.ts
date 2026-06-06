@@ -459,6 +459,54 @@ export interface VoiceModelDescriptor {
   raw?: unknown;
 }
 
+export type TtsProviderId = 'chatterbox' | 'kokoro';
+export type TtsProviderState = 'unknown' | 'unloaded' | 'loading' | 'loaded' | 'failed';
+export type TtsFallbackPolicy = 'fail' | 'try-default-provider' | 'try-other-provider';
+
+export interface TtsProviderCapabilities {
+  referenceAudio?: boolean;
+  voiceSelection?: boolean;
+  languageSelection?: boolean;
+  speedControl?: boolean;
+  streaming?: boolean;
+  [key: string]: boolean | undefined;
+}
+
+export interface TtsProviderStatus {
+  id: TtsProviderId;
+  name?: string;
+  displayName: string;
+  reachable: boolean;
+  active?: boolean;
+  state: TtsProviderState;
+  model?: string;
+  voice?: string;
+  workerPort?: number;
+  capabilities: TtsProviderCapabilities;
+  lastCheckedAt?: string;
+  lastError?: string | null;
+  raw?: unknown;
+}
+
+export interface TtsRegistryState {
+  defaultProvider: TtsProviderId;
+  providers: Record<TtsProviderId, TtsProviderStatus>;
+  raw?: unknown;
+}
+
+export interface VoiceProviderModelCatalog {
+  provider: TtsProviderId;
+  currentModel?: string;
+  defaultModel?: string;
+  activeModel?: string;
+  loadedModel?: string;
+  language?: string;
+  status?: string;
+  worker: Record<string, unknown> | null;
+  models: VoiceModelDescriptor[];
+  raw?: unknown;
+}
+
 export interface VoiceModelCatalogResponse {
   kind: 'stt' | 'tts';
   provider?: string;
@@ -470,6 +518,7 @@ export interface VoiceModelCatalogResponse {
   status?: string;
   worker: Record<string, unknown> | null;
   models: VoiceModelDescriptor[];
+  providers?: Partial<Record<TtsProviderId, VoiceProviderModelCatalog>>;
   raw?: unknown;
 }
 
@@ -481,6 +530,7 @@ export interface VoiceModelsResponse {
 
 export interface VoiceConfigSection {
   defaultModel?: string;
+  defaultProvider?: TtsProviderId;
   computeType?: string;
   language?: string;
   raw?: Record<string, unknown> | null;
@@ -569,6 +619,7 @@ export interface VoiceDescriptorsResponse {
 export interface VoiceOverviewResponse {
   health: Record<string, unknown> | null;
   services: Record<string, unknown> | null;
+  ttsRegistry?: TtsRegistryState | null;
   gpu: VoiceGpuResponse | null;
   system: Record<string, unknown> | null;
   models: {
@@ -602,7 +653,7 @@ export interface LoadSttModelRequest {
 }
 
 export interface LoadTtsModelRequest {
-  provider: string;
+  provider: TtsProviderId;
   model: string;
   language?: string;
   options?: Record<string, unknown>;
@@ -613,12 +664,17 @@ export interface UnloadVoiceModelRequest {
   clearCache?: boolean;
 }
 
+export interface UnloadTtsModelRequest extends UnloadVoiceModelRequest {
+  provider: TtsProviderId;
+}
+
 export interface UpdateSttConfigRequest {
   defaultModel?: string;
   computeType?: string;
 }
 
 export interface UpdateTtsConfigRequest {
+  defaultProvider?: TtsProviderId;
   defaultModel?: string;
   language?: string;
 }

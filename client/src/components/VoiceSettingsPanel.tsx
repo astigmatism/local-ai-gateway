@@ -7,10 +7,22 @@ import {
   referenceAudioRecordingScript,
   recommendedReferenceRecordingSeconds
 } from '../lib/referenceAudioRecording.js';
+import {
+  hasTtsSpeechPreference,
+  readTtsSpeechPreference,
+  saveTtsSpeechPreference,
+  ttsProviderDisplayNames,
+  ttsProviderOptions,
+  type TtsSpeechPreference
+} from '../lib/ttsPreferences.js';
 import type {
+  TtsProviderId,
+  TtsProviderStatus,
+  VoiceDescriptor,
   VoiceModelCatalogResponse,
   VoiceModelDescriptor,
   VoiceOverviewResponse,
+  VoiceProviderModelCatalog,
   VoiceReferenceDescriptor
 } from '../lib/types.js';
 
@@ -111,6 +123,53 @@ const modelDetails = (model: VoiceModelDescriptor) =>
 const suggestedModel = (catalog: VoiceModelCatalogResponse | null | undefined) =>
   catalog?.activeModel ?? catalog?.loadedModel ?? catalog?.defaultModel ?? catalog?.models[0]?.model ?? catalog?.models[0]?.id ?? '';
 
+const providerCatalog = (
+  catalog: VoiceModelCatalogResponse | null | undefined,
+  provider: TtsProviderId
+): VoiceProviderModelCatalog | null => {
+  const scoped = catalog?.providers?.[provider];
+  if (scoped) return scoped;
+  const models = catalog?.models.filter((model) => model.provider === provider) ?? [];
+  if (models.length === 0) return null;
+  return {
+    provider,
+    currentModel: undefined,
+    worker: null,
+    models
+  };
+};
+
+const suggestedProviderModel = (catalog: VoiceModelCatalogResponse | null | undefined, provider: TtsProviderId) => {
+  const scoped = providerCatalog(catalog, provider);
+  return (
+    scoped?.currentModel ??
+    scoped?.activeModel ??
+    scoped?.loadedModel ??
+    scoped?.defaultModel ??
+    scoped?.models[0]?.model ??
+    scoped?.models[0]?.id ??
+    ''
+  );
+};
+
+const providerLabel = (provider: TtsProviderId, status?: TtsProviderStatus | null) => {
+  if (provider === 'kokoro') return 'Kokoro';
+  if (status?.displayName && status.displayName.toLowerCase() !== 'chatterbox') return status.displayName;
+  return ttsProviderDisplayNames[provider];
+};
+
+const capabilityText = (value: boolean | undefined) => (value === true ? 'yes' : value === false ? 'no' : 'unknown');
+
+const providerFromVoiceDescriptor = (descriptor: VoiceDescriptor): TtsProviderId | null => {
+  const values = [descriptor.provider, descriptor.id, descriptor.label, descriptor.model, descriptor.type]
+    .filter((value): value is string => Boolean(value))
+    .join(' ')
+    .toLowerCase();
+  if (values.includes('kokoro')) return 'kokoro';
+  if (values.includes('chatterbox')) return 'chatterbox';
+  return null;
+};
+
 const isWavFile = (file: File) => {
   const type = file.type.toLowerCase();
   return file.name.toLowerCase().endsWith('.wav') || type === 'audio/wav' || type === 'audio/x-wav' || type === 'audio/wave';
@@ -158,13 +217,17 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
   const [sttProvider, setSttProvider] = useState('fast-whisper');
   const [sttModel, setSttModel] = useState('');
   const [sttComputeType, setSttComputeType] = useState('int8_float16');
-  const [ttsProvider, setTtsProvider] = useState('chatterbox');
+  const [ttsLifecycleProvider, setTtsLifecycleProvider] = useState<TtsProviderId>('chatterbox');
   const [ttsModel, setTtsModel] = useState('');
   const [ttsLanguage, setTtsLanguage] = useState('en');
   const [sttDefaultModel, setSttDefaultModel] = useState('');
   const [sttDefaultComputeType, setSttDefaultComputeType] = useState('int8_float16');
+  const [ttsDefaultProvider, setTtsDefaultProvider] = useState<TtsProviderId>('chatterbox');
   const [ttsDefaultModel, setTtsDefaultModel] = useState('');
   const [ttsDefaultLanguage, setTtsDefaultLanguage] = useState('en');
+  const [speechPreference, setSpeechPreference] = useState<TtsSpeechPreference>(() => readTtsSpeechPreference());
+  const [hasSavedSpeechPreference, setHasSavedSpeechPreference] = useState(() => hasTtsSpeechPreference());
+  const [testSpeechText, setTestSpeechText] = useState('Hello from Bear Castle AI.');
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
   const [referenceDisplayName, setReferenceDisplayName] = useState('');
   const [referenceRecorderOpen, setReferenceRecorderOpen] = useState(false);
@@ -174,7 +237,19 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
 
   const sttCatalog = overview?.models.stt ?? null;
   const ttsCatalog = overview?.models.tts ?? null;
+  const ttsRegistry = overview?.ttsRegistry ?? null;
+  const selectedSpeechProvider = speechPreference.provider;
+  const selectedSpeechProviderStatus = ttsRegistry?.providers[selectedSpeechProvider] ?? null;
+  const selectedSpeechProviderSupportsReference =
+    selectedSpeechProvider === 'chatterbox' && (selectedSpeechProviderStatus?.capabilities.referenceAudio ?? true);
+  const selectedSpeechProviderCatalog = providerCatalog(ttsCatalog, selectedSpeechProvider);
+  const lifecycleProviderStatus = ttsRegistry?.providers[ttsLifecycleProvider] ?? null;
+  const lifecycleProviderCatalog = providerCatalog(ttsCatalog, ttsLifecycleProvider);
   const references = overview?.references?.references ?? [];
+  const voiceDescriptors = overview?.voices?.voices ?? [];
+  const selectedSpeechProviderVoices = voiceDescriptors.filter(
+    (voice) => providerFromVoiceDescriptor(voice) === selectedSpeechProvider
+  );
   const selectedReference = overview?.references?.selectedReference ?? null;
   const activeReference = overview?.references?.activeReference ?? null;
   const activeReferenceKnown = overview?.references?.activeReferenceKnown ?? false;
@@ -203,25 +278,40 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
 
   useEffect(() => {
     const nextSttModel = suggestedModel(sttCatalog);
-    const nextTtsModel = suggestedModel(ttsCatalog);
+    const nextTtsModel = suggestedProviderModel(ttsCatalog, ttsLifecycleProvider) || suggestedModel(ttsCatalog);
     if (!sttModel && nextSttModel) setSttModel(nextSttModel);
     if (!ttsModel && nextTtsModel) setTtsModel(nextTtsModel);
     if (sttCatalog?.provider && sttProvider === 'fast-whisper') setSttProvider(sttCatalog.provider);
-    if (ttsCatalog?.provider && ttsProvider === 'chatterbox') setTtsProvider(ttsCatalog.provider);
     if (sttCatalog?.computeType && sttComputeType === 'int8_float16') setSttComputeType(sttCatalog.computeType);
-    if (ttsCatalog?.language && ttsLanguage === 'en') setTtsLanguage(ttsCatalog.language);
-  }, [sttCatalog, sttComputeType, sttModel, sttProvider, ttsCatalog, ttsLanguage, ttsModel, ttsProvider]);
+    const scopedLanguage = lifecycleProviderCatalog?.language ?? ttsCatalog?.language;
+    if (scopedLanguage && ttsLanguage === 'en') setTtsLanguage(scopedLanguage);
+  }, [lifecycleProviderCatalog?.language, sttCatalog, sttComputeType, sttModel, sttProvider, ttsCatalog, ttsLanguage, ttsLifecycleProvider, ttsModel]);
 
   useEffect(() => {
     const sttDefault = overview?.config?.stt.defaultModel ?? sttCatalog?.defaultModel ?? '';
     const sttCompute = overview?.config?.stt.computeType ?? sttCatalog?.computeType ?? 'int8_float16';
-    const ttsDefault = overview?.config?.tts.defaultModel ?? ttsCatalog?.defaultModel ?? '';
+    const defaultProvider = overview?.config?.tts.defaultProvider ?? ttsRegistry?.defaultProvider ?? 'chatterbox';
+    const defaultProviderCatalog = providerCatalog(ttsCatalog, defaultProvider);
+    const ttsDefault = overview?.config?.tts.defaultModel ?? defaultProviderCatalog?.defaultModel ?? defaultProviderCatalog?.currentModel ?? '';
     const ttsLang = overview?.config?.tts.language ?? ttsCatalog?.language ?? 'en';
     setSttDefaultModel(sttDefault);
     setSttDefaultComputeType(sttCompute);
+    setTtsDefaultProvider(defaultProvider);
     setTtsDefaultModel(ttsDefault);
     setTtsDefaultLanguage(ttsLang);
-  }, [overview?.config, sttCatalog?.computeType, sttCatalog?.defaultModel, ttsCatalog?.defaultModel, ttsCatalog?.language]);
+    if (!hasSavedSpeechPreference) {
+      setSpeechPreference((current) =>
+        current.provider === defaultProvider
+          ? current
+          : {
+              ...current,
+              provider: defaultProvider,
+              model: suggestedProviderModel(ttsCatalog, defaultProvider) || current.model,
+              voice: ttsRegistry?.providers[defaultProvider]?.voice ?? current.voice
+            }
+      );
+    }
+  }, [hasSavedSpeechPreference, overview?.config, sttCatalog?.computeType, sttCatalog?.defaultModel, ttsCatalog, ttsRegistry]);
 
   const runMutation = async (action: string, fn: () => Promise<{ message?: string }>) => {
     if (!canManageVoice || busyAction) return;
@@ -246,6 +336,10 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
     displayName: referenceRecordingDisplayName,
     onError: (message) => setError(`Reference recording failed: ${message}`),
     onRecordingComplete: async (recording) => {
+      if (!selectedSpeechProviderSupportsReference) {
+        setError('Reference audio is available only for Chatterbox TTS. Select Chatterbox TTS before uploading a reference WAV.');
+        return;
+      }
       const displayName = referenceRecordingDisplayName.trim() || recording.filename;
       await runMutation(referenceRecordingUploadAction, async () => {
         const response = await api.uploadReferenceAudio(recording.blob, {
@@ -266,7 +360,7 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
   });
 
   const openReferenceRecorder = () => {
-    if (!canManageVoice || busyAction) return;
+    if (!canManageVoice || busyAction || !selectedSpeechProviderSupportsReference) return;
     setError(null);
     setNotice(null);
     setReferenceRecordingDisplayName(referenceDisplayName.trim() || defaultReferenceRecordingDisplayName());
@@ -293,10 +387,9 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
   const submitTtsLoad = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const model = ttsModel.trim();
-    const provider = ttsProvider.trim() || 'chatterbox';
     const language = ttsLanguage.trim() || undefined;
     if (!model) return;
-    void runMutation('TTS load', () => api.loadTtsModel({ provider, model, language, options: {} }));
+    void runMutation('TTS load', () => api.loadTtsModel({ provider: ttsLifecycleProvider, model, language, options: {} }));
   };
 
   const submitSttConfig = (event: FormEvent<HTMLFormElement>) => {
@@ -311,8 +404,40 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
     event.preventDefault();
     const defaultModel = ttsDefaultModel.trim() || undefined;
     const language = ttsDefaultLanguage.trim() || undefined;
-    if (!defaultModel && !language) return;
-    void runMutation('TTS config update', () => api.updateTtsConfig({ defaultModel, language }));
+    if (!ttsDefaultProvider && !defaultModel && !language) return;
+    void runMutation('TTS config update', () => api.updateTtsConfig({ defaultProvider: ttsDefaultProvider, defaultModel, language }));
+  };
+
+  const saveSpeechProviderPreference = () => {
+    const saved = saveTtsSpeechPreference(speechPreference);
+    setSpeechPreference(saved);
+    setHasSavedSpeechPreference(true);
+    setNotice(`${ttsProviderDisplayNames[saved.provider]} will be used for Speak buttons on this browser.`);
+  };
+
+  const updateSpeechPreference = (patch: Partial<TtsSpeechPreference>) => {
+    setSpeechPreference((current) => ({ ...current, ...patch }));
+  };
+
+  const testSpeech = async () => {
+    const text = testSpeechText.trim();
+    if (!text || busyAction) return;
+    setBusyAction('TTS test');
+    setError(null);
+    setNotice(null);
+    try {
+      const blob = await api.speakText(text, speechPreference);
+      const objectUrl = URL.createObjectURL(blob);
+      const audio = new Audio(objectUrl);
+      audio.onended = () => URL.revokeObjectURL(objectUrl);
+      audio.onerror = () => URL.revokeObjectURL(objectUrl);
+      await audio.play();
+      setNotice(`Generated test speech with ${ttsProviderDisplayNames[speechPreference.provider]}.`);
+    } catch (testError) {
+      setError(`TTS test failed: ${errorMessage(testError)}`);
+    } finally {
+      setBusyAction(null);
+    }
   };
 
   const handleReferenceFileChange = (file: File | null) => {
@@ -322,6 +447,10 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
 
   const submitReferenceAudio = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!selectedSpeechProviderSupportsReference) {
+      setError('Reference audio is available only for Chatterbox TTS. Select Chatterbox TTS before uploading a reference WAV.');
+      return;
+    }
     if (!referenceFile) return;
     if (!isWavFile(referenceFile)) {
       setError('Reference audio must be a WAV file. Browser WebM recordings are not uploaded as WAV.');
@@ -364,7 +493,11 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
   const gpuDevice = overview?.gpu?.devices[0];
   const health = statusText(overview?.health);
   const sttStatus = workerStatusText(overview, 'stt');
-  const ttsStatus = workerStatusText(overview, 'tts');
+  const readyTtsProviders = ttsProviderOptions.filter((provider) => {
+    const status = ttsRegistry?.providers[provider];
+    return status?.reachable && status.state === 'loaded';
+  });
+  const ttsStatus = readyTtsProviders.length > 0 ? `${readyTtsProviders.length} provider(s) loaded` : 'No loaded provider reported';
   const voiceErrors = Object.entries(overview?.errors ?? {});
 
   const renderCatalog = (title: string, catalog: VoiceModelCatalogResponse | null) => (
@@ -393,6 +526,96 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
       ) : (
         <p className="muted padded">No {title.toLowerCase()} were reported by the voice VM.</p>
       )}
+    </article>
+  );
+
+  const renderTtsProviderCard = (provider: TtsProviderId) => {
+    const status = ttsRegistry?.providers[provider];
+    const capabilities = status?.capabilities ?? {};
+    const isReady = status?.reachable && status.state === 'loaded';
+    return (
+      <article className={`tts-provider-card${isReady ? ' loaded' : ''}${status?.reachable === false ? ' unreachable' : ''}`} key={provider}>
+        <div className="tts-provider-card-header">
+          <div>
+            <h4>{providerLabel(provider, status)}</h4>
+            <small>{status ? `Provider ID: ${provider}` : 'No provider status returned yet.'}</small>
+          </div>
+          <strong>{status?.reachable ? 'reachable' : 'unreachable'}</strong>
+        </div>
+        <dl className="tts-provider-facts">
+          <div>
+            <dt>State</dt>
+            <dd>{status?.state ?? 'unknown'}</dd>
+          </div>
+          <div>
+            <dt>Model</dt>
+            <dd>{status?.model ?? 'unknown'}</dd>
+          </div>
+          <div>
+            <dt>Voice</dt>
+            <dd>{status?.voice ?? 'unknown'}</dd>
+          </div>
+          {status?.workerPort && (
+            <div>
+              <dt>Worker</dt>
+              <dd>port {status.workerPort}</dd>
+            </div>
+          )}
+        </dl>
+        <div className="tts-capability-list" aria-label={`${providerLabel(provider, status)} capabilities`}>
+          <span>Reference audio: {capabilityText(capabilities.referenceAudio)}</span>
+          <span>Voice selection: {capabilityText(capabilities.voiceSelection)}</span>
+          <span>Language selection: {capabilityText(capabilities.languageSelection)}</span>
+          <span>Speed control: {capabilityText(capabilities.speedControl)}</span>
+        </div>
+        {status?.lastError && <small className="settings-warning compact-warning">{status.lastError}</small>}
+      </article>
+    );
+  };
+
+  const renderTtsProviderCatalogs = () => (
+    <article className="model-panel tts-provider-model-panel">
+      <div className="model-panel-header">
+        <h4>TTS Models by provider</h4>
+        <span>{ttsCatalog?.models.length ?? 0}</span>
+      </div>
+      <div className="tts-provider-model-groups">
+        {ttsProviderOptions.map((provider) => {
+          const catalog = providerCatalog(ttsCatalog, provider);
+          const models = catalog?.models ?? [];
+          return (
+            <div className="tts-provider-model-group" key={provider}>
+              <div className="tts-provider-model-group-header">
+                <strong>{providerLabel(provider, ttsRegistry?.providers[provider])}</strong>
+                <small>{models.length} model(s)</small>
+              </div>
+              {models.length > 0 ? (
+                <div className="voice-model-list">
+                  {models.map((model) => {
+                    const details = modelDetails(model);
+                    return (
+                      <button
+                        key={`${provider}-${model.id}`}
+                        className="voice-model-option"
+                        type="button"
+                        onClick={() => {
+                          setTtsLifecycleProvider(provider);
+                          setTtsModel(modelOptionValue(model));
+                        }}
+                      >
+                        <strong>{model.label}</strong>
+                        {details.length > 0 && <small>{details.join(' · ')}</small>}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="muted padded">No {providerLabel(provider, ttsRegistry?.providers[provider])} models were reported.</p>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </article>
   );
 
@@ -491,7 +714,7 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
         <div className="settings-status-card">
           <span className="settings-status-label">Workers</span>
           <strong>STT {sttStatus} · TTS {ttsStatus}</strong>
-          <small>/api/services and model worker status</small>
+          <small>/api/services and provider-scoped TTS status</small>
         </div>
         <div className="settings-status-card">
           <span className="settings-status-label">Voice GPU</span>
@@ -513,9 +736,22 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
         </div>
       </div>
 
+      <article className="model-panel tts-provider-registry-panel">
+        <div className="model-panel-header">
+          <h4>TTS Providers</h4>
+          <span>Default: {ttsProviderDisplayNames[ttsRegistry?.defaultProvider ?? 'chatterbox']}</span>
+        </div>
+        <div className="tts-provider-registry">
+          {ttsProviderOptions.map((provider) => renderTtsProviderCard(provider))}
+        </div>
+        <p className="auth-help">
+          Selecting a provider for Speak or lifecycle actions sends that provider ID with the request. It does not unload or replace the other provider.
+        </p>
+      </article>
+
       <div className="model-panel-grid voice-settings-grid">
         {renderCatalog('STT Models', sttCatalog)}
-        {renderCatalog('TTS Models', ttsCatalog)}
+        {renderTtsProviderCatalogs()}
       </div>
 
       <div className="model-panel-grid voice-settings-grid">
@@ -562,7 +798,26 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
             <label className="field-label" htmlFor="voice-tts-provider">
               Provider
             </label>
-            <input id="voice-tts-provider" value={ttsProvider} onChange={(event) => setTtsProvider(event.target.value)} disabled={!canManageVoice || Boolean(busyAction)} />
+            <select
+              id="voice-tts-provider"
+              value={ttsLifecycleProvider}
+              onChange={(event) => {
+                const provider = event.target.value as TtsProviderId;
+                setTtsLifecycleProvider(provider);
+                setTtsModel(suggestedProviderModel(ttsCatalog, provider));
+                setTtsLanguage(providerCatalog(ttsCatalog, provider)?.language ?? 'en');
+              }}
+              disabled={!canManageVoice || Boolean(busyAction)}
+            >
+              {ttsProviderOptions.map((provider) => (
+                <option key={provider} value={provider}>
+                  {providerLabel(provider, ttsRegistry?.providers[provider])}
+                </option>
+              ))}
+            </select>
+            <small className="auth-help">
+              Lifecycle actions target only {providerLabel(ttsLifecycleProvider, lifecycleProviderStatus)}. They do not unload the other provider.
+            </small>
             <label className="field-label" htmlFor="voice-tts-model">
               Model
             </label>
@@ -578,10 +833,26 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
               <button
                 className="secondary-button"
                 type="button"
-                onClick={() => void runMutation('TTS unload', () => api.unloadTtsModel({ strategy: 'soft', clearCache: true }))}
+                onClick={() =>
+                  void runMutation('TTS reload', () =>
+                    api.reloadTtsModel({ provider: ttsLifecycleProvider, model: ttsModel.trim() || undefined, language: ttsLanguage.trim() || undefined, options: {} })
+                  )
+                }
                 disabled={!canManageVoice || Boolean(busyAction)}
               >
-                {busyAction === 'TTS unload' ? 'Unloading...' : 'Soft unload TTS'}
+                {busyAction === 'TTS reload' ? 'Reloading...' : 'Reload TTS provider'}
+              </button>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() =>
+                  void runMutation('TTS unload', () =>
+                    api.unloadTtsModel({ provider: ttsLifecycleProvider, strategy: 'soft', clearCache: true })
+                  )
+                }
+                disabled={!canManageVoice || Boolean(busyAction)}
+              >
+                {busyAction === 'TTS unload' ? 'Unloading...' : 'Soft unload provider'}
               </button>
             </div>
           </form>
@@ -615,6 +886,22 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
             <span>/api/config/tts</span>
           </div>
           <form className="voice-settings-form" onSubmit={submitTtsConfig}>
+            <label className="field-label" htmlFor="voice-tts-default-provider">
+              Default provider
+            </label>
+            <select
+              id="voice-tts-default-provider"
+              value={ttsDefaultProvider}
+              onChange={(event) => setTtsDefaultProvider(event.target.value as TtsProviderId)}
+              disabled={!canManageVoice || Boolean(busyAction)}
+            >
+              {ttsProviderOptions.map((provider) => (
+                <option key={provider} value={provider}>
+                  {ttsProviderDisplayNames[provider]}
+                </option>
+              ))}
+            </select>
+            <small className="auth-help">This changes the voice appliance default only for requests that omit a provider.</small>
             <label className="field-label" htmlFor="voice-tts-default-model">
               Default model
             </label>
@@ -630,11 +917,141 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
         </article>
       </div>
 
-      <article className="model-panel voice-reference-panel">
+      <article className="model-panel voice-control-panel tts-speech-preference-panel">
         <div className="model-panel-header">
-          <h4>Voices / reference audio</h4>
+          <h4>Speak button TTS provider</h4>
+          <span>Per request</span>
+        </div>
+        <div className="voice-settings-form">
+          <label className="field-label" htmlFor="voice-speech-provider">
+            TTS provider
+          </label>
+          <select
+            id="voice-speech-provider"
+            value={speechPreference.provider}
+            onChange={(event) => {
+              const provider = event.target.value as TtsProviderId;
+              updateSpeechPreference({
+                provider,
+                model: suggestedProviderModel(ttsCatalog, provider) || undefined,
+                voice: ttsRegistry?.providers[provider]?.voice,
+                language: providerCatalog(ttsCatalog, provider)?.language ?? speechPreference.language
+              });
+            }}
+            disabled={Boolean(busyAction)}
+          >
+            {ttsProviderOptions.map((provider) => (
+              <option key={provider} value={provider}>
+                {providerLabel(provider, ttsRegistry?.providers[provider])}
+              </option>
+            ))}
+          </select>
+          <small className="auth-help">
+            Speak requests send provider: "{speechPreference.provider}". This browser preference does not change the appliance default provider.
+          </small>
+
+          <label className="field-label" htmlFor="voice-speech-model">
+            Model
+          </label>
+          <input
+            id="voice-speech-model"
+            value={speechPreference.model ?? ''}
+            onChange={(event) => updateSpeechPreference({ model: event.target.value.trim() || undefined })}
+            placeholder={selectedSpeechProviderCatalog?.currentModel ?? selectedSpeechProviderStatus?.model ?? 'provider default'}
+            disabled={Boolean(busyAction)}
+          />
+
+          <label className="field-label" htmlFor="voice-speech-voice">
+            Voice
+          </label>
+          <input
+            id="voice-speech-voice"
+            list="voice-speech-voice-options"
+            value={speechPreference.voice ?? ''}
+            onChange={(event) => updateSpeechPreference({ voice: event.target.value.trim() || undefined })}
+            placeholder={selectedSpeechProviderStatus?.voice ?? (speechPreference.provider === 'kokoro' ? 'af_heart' : 'default')}
+            disabled={Boolean(busyAction)}
+          />
+          {selectedSpeechProviderVoices.length > 0 && (
+            <>
+              <datalist id="voice-speech-voice-options">
+                {selectedSpeechProviderVoices.map((voice) => (
+                  <option key={`${selectedSpeechProvider}-${voice.id}`} value={voice.id} label={voice.label} />
+                ))}
+              </datalist>
+              <small className="auth-help">
+                Voice suggestions are filtered to {providerLabel(selectedSpeechProvider, selectedSpeechProviderStatus)} descriptors.
+              </small>
+            </>
+          )}
+
+          <div className="inline-form-row voice-button-row">
+            <label className="field-label inline-field" htmlFor="voice-speech-language">
+              Language
+              <input
+                id="voice-speech-language"
+                value={speechPreference.language ?? ''}
+                onChange={(event) => updateSpeechPreference({ language: event.target.value.trim() || undefined })}
+                placeholder={speechPreference.provider === 'kokoro' ? 'a' : 'en'}
+                disabled={Boolean(busyAction)}
+              />
+            </label>
+            <label className="field-label inline-field" htmlFor="voice-speech-speed">
+              Speed
+              <input
+                id="voice-speech-speed"
+                type="number"
+                min="0.25"
+                max="4"
+                step="0.05"
+                value={speechPreference.speed ?? 1}
+                onChange={(event) => updateSpeechPreference({ speed: Number(event.target.value) })}
+                disabled={Boolean(busyAction)}
+              />
+            </label>
+          </div>
+
+          {speechPreference.provider === 'kokoro' ? (
+            <small className="auth-help">Kokoro uses voice, language, and speed. Chatterbox reference WAV fields are not sent to Kokoro.</small>
+          ) : (
+            <small className="auth-help">Chatterbox TTS may use the selected reference audio below when no explicit voice is set.</small>
+          )}
+
+          <label className="field-label" htmlFor="voice-speech-test-text">
+            Test speech text
+          </label>
+          <textarea
+            id="voice-speech-test-text"
+            rows={3}
+            value={testSpeechText}
+            maxLength={1000}
+            onChange={(event) => setTestSpeechText(event.target.value)}
+            disabled={Boolean(busyAction)}
+          />
+
+          <div className="inline-form-row voice-button-row">
+            <button className="primary-button" type="button" onClick={() => void testSpeech()} disabled={!testSpeechText.trim() || Boolean(busyAction)}>
+              {busyAction === 'TTS test' ? 'Generating...' : `Generate ${ttsProviderDisplayNames[speechPreference.provider]} test`}
+            </button>
+            <button className="secondary-button" type="button" onClick={saveSpeechProviderPreference} disabled={Boolean(busyAction)}>
+              Save Speak preference
+            </button>
+          </div>
+        </div>
+      </article>
+
+      <article className={`model-panel voice-reference-panel${selectedSpeechProviderSupportsReference ? '' : ' disabled'}`}>
+        <div className="model-panel-header">
+          <h4>Chatterbox reference audio</h4>
           <span>{references.length}</span>
         </div>
+
+        {!selectedSpeechProviderSupportsReference ? (
+          <p className="muted padded">
+            Reference WAV controls are available only when Chatterbox TTS is selected. Kokoro is selected now and will not receive reference audio fields.
+          </p>
+        ) : (
+          <>
 
         <div className="voice-reference-current">
           <div>
@@ -642,8 +1059,8 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
             <strong>{loadedReferenceKnown && loadedReference ? loadedReference.displayName : 'None loaded'}</strong>
             <small>
               {loadedReferenceKnown && loadedReference
-                ? 'Future TTS playback uses the highlighted loaded reference.'
-                : 'Click Load on a reference to use it for future TTS playback.'}
+                ? 'Future Chatterbox TTS playback uses the highlighted loaded reference.'
+                : 'Click Load on a reference to use it for future Chatterbox TTS playback.'}
             </small>
           </div>
         </div>
@@ -695,9 +1112,11 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
             disabled={!canManageVoice || Boolean(busyAction)}
           />
           <small className="auth-help">
-            Uploading or recording adds a WAV clip to the list and keeps the currently loaded reference unchanged. Click Load next to a reference to use it for future TTS. Browser recordings are converted to a mono PCM WAV before upload. Delete is disabled for the loaded reference and uses VoiceVM descriptor-provided delete links or Bear Castle's conservative reference-audio delete fallback when supported.
+            Uploading or recording adds a WAV clip to the list and keeps the currently loaded reference unchanged. Click Load next to a reference to use it for future Chatterbox TTS. Browser recordings are converted to a mono PCM WAV before upload. Delete is disabled for the loaded reference and uses VoiceVM descriptor-provided delete links or Bear Castle's conservative reference-audio delete fallback when supported.
           </small>
         </form>
+          </>
+        )}
       </article>
 
 
@@ -818,7 +1237,7 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
 
       <details className="advanced-details voice-advanced-details">
         <summary>Advanced voice details</summary>
-        <pre>{JSON.stringify({ system: overview?.system, health: overview?.health, services: overview?.services }, null, 2)}</pre>
+        <pre>{JSON.stringify({ system: overview?.system, health: overview?.health, services: overview?.services, ttsRegistry }, null, 2)}</pre>
       </details>
     </section>
   );

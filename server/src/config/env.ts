@@ -38,6 +38,8 @@ const emptyStringToUndefined = (value: unknown) => {
 
 const optionalSecret = z.string().trim().optional();
 const optionalNonEmptyString = z.preprocess(emptyStringToUndefined, z.string().trim().min(1).optional());
+const ttsProviderSchema = z.enum(['chatterbox', 'kokoro']);
+const ttsFallbackPolicySchema = z.enum(['fail', 'try-default-provider', 'try-other-provider']);
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('production'),
@@ -105,6 +107,15 @@ const envSchema = z.object({
   TTS_ENABLED: booleanFromString.default(true),
   TTS_DEFAULT_VOICE: z.string().trim().min(1).default('af_heart'),
   TTS_DEFAULT_SPEED: z.coerce.number().min(0.5).max(2).default(1.0),
+  TTS_DEFAULT_PROVIDER: ttsProviderSchema.default('chatterbox'),
+  TTS_EXPLICIT_PROVIDER: booleanFromString.default(true),
+  TTS_FALLBACK_POLICY: ttsFallbackPolicySchema.default('fail'),
+  TTS_CHATTERBOX_ENABLED: booleanFromString.default(true),
+  TTS_CHATTERBOX_DEFAULT_MODEL: optionalNonEmptyString,
+  TTS_CHATTERBOX_DEFAULT_VOICE: optionalNonEmptyString,
+  TTS_KOKORO_ENABLED: booleanFromString.default(true),
+  TTS_KOKORO_DEFAULT_MODEL: optionalNonEmptyString,
+  TTS_KOKORO_DEFAULT_VOICE: optionalNonEmptyString,
   TTS_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
   TTS_MAX_TEXT_CHARS: z.coerce.number().int().positive().default(12000),
 
@@ -333,6 +344,21 @@ export const config = {
     enabled: env.TTS_ENABLED,
     defaultVoice: env.TTS_DEFAULT_VOICE,
     defaultSpeed: env.TTS_DEFAULT_SPEED,
+    defaultProvider: env.TTS_DEFAULT_PROVIDER,
+    explicitProvider: env.TTS_EXPLICIT_PROVIDER,
+    fallbackPolicy: env.TTS_FALLBACK_POLICY,
+    providers: {
+      chatterbox: {
+        enabled: env.TTS_CHATTERBOX_ENABLED,
+        defaultModel: env.TTS_CHATTERBOX_DEFAULT_MODEL,
+        defaultVoice: env.TTS_CHATTERBOX_DEFAULT_VOICE
+      },
+      kokoro: {
+        enabled: env.TTS_KOKORO_ENABLED,
+        defaultModel: env.TTS_KOKORO_DEFAULT_MODEL,
+        defaultVoice: env.TTS_KOKORO_DEFAULT_VOICE
+      }
+    },
     timeoutMs: env.TTS_TIMEOUT_MS,
     maxTextChars: env.TTS_MAX_TEXT_CHARS
   },

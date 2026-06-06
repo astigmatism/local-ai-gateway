@@ -21,6 +21,7 @@ import {
   listVoiceDescriptors,
   loadVoiceSttModel,
   loadVoiceTtsModel,
+  reloadVoiceTtsModel,
   unloadVoiceSttModel,
   unloadVoiceTtsModel,
   updateVoiceSttConfig,
@@ -45,6 +46,7 @@ const optionalText = z.preprocess(
 const requiredText = z.string().trim().min(1).max(160);
 const referenceIdText = z.string().trim().min(1).max(240);
 const optionsSchema = z.record(z.string(), z.unknown()).optional().default({});
+const ttsProviderSchema = z.enum(['chatterbox', 'kokoro']);
 
 const sttLoadSchema = z.object({
   provider: requiredText.default('fast-whisper'),
@@ -54,7 +56,7 @@ const sttLoadSchema = z.object({
 });
 
 const ttsLoadSchema = z.object({
-  provider: requiredText.default('chatterbox'),
+  provider: ttsProviderSchema.default(config.tts.defaultProvider),
   model: requiredText,
   language: optionalText.default('en'),
   options: optionsSchema
@@ -63,6 +65,17 @@ const ttsLoadSchema = z.object({
 const unloadSchema = z.object({
   strategy: z.enum(['soft', 'hard']).default('soft'),
   clearCache: z.coerce.boolean().default(true)
+});
+
+const ttsUnloadSchema = unloadSchema.extend({
+  provider: ttsProviderSchema.default(config.tts.defaultProvider)
+});
+
+const ttsReloadSchema = z.object({
+  provider: ttsProviderSchema.default(config.tts.defaultProvider),
+  model: optionalText,
+  language: optionalText,
+  options: optionsSchema
 });
 
 const updateSttConfigSchema = z
@@ -76,10 +89,11 @@ const updateSttConfigSchema = z
 
 const updateTtsConfigSchema = z
   .object({
+    defaultProvider: ttsProviderSchema.optional(),
     defaultModel: optionalText,
     language: optionalText
   })
-  .refine((body) => body.defaultModel !== undefined || body.language !== undefined, {
+  .refine((body) => body.defaultProvider !== undefined || body.defaultModel !== undefined || body.language !== undefined, {
     message: 'At least one TTS config field is required.'
   });
 
@@ -245,7 +259,7 @@ settingsVoiceRouter.post(
   asyncHandler(async (req, res) => {
     const body = ttsLoadSchema.parse(req.body ?? {});
     const result = await loadVoiceTtsModel(body);
-    res.json({ result, message: `TTS model ${body.model} load requested.` });
+    res.json({ result, message: `TTS provider ${body.provider} model ${body.model} load requested.` });
   })
 );
 
@@ -253,9 +267,19 @@ settingsVoiceRouter.post(
   '/models/tts/unload',
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const body = unloadSchema.parse(req.body ?? {});
+    const body = ttsUnloadSchema.parse(req.body ?? {});
     const result = await unloadVoiceTtsModel(body);
-    res.json({ result, message: `TTS model unload requested with ${body.strategy} strategy.` });
+    res.json({ result, message: `TTS provider ${body.provider} unload requested with ${body.strategy} strategy.` });
+  })
+);
+
+settingsVoiceRouter.post(
+  '/models/tts/reload',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const body = ttsReloadSchema.parse(req.body ?? {});
+    const result = await reloadVoiceTtsModel(body);
+    res.json({ result, message: `TTS provider ${body.provider} reload requested.` });
   })
 );
 

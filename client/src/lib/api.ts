@@ -20,6 +20,8 @@ import type {
   SendMessageResponse,
   StatusResponse,
   TranscribeResponse,
+  TtsProviderId,
+  UnloadTtsModelRequest,
   UnloadVoiceModelRequest,
   UpdateSttConfigRequest,
   UpdateTtsConfigRequest,
@@ -47,6 +49,7 @@ interface RequestOptions {
 }
 
 interface SpeakTextOptions {
+  provider?: TtsProviderId;
   voice?: string;
   speed?: number;
   exaggeration?: number;
@@ -54,6 +57,10 @@ interface SpeakTextOptions {
   temperature?: number;
   language?: string;
   model?: string;
+  referenceAudioId?: string;
+  referenceAudioPath?: string;
+  format?: 'wav';
+  metadata?: Record<string, unknown>;
   signal?: AbortSignal;
 }
 
@@ -495,9 +502,11 @@ export const api = {
     return requestBlob('/api/speak', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        Accept: 'audio/wav'
       },
       body: JSON.stringify({
+        provider: options.provider,
         text,
         voice: options.voice,
         speed: options.speed,
@@ -505,7 +514,11 @@ export const api = {
         cfgWeight: options.cfgWeight,
         temperature: options.temperature,
         language: options.language,
-        model: options.model
+        model: options.model,
+        referenceAudioId: options.referenceAudioId,
+        referenceAudioPath: options.referenceAudioPath,
+        format: options.format,
+        metadata: options.metadata
       }),
       signal: options.signal
     });
@@ -573,8 +586,12 @@ export const api = {
     return jsonRequest<VoiceMutationResponse>('/api/settings/voice/models/tts/load', 'POST', body);
   },
 
-  async unloadTtsModel(body: UnloadVoiceModelRequest = { strategy: 'soft', clearCache: true }) {
+  async unloadTtsModel(body: UnloadTtsModelRequest) {
     return jsonRequest<VoiceMutationResponse>('/api/settings/voice/models/tts/unload', 'POST', body);
+  },
+
+  async reloadTtsModel(body: { provider: TtsProviderId; model?: string; language?: string; options?: Record<string, unknown> }) {
+    return jsonRequest<VoiceMutationResponse>('/api/settings/voice/models/tts/reload', 'POST', body);
   },
 
   async getVoiceConfig() {

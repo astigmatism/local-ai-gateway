@@ -11,6 +11,41 @@ import { extractTranscriptText } from './transcriptionText.js';
 type UnknownRecord = Record<string, unknown>;
 type VoiceModelKind = 'stt' | 'tts';
 
+export const ttsProviderIds = ['chatterbox', 'kokoro'] as const;
+export type TtsProviderId = (typeof ttsProviderIds)[number];
+export type TtsProviderState = 'unknown' | 'unloaded' | 'loading' | 'loaded' | 'failed';
+
+export interface TtsProviderCapabilities {
+  referenceAudio?: boolean;
+  voiceSelection?: boolean;
+  languageSelection?: boolean;
+  speedControl?: boolean;
+  streaming?: boolean;
+  [key: string]: boolean | undefined;
+}
+
+export interface TtsProviderStatus {
+  id: TtsProviderId;
+  name?: string;
+  displayName: string;
+  reachable: boolean;
+  active?: boolean;
+  state: TtsProviderState;
+  model?: string;
+  voice?: string;
+  workerPort?: number;
+  capabilities: TtsProviderCapabilities;
+  lastCheckedAt?: string;
+  lastError?: string | null;
+  raw?: unknown;
+}
+
+export interface TtsRegistryState {
+  defaultProvider: TtsProviderId;
+  providers: Record<TtsProviderId, TtsProviderStatus>;
+  raw?: unknown;
+}
+
 const transcriptionResponseSchema = z
   .object({
     filename: z.string().optional(),
@@ -96,6 +131,7 @@ export interface VoiceTranscriptionResult extends NormalizedTranscribeResponse {
 }
 
 export interface VoiceSpeechOptions {
+  provider?: TtsProviderId;
   text: string;
   voice?: string;
   speed?: number;
@@ -104,6 +140,10 @@ export interface VoiceSpeechOptions {
   temperature?: number;
   language?: string;
   model?: string;
+  referenceAudioId?: string;
+  referenceAudioPath?: string;
+  format?: 'wav';
+  metadata?: Record<string, unknown>;
   referenceAudio?: {
     buffer: Buffer;
     filename: string;
@@ -121,6 +161,7 @@ export interface VoiceSpeechResult {
     speed?: string;
     model?: string;
     language?: string;
+    provider?: string;
   };
 }
 
@@ -155,6 +196,19 @@ export interface VoiceModelDescriptor {
   raw: unknown;
 }
 
+export interface VoiceProviderModelCatalog {
+  provider: TtsProviderId;
+  currentModel?: string;
+  defaultModel?: string;
+  activeModel?: string;
+  loadedModel?: string;
+  language?: string;
+  status?: string;
+  worker: UnknownRecord | null;
+  models: VoiceModelDescriptor[];
+  raw?: unknown;
+}
+
 export interface VoiceModelCatalogResponse {
   kind: VoiceModelKind;
   provider?: string;
@@ -166,6 +220,7 @@ export interface VoiceModelCatalogResponse {
   status?: string;
   worker: UnknownRecord | null;
   models: VoiceModelDescriptor[];
+  providers?: Partial<Record<TtsProviderId, VoiceProviderModelCatalog>>;
   raw: unknown;
 }
 
@@ -177,6 +232,7 @@ export interface VoiceModelsResponse {
 
 export interface VoiceConfigSection {
   defaultModel?: string;
+  defaultProvider?: TtsProviderId;
   computeType?: string;
   language?: string;
   raw: UnknownRecord | null;
@@ -225,7 +281,7 @@ export interface SttLoadRequest {
 }
 
 export interface TtsLoadRequest {
-  provider: string;
+  provider: TtsProviderId;
   model: string;
   language?: string;
   options?: UnknownRecord;
@@ -236,12 +292,17 @@ export interface ModelUnloadRequest {
   clearCache?: boolean;
 }
 
+export interface TtsUnloadRequest extends ModelUnloadRequest {
+  provider: TtsProviderId;
+}
+
 export interface UpdateSttConfigRequest {
   defaultModel?: string;
   computeType?: string;
 }
 
 export interface UpdateTtsConfigRequest {
+  defaultProvider?: TtsProviderId;
   defaultModel?: string;
   language?: string;
 }
@@ -330,6 +391,149 @@ const readPath = (root: unknown, path: string[]) => {
   return current;
 };
 
+export const isTtsProviderId = (value: unknown): value is TtsProviderId =>
+  typeof value === 'string' && (ttsProviderIds as readonly string[]).includes(value.trim().toLowerCase());
+
+export const ttsProviderDisplayName = (provider: TtsProviderId) =>
+  provider === 'kokoro' ? 'Kokoro' : 'Chatterbox TTS';
+
+const normalizeTtsProviderDisplayName = (provider: TtsProviderId, ...values: unknown[]) => {
+  const displayName = firstString(...values);
+  if (provider === 'kokoro') return 'Kokoro';
+  if (!displayName || displayName.trim().toLowerCase() === 'chatterbox') return 'Chatterbox TTS';
+  return displayName;
+};
+
+export const normalizeTtsProviderId = (value: unknown): TtsProviderId | undefined => {
+  const parsed = cleanString(value)?.toLowerCase();
+  if (!parsed) return undefined;
+  if (parsed === 'chatterbox' || parsed.includes('chatterbox')) return 'chatterbox';
+  if (parsed === 'kokoro' || parsed.includes('kokoro')) return 'kokoro';
+  return undefined;
+};
+
+const firstTtsProvider = (...values: unknown[]) => {
+  for (const value of values) {
+    const provider = normalizeTtsProviderId(value);
+    if (provider) return provider;
+  }
+  return undefined;
+};
+
+const ttsProviderStateValues: readonly TtsProviderState[] = ['unknown', 'unloaded', 'loading', 'loaded', 'failed'];
+
+const normalizeTtsProviderState = (...values: unknown[]): TtsProviderState => {
+  for (const value of values) {
+    const parsed = cleanString(value)?.toLowerCase();
+    if (!parsed) continue;
+    if ((ttsProviderStateValues as readonly string[]).includes(parsed)) return parsed as TtsProviderState;
+    if (['ready', 'running', 'active', 'available', 'healthy', 'online'].includes(parsed)) return 'loaded';
+    if (['disabled', 'off', 'stopped', 'inactive'].includes(parsed)) return 'unloaded';
+    if (['starting', 'initializing', 'warming'].includes(parsed)) return 'loading';
+    if (['error', 'unhealthy', 'unreachable', 'down'].includes(parsed)) return 'failed';
+  }
+  return 'unknown';
+};
+
+const normalizeTtsCapabilities = (value: unknown, provider: TtsProviderId): TtsProviderCapabilities => {
+  const record = asRecord(value) ?? {};
+  const capabilities: TtsProviderCapabilities = {
+    referenceAudio: firstBoolean(record.referenceAudio, record.reference_audio, record.voiceCloning, record.voice_cloning),
+    voiceSelection: firstBoolean(record.voiceSelection, record.voice_selection, record.voices, record.voice),
+    languageSelection: firstBoolean(record.languageSelection, record.language_selection, record.languages, record.language),
+    speedControl: firstBoolean(record.speedControl, record.speed_control, record.speed),
+    streaming: firstBoolean(record.streaming)
+  };
+
+  for (const [key, rawValue] of Object.entries(record)) {
+    const parsed = cleanBoolean(rawValue);
+    if (parsed !== undefined && capabilities[key] === undefined) capabilities[key] = parsed;
+  }
+
+  return stripUndefinedFields({
+    ...capabilities,
+    referenceAudio: capabilities.referenceAudio ?? provider === 'chatterbox',
+    voiceSelection: capabilities.voiceSelection ?? true,
+    languageSelection: capabilities.languageSelection ?? true,
+    speedControl: capabilities.speedControl ?? true,
+    streaming: capabilities.streaming
+  });
+};
+
+const normalizeTtsProviderStatus = (provider: TtsProviderId, value: unknown): TtsProviderStatus => {
+  const record = asRecord(value) ?? {};
+  const worker = firstRecord(record.worker, record.service, record.health, record.workerHealth, record.worker_health) ?? {};
+  const state = normalizeTtsProviderState(record.state, record.status, worker.state, worker.status, record.loaded);
+  const reachable =
+    firstBoolean(record.reachable, record.available, record.ok, record.healthy, worker.reachable, worker.available, worker.ok, worker.healthy) ??
+    (state === 'loaded' || state === 'loading');
+
+  return stripUndefinedFields({
+    id: provider,
+    name: firstString(record.name, record.providerName, record.provider_name),
+    displayName: normalizeTtsProviderDisplayName(provider, record.displayName, record.display_name, record.name),
+    reachable,
+    active: firstBoolean(record.active, record.enabled),
+    state,
+    model: firstString(record.model, record.currentModel, record.current_model, record.loadedModel, record.loaded_model, worker.model),
+    voice: firstString(record.voice, record.defaultVoice, record.default_voice),
+    workerPort: firstNumber(record.workerPort, record.worker_port, worker.port),
+    capabilities: normalizeTtsCapabilities(record.capabilities, provider),
+    lastCheckedAt: firstString(record.lastCheckedAt, record.last_checked_at, record.checkedAt, record.checked_at, record.timestamp),
+    lastError: firstString(record.lastError, record.last_error, record.error, worker.error) ?? null,
+    raw: value
+  });
+};
+
+const defaultTtsProviderStatus = (provider: TtsProviderId): TtsProviderStatus => ({
+  id: provider,
+  displayName: ttsProviderDisplayName(provider),
+  reachable: false,
+  state: 'unknown',
+  capabilities: normalizeTtsCapabilities(undefined, provider)
+});
+
+export const normalizeTtsRegistry = (payload: unknown): TtsRegistryState => {
+  const root = asRecord(payload) ?? {};
+  const providerEntries = new Map<TtsProviderId, unknown>();
+  const providersValue = firstArray(root.providers, root.items, root.ttsProviders, root.tts_providers);
+  if (providersValue) {
+    for (const item of providersValue) {
+      const record = asRecord(item);
+      const provider = firstTtsProvider(record?.id, record?.provider, record?.name, record?.displayName, record?.display_name);
+      if (provider) providerEntries.set(provider, item);
+    }
+  }
+
+  const providerRecord = firstRecord(root.providers, root.ttsProviders, root.tts_providers);
+  if (providerRecord) {
+    for (const [key, value] of Object.entries(providerRecord)) {
+      const provider = normalizeTtsProviderId(key) ?? firstTtsProvider(asRecord(value)?.id, asRecord(value)?.provider);
+      if (provider) providerEntries.set(provider, value);
+    }
+  }
+
+  for (const provider of ttsProviderIds) {
+    const direct = firstRecord(root[provider], readPath(root, ['providers', provider]));
+    if (direct) providerEntries.set(provider, direct);
+  }
+
+  const providers = Object.fromEntries(
+    ttsProviderIds.map((provider) => [
+      provider,
+      providerEntries.has(provider)
+        ? normalizeTtsProviderStatus(provider, providerEntries.get(provider))
+        : defaultTtsProviderStatus(provider)
+    ])
+  ) as Record<TtsProviderId, TtsProviderStatus>;
+
+  return {
+    defaultProvider: firstTtsProvider(root.defaultProvider, root.default_provider, root.provider) ?? config.tts.defaultProvider,
+    providers,
+    raw: payload
+  };
+};
+
 const responseDataSummary = (data: unknown) => {
   const record = asRecord(data);
   if (!record) return typeof data;
@@ -381,8 +585,8 @@ const voiceErrorStatusCode = (error: unknown) => {
   if (error.code === 'ECONNABORTED') return 504;
   if (error.response) {
     const status = error.response.status;
-    if ([400, 413, 415, 422].includes(status)) return status;
-    return status >= 500 ? 503 : 502;
+    if ([400, 413, 415, 422, 500, 502, 503, 504].includes(status)) return status;
+    return status >= 500 ? 502 : 502;
   }
   return 503;
 };
@@ -584,7 +788,7 @@ const normalizeCatalogItem = (item: unknown): VoiceModelDescriptor | null => {
   return {
     id,
     label: firstString(record.label, record.displayName, record.display_name, model, id) ?? id,
-    provider: firstString(record.provider),
+    provider: normalizeTtsProviderId(record.provider) ?? firstString(record.provider),
     model,
     name: firstString(record.name, model),
     language: firstString(record.language),
@@ -608,7 +812,7 @@ const normalizeVoiceDescriptor = (item: unknown): VoiceDescriptor | null => {
   return {
     id,
     label: firstString(record.label, record.displayName, record.display_name, record.name, record.voice, id) ?? id,
-    provider: firstString(record.provider),
+    provider: normalizeTtsProviderId(record.provider) ?? firstString(record.provider),
     model: firstString(record.model),
     language: firstString(record.language),
     description: firstString(record.description, record.summary),
@@ -621,6 +825,95 @@ const catalogRootForKind = (payload: unknown, kind: VoiceModelKind) => {
   const root = asRecord(payload);
   if (!root) return payload;
   return asRecord(root[kind]) ?? asRecord(root[`${kind}Models`]) ?? asRecord(root[`${kind}_models`]) ?? root;
+};
+
+const normalizeTtsProviderModelCatalog = (
+  provider: TtsProviderId,
+  value: unknown,
+  fallbackModels: VoiceModelDescriptor[] = []
+): VoiceProviderModelCatalog => {
+  const record = asRecord(value) ?? {};
+  const statusRecord = firstRecord(record.status, record.modelStatus, record.model_status, record.state, record.workerState, record.worker_state);
+  const worker = firstRecord(record.worker, record.service, record.health, record.workerHealth, record.worker_health, statusRecord) ?? null;
+  const modelList =
+    firstArray(
+      record.models,
+      record.catalog,
+      record.availableModels,
+      record.available_models,
+      record.available,
+      record.items,
+      readPath(record, ['catalog', 'models'])
+    ) ?? [];
+  const scopedModels = modelList
+    .map(normalizeCatalogItem)
+    .filter((model): model is VoiceModelDescriptor => model !== null)
+    .map((model) => ({ ...model, provider }));
+  const models = scopedModels.length > 0 ? scopedModels : fallbackModels.filter((model) => normalizeTtsProviderId(model.provider) === provider);
+  const loadedModel = firstString(
+    record.loadedModel,
+    record.loaded_model,
+    record.currentModel,
+    record.current_model,
+    statusRecord?.loadedModel,
+    statusRecord?.loaded_model,
+    statusRecord?.currentModel,
+    statusRecord?.current_model,
+    worker?.model
+  );
+  const activeModel = firstString(record.activeModel, record.active_model, statusRecord?.activeModel, statusRecord?.active_model);
+  const defaultModel = firstString(record.defaultModel, record.default_model, statusRecord?.defaultModel, statusRecord?.default_model);
+
+  return stripUndefinedFields({
+    provider,
+    currentModel: firstString(record.currentModel, record.current_model, activeModel, loadedModel, defaultModel),
+    defaultModel,
+    activeModel,
+    loadedModel,
+    language: firstString(record.language, statusRecord?.language),
+    status: firstString(record.status, record.state, statusRecord?.status, statusRecord?.state, worker?.status, worker?.state),
+    worker,
+    models,
+    raw: value
+  });
+};
+
+const normalizeTtsProviderModelCatalogs = (
+  root: UnknownRecord,
+  models: VoiceModelDescriptor[]
+): Partial<Record<TtsProviderId, VoiceProviderModelCatalog>> => {
+  const providerValues = new Map<TtsProviderId, unknown>();
+  const providerArray = firstArray(root.providers, root.items, root.ttsProviders, root.tts_providers);
+  if (providerArray) {
+    for (const item of providerArray) {
+      const record = asRecord(item);
+      const provider = firstTtsProvider(record?.id, record?.provider, record?.name, record?.displayName, record?.display_name);
+      if (provider) providerValues.set(provider, item);
+    }
+  }
+
+  const providerRecord = firstRecord(root.providers, root.ttsProviders, root.tts_providers);
+  if (providerRecord) {
+    for (const [key, value] of Object.entries(providerRecord)) {
+      const provider = normalizeTtsProviderId(key) ?? firstTtsProvider(asRecord(value)?.id, asRecord(value)?.provider);
+      if (provider) providerValues.set(provider, value);
+    }
+  }
+
+  for (const provider of ttsProviderIds) {
+    const direct = firstRecord(root[provider], root[`${provider}Models`], root[`${provider}_models`]);
+    if (direct) providerValues.set(provider, direct);
+  }
+
+  const byProvider = Object.fromEntries(
+    ttsProviderIds.flatMap((provider) => {
+      const fallbackModels = models.filter((model) => normalizeTtsProviderId(model.provider) === provider);
+      if (!providerValues.has(provider) && fallbackModels.length === 0) return [];
+      return [[provider, normalizeTtsProviderModelCatalog(provider, providerValues.get(provider) ?? { models: fallbackModels }, fallbackModels)]];
+    })
+  ) as Partial<Record<TtsProviderId, VoiceProviderModelCatalog>>;
+
+  return byProvider;
 };
 
 export const normalizeVoiceModelCatalog = (kind: VoiceModelKind, payload: unknown): VoiceModelCatalogResponse => {
@@ -640,9 +933,12 @@ export const normalizeVoiceModelCatalog = (kind: VoiceModelKind, payload: unknow
     ) ?? (Array.isArray(rootValue) ? rootValue : []);
   const models = modelList.map(normalizeCatalogItem).filter((model): model is VoiceModelDescriptor => model !== null);
 
+  const rootProvider = normalizeTtsProviderId(root.provider);
+  const normalizedModels = kind === 'tts' && rootProvider ? models.map((model) => ({ ...model, provider: model.provider ?? rootProvider })) : models;
+
   return {
     kind,
-    provider: firstString(root.provider, statusRecord?.provider, worker?.provider),
+    provider: normalizeTtsProviderId(root.provider) ?? firstString(root.provider, statusRecord?.provider, worker?.provider),
     defaultModel: firstString(root.defaultModel, root.default_model, statusRecord?.defaultModel, statusRecord?.default_model),
     activeModel: firstString(root.activeModel, root.active_model, statusRecord?.activeModel, statusRecord?.active_model),
     loadedModel: firstString(root.loadedModel, root.loaded_model, statusRecord?.loadedModel, statusRecord?.loaded_model, worker?.model),
@@ -650,7 +946,8 @@ export const normalizeVoiceModelCatalog = (kind: VoiceModelKind, payload: unknow
     language: firstString(root.language, statusRecord?.language),
     status: firstString(root.status, root.state, worker?.status, worker?.state),
     worker,
-    models,
+    models: normalizedModels,
+    ...(kind === 'tts' ? { providers: normalizeTtsProviderModelCatalogs(root, normalizedModels) } : {}),
     raw: payload
   };
 };
@@ -673,6 +970,9 @@ export const normalizeVoiceConfig = (payload: unknown): VoiceConfigResponse => {
       raw: stt
     },
     tts: {
+      defaultProvider:
+        firstTtsProvider(tts?.defaultProvider, tts?.default_provider, root.defaultTtsProvider, root.default_tts_provider) ??
+        config.tts.defaultProvider,
       defaultModel: firstString(tts?.defaultModel, tts?.default_model, root.defaultTtsModel, root.default_tts_model),
       language: firstString(tts?.language, root.ttsLanguage, root.tts_language),
       raw: tts
@@ -725,24 +1025,38 @@ export const normalizeVoiceTranscriptionResponse = (
   });
 };
 
-const speechJsonBody = (options: VoiceSpeechOptions) => ({
-  text: options.text,
-  ...(options.voice !== undefined ? { voice: options.voice } : {}),
-  ...(options.speed !== undefined ? { speed: options.speed } : {}),
-  ...(options.exaggeration !== undefined ? { exaggeration: options.exaggeration } : {}),
-  ...(options.cfgWeight !== undefined ? { cfg_weight: options.cfgWeight } : {}),
-  ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
-  ...(options.language !== undefined ? { language: options.language } : {}),
-  ...(options.model !== undefined ? { model: options.model } : {})
-});
+export const buildVoiceSpeechJsonBody = (options: VoiceSpeechOptions) => {
+  const includeChatterboxFields = options.provider !== 'kokoro';
+  return stripUndefinedFields({
+    provider: options.provider,
+    text: options.text,
+    voice: options.voice,
+    speed: options.speed,
+    language: options.language,
+    model: options.model,
+    format: options.format,
+    metadata: options.metadata,
+    exaggeration: includeChatterboxFields ? options.exaggeration : undefined,
+    cfg_weight: includeChatterboxFields ? options.cfgWeight : undefined,
+    temperature: includeChatterboxFields ? options.temperature : undefined,
+    referenceAudioId: includeChatterboxFields ? options.referenceAudioId : undefined,
+    referenceAudioPath: includeChatterboxFields ? options.referenceAudioPath : undefined
+  });
+};
 
 export const speakText = async (options: VoiceSpeechOptions): Promise<VoiceSpeechResult> => {
   const timeoutMs = options.timeoutMs ?? config.tts.timeoutMs;
+  const startedAt = Date.now();
+
+  if (options.provider === 'kokoro' && (options.referenceAudio || options.referenceAudioId || options.referenceAudioPath)) {
+    throw new ApiError(400, 'Kokoro does not support Chatterbox reference audio.', 'TTS_REFERENCE_AUDIO_UNSUPPORTED');
+  }
 
   try {
     const response = options.referenceAudio
       ? await (() => {
           const form = new FormData();
+          addOptionalFormField(form, 'provider', options.provider);
           form.append('text', options.text);
           addOptionalFormField(form, 'voice', options.voice);
           addOptionalFormField(form, 'speed', options.speed);
@@ -751,12 +1065,15 @@ export const speakText = async (options: VoiceSpeechOptions): Promise<VoiceSpeec
           addOptionalFormField(form, 'temperature', options.temperature);
           addOptionalFormField(form, 'language', options.language);
           addOptionalFormField(form, 'model', options.model);
+          addOptionalFormField(form, 'referenceAudioId', options.referenceAudioId);
+          addOptionalFormField(form, 'referenceAudioPath', options.referenceAudioPath);
+          addOptionalFormField(form, 'format', options.format);
           form.append('reference_audio', options.referenceAudio.buffer, {
             filename: options.referenceAudio.filename || 'reference.wav',
             contentType: options.referenceAudio.contentType || 'audio/wav'
           });
           return axios.post(`${config.voice.baseUrl}/api/tts/speak`, form, {
-            headers: form.getHeaders(),
+            headers: { ...form.getHeaders(), Accept: 'audio/wav' },
             timeout: timeoutMs,
             maxBodyLength: Infinity,
             maxContentLength: Infinity,
@@ -764,8 +1081,8 @@ export const speakText = async (options: VoiceSpeechOptions): Promise<VoiceSpeec
             validateStatus: (status) => status >= 200 && status < 300
           });
         })()
-      : await axios.post(`${config.voice.baseUrl}/api/tts/speak`, speechJsonBody(options), {
-          headers: { 'Content-Type': 'application/json' },
+      : await axios.post(`${config.voice.baseUrl}/api/tts/speak`, buildVoiceSpeechJsonBody(options), {
+          headers: { 'Content-Type': 'application/json', Accept: 'audio/wav' },
           timeout: timeoutMs,
           maxBodyLength: Infinity,
           maxContentLength: Infinity,
@@ -785,17 +1102,24 @@ export const speakText = async (options: VoiceSpeechOptions): Promise<VoiceSpeec
       voice: readHeader(response.headers, 'x-tts-voice'),
       speed: readHeader(response.headers, 'x-tts-speed'),
       model: readHeader(response.headers, 'x-tts-model'),
-      language: readHeader(response.headers, 'x-tts-language')
+      language: readHeader(response.headers, 'x-tts-language'),
+      provider: readHeader(response.headers, 'x-tts-provider') ?? options.provider
     };
 
     logger.info(
       {
+        event: 'tts.speak',
+        provider: options.provider ?? 'default',
         textLength: options.text.length,
-        voiceProvided: options.voice !== undefined,
-        modelProvided: options.model !== undefined,
-        languageProvided: options.language !== undefined,
-        referenceAudioProvided: options.referenceAudio !== undefined,
+        voice: options.voice,
+        model: options.model,
+        language: options.language,
+        speed: options.speed,
+        referenceAudioProvided: options.referenceAudio !== undefined || options.referenceAudioId !== undefined,
+        status: 200,
+        durationMs: Date.now() - startedAt,
         audioBytes: audio.byteLength,
+        fallbackUsed: false,
         contentType,
         ttsEngine: headers.engine
       },
@@ -809,7 +1133,7 @@ export const speakText = async (options: VoiceSpeechOptions): Promise<VoiceSpeec
     } satisfies VoiceSpeechResult;
   } catch (error) {
     if (error instanceof ApiError) throw error;
-    return throwVoiceApiError(error, 'Voice text-to-speech', 'TTS', timeoutMs);
+    return throwVoiceApiError(error, `Voice text-to-speech provider ${options.provider ?? 'default'}`, 'TTS', timeoutMs);
   }
 };
 
@@ -928,7 +1252,7 @@ export const getVoiceHealth = () => getJson('/api/health', 'Voice health');
 export const getVoiceSystem = () => getJson('/api/system', 'Voice system status');
 export const getVoiceServices = () => getJson('/api/services', 'Voice worker services status');
 export const getVoiceSttService = () => getJson('/api/services/stt', 'Voice STT service status');
-export const getVoiceTtsService = () => getJson('/api/services/tts', 'Voice TTS service status');
+export const getVoiceTtsService = async () => normalizeTtsRegistry(await getJson('/api/services/tts', 'Voice TTS service status'));
 export const getVoiceLogs = () => getJson('/api/logs', 'Voice logs');
 
 export const getVoiceGpu = async () => normalizeVoiceGpuResponse(await getJson('/api/gpu', 'Voice GPU telemetry'));
@@ -950,8 +1274,11 @@ export const unloadVoiceSttModel = (body: ModelUnloadRequest) =>
 export const loadVoiceTtsModel = (body: TtsLoadRequest) =>
   sendJson('post', '/api/models/tts/load', body, 'Load TTS model');
 
-export const unloadVoiceTtsModel = (body: ModelUnloadRequest) =>
+export const unloadVoiceTtsModel = (body: TtsUnloadRequest) =>
   sendJson('post', '/api/models/tts/unload', body, 'Unload TTS model');
+
+export const reloadVoiceTtsModel = (body: Partial<TtsLoadRequest> & { provider: TtsProviderId }) =>
+  sendJson('post', '/api/models/tts/reload', body, 'Reload TTS provider');
 
 export const updateVoiceSttConfig = (body: UpdateSttConfigRequest) =>
   sendJson('patch', '/api/config/stt', body, 'Update STT configuration');
@@ -1143,9 +1470,10 @@ const settle = async <T>(name: string, fn: () => Promise<T>) => {
 };
 
 export const getVoiceOverview = async () => {
-  const [health, services, gpu, system, sttModels, ttsModels, configResponse, voices] = await Promise.all([
+  const [health, services, ttsRegistry, gpu, system, sttModels, ttsModels, configResponse, voices] = await Promise.all([
     settle('health', getVoiceHealth),
     settle('services', getVoiceServices),
+    settle('ttsRegistry', getVoiceTtsService),
     settle('gpu', getVoiceGpu),
     settle('system', getVoiceSystem),
     settle('sttModels', getVoiceSttModels),
@@ -1157,6 +1485,7 @@ export const getVoiceOverview = async () => {
   return {
     health: health.data,
     services: services.data,
+    ttsRegistry: ttsRegistry.data,
     gpu: gpu.data,
     system: system.data,
     models: {
@@ -1166,7 +1495,7 @@ export const getVoiceOverview = async () => {
     config: configResponse.data,
     voices: voices.data,
     errors: Object.fromEntries(
-      [health, services, gpu, system, sttModels, ttsModels, configResponse, voices]
+      [health, services, ttsRegistry, gpu, system, sttModels, ttsModels, configResponse, voices]
         .filter((result) => result.error)
         .map((result) => [result.name, result.error])
     ),

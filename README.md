@@ -181,18 +181,26 @@ Bear Castle AI now targets the modern local-ai-voice Node gateway contract. The 
 Modern routes used by Bear Castle AI:
 
 - STT transcription: `POST {VOICE_BASE_URL}/api/stt/transcribe` with multipart `file`, optional `model`, `language`, `vad_filter`, `min_silence_duration_ms`, `beam_size`, and `word_timestamps`. Bear Castle AI accepts browser uploads at authenticated `/api/transcribe`, forwards the audio to VoiceVM under multipart field `file`, omits `model` unless the caller explicitly provides one, and normalizes camelCase/snake_case transcript metadata back to a stable camelCase response.
-- TTS speech: `POST {VOICE_BASE_URL}/api/tts/speak` with JSON for normal text-only speech or multipart when reference audio is needed. The response is returned to the browser as `audio/wav` with `Cache-Control: no-store`.
+- TTS speech: `POST {VOICE_BASE_URL}/api/tts/speak` with JSON for normal text-only speech or multipart when Chatterbox reference audio is needed. Bear Castle AI sends a provider id (`chatterbox` or `kokoro`) whenever the app knows the intended provider, and the response is returned to the browser as `audio/wav` with `Cache-Control: no-store`.
 - GPU telemetry: `GET {VOICE_BASE_URL}/api/gpu`, normalized from `available`, `checkedAt`, and `devices[]` into the compact System Health panel. Missing power/fan fields are omitted instead of showing `undefined`, `NaN`, or placeholder `N/A` rows.
-- Health and workers: `GET {VOICE_BASE_URL}/api/health`, `GET /api/services`, `GET /api/services/stt`, and `GET /api/services/tts`.
-- Model catalogs/status: `GET /api/models`, `GET /api/models/stt`, and `GET /api/models/tts`.
-- Model management: `POST /api/models/stt/load`, `POST /api/models/stt/unload`, `POST /api/models/tts/load`, and `POST /api/models/tts/unload`.
-- Mutable defaults: `GET /api/config`, `PATCH /api/config/stt`, and `PATCH /api/config/tts`.
+- Health and workers: `GET {VOICE_BASE_URL}/api/health`, `GET /api/services`, `GET /api/services/stt`, and provider-keyed `GET /api/services/tts`.
+- Model catalogs/status: `GET /api/models`, `GET /api/models/stt`, and provider-scoped `GET /api/models/tts`.
+- Model management: `POST /api/models/stt/load`, `POST /api/models/stt/unload`, `POST /api/models/tts/load`, `POST /api/models/tts/unload`, and `POST /api/models/tts/reload`. TTS lifecycle requests include a provider and do not unload the other provider.
+- Mutable defaults: `GET /api/config`, `PATCH /api/config/stt`, and `PATCH /api/config/tts`. Changing the TTS default provider is only a fallback for providerless requests; it does not unload Chatterbox or Kokoro.
 - Reference audio upload: `POST /api/tts/reference-audio` with a WAV file forwarded by the Bear Castle AI gateway. The source can be a selected WAV file or a browser-recorded reference sample that Bear Castle encodes as a real WAV before upload.
 - Reference audio deletion: the supplied contract does not document a public delete route. Bear Castle AI can call descriptor-provided delete links from `/voices` when present and otherwise attempts the conservative modern fallback `DELETE /api/tts/reference-audio/:id`; if VoiceVM does not expose either shape, the UI reports deletion as unsupported instead of deleting files by path.
 
 The documented compatibility `GET /voices` route remains in use for voice/reference descriptors because the current contract lists descriptors there and the modern contract does not define a replacement listing route. Other compatibility routes (`/health`, `/gpu`, `/models`, `/speak`, `/transcribe`) are not primary integration targets in Bear Castle AI.
 
-Settings > Voice shows service health, STT/TTS worker status, GPU state, model catalogs, model load/unload controls, mutable default config, normalized voice/reference descriptors, and Bear Castle-managed loaded reference. Mutating voice controls are Eric/admin-only and CSRF-protected. Soft unload is exposed by default; hard unload/restart is intentionally not exposed in the UI because the voice VM contract notes that hard restarts require extra systemd privileges.
+Settings > Voice shows service health, STT worker status, the concurrent TTS provider registry, GPU state, provider-scoped model catalogs, provider-aware model load/unload/reload controls, mutable default config, normalized voice/reference descriptors, and Bear Castle-managed loaded Chatterbox reference. Kokoro is displayed as **Kokoro**. Mutating voice controls are Eric/admin-only and CSRF-protected. Soft unload is exposed by default; hard unload/restart is intentionally not exposed in the UI because the voice VM contract notes that hard restarts require extra systemd privileges.
+
+### Concurrent TTS providers
+
+Bear Castle AI treats TTS as a provider-keyed registry instead of a single global model slot. `GET {VOICE_BASE_URL}/api/services/tts` is normalized into entries for `chatterbox` and `kokoro`, each with its own reachability, state, model, voice, worker port, capabilities, and last error. Both providers can be reachable and loaded at the same time.
+
+The default TTS provider is used only when a request does not specify a provider. Speak-button and test-speech requests use the saved browser preference when one exists; otherwise the backend resolves the orchestration default. With `TTS_EXPLICIT_PROVIDER=true`, the backend sends `provider: "chatterbox"` or `provider: "kokoro"` to the voice appliance for the resolved request. The backend calls the public voice gateway at `POST {VOICE_BASE_URL}/api/tts/speak`; it never calls private worker ports such as `127.0.0.1:8001` or `127.0.0.1:8003` for normal runtime speech generation.
+
+Chatterbox TTS may receive reference-audio ids, reference-audio paths, and Chatterbox tuning fields. Kokoro receives provider-scoped voice, language, speed, and model fields, but Bear Castle AI strips Chatterbox reference-audio and tuning fields from Kokoro requests. If the selected provider fails, the default fallback policy is `fail`, so Bear Castle AI surfaces a provider-specific error instead of silently changing voices. Opt-in fallback policies can retry the configured default provider or the other provider without unloading either provider.
 
 ### Voice Reference Audio
 
@@ -200,7 +208,7 @@ Settings > Voice can upload WAV reference clips or record a new reference sample
 
 VoiceVM may store uploaded reference WAV files under generated safe filenames. The documented contract does not state that `POST /api/tts/reference-audio` preserves or returns the original upload filename, and `GET /voices` remains the descriptor source of truth. Bear Castle AI now keeps a durable sidecar metadata file at `storage/voice-reference-state.json` so future uploads continue to display the user-recognizable original filename or optional display name even when VoiceVM returns a generated stored filename. Generated/stored filenames remain secondary details such as “stored as reference_20260527_abc123.wav.” The sidecar stores metadata only, not uploaded audio. It is intentionally ignored by Git.
 
-The current documented VoiceVM contract does not expose a public set-active-reference route and documents `PATCH /api/config/tts` only for defaults such as `defaultModel` and `language`. It also documents that `POST /api/tts/speak` accepts a `voice` field. Bear Castle AI therefore implements reference loading app-side: admin users click **Load** on a listed `/voices` descriptor, the loaded descriptor id is persisted in `storage/voice-reference-state.json`, and future gateway `/api/speak` calls include that id as the VoiceVM `/api/tts/speak` `voice` field unless the caller explicitly supplies a different `voice`. If VoiceVM exposes an active/current flag and Bear Castle has no loaded reference yet, that active descriptor is shown as the loaded fallback. If Bear Castle has a loaded reference, it is the source of truth because it is the id sent to VoiceVM for future TTS. The UI shows one loaded reference with the highlighted reference card only; it no longer displays separate Active or Selected badges.
+The current documented VoiceVM contract does not expose a public set-active-reference route. `PATCH /api/config/tts` may update defaults such as `defaultProvider`, `defaultModel`, and `language`, but Bear Castle AI does not call it just to make one speech request use Kokoro or Chatterbox. `POST /api/tts/speak` accepts a provider and voice fields. Bear Castle AI therefore implements Chatterbox reference loading app-side: admin users click **Load** on a listed `/voices` descriptor, the loaded descriptor id is persisted in `storage/voice-reference-state.json`, and future Chatterbox `/api/speak` calls include that id as the VoiceVM `/api/tts/speak` `voice` and `referenceAudioId` unless the caller explicitly supplies a different `voice`. Kokoro requests do not receive Chatterbox reference-audio fields. If VoiceVM exposes an active/current flag and Bear Castle has no loaded reference yet, that active descriptor is shown as the loaded fallback. If Bear Castle has a loaded reference, it is the source of truth because it is the id sent to VoiceVM for future Chatterbox TTS. The UI shows one loaded reference with the highlighted reference card only; it no longer displays separate Active or Selected badges.
 
 Uploading a WAV reference with an optional display name only adds it to the reference list. Upload does not load the new reference and does not change the currently loaded reference. To use a newly uploaded clip for future TTS, click **Load** next to that clip after upload.
 
@@ -494,13 +502,22 @@ Text-to-speech uses the same `local-ai-voice` base URL. The browser never calls 
 
 ```env
 TTS_ENABLED=true
+TTS_DEFAULT_PROVIDER=chatterbox
+TTS_EXPLICIT_PROVIDER=true
+TTS_FALLBACK_POLICY=fail
+TTS_CHATTERBOX_ENABLED=true
+TTS_CHATTERBOX_DEFAULT_MODEL=chatterbox-turbo
+TTS_CHATTERBOX_DEFAULT_VOICE=default
+TTS_KOKORO_ENABLED=true
+TTS_KOKORO_DEFAULT_MODEL=kokoro-default
+TTS_KOKORO_DEFAULT_VOICE=af_heart
 TTS_TIMEOUT_MS=120000
 TTS_MAX_TEXT_CHARS=12000
 TTS_RATE_LIMIT_WINDOW_MS=60000
 TTS_RATE_LIMIT_MAX=20
 ```
 
-If `TTS_ENABLED=false`, the gateway rejects text-to-speech requests. `TTS_MAX_TEXT_CHARS` limits expensive requests and should stay reasonable for the voice VM. Legacy `TTS_DEFAULT_VOICE` and `TTS_DEFAULT_SPEED` environment values can remain in existing deployments, but Bear Castle AI now prefers the voice VM `/api/config` defaults and does not need to force a Kokoro-era voice id for ordinary TTS calls.
+If `TTS_ENABLED=false`, the gateway rejects text-to-speech requests. `TTS_DEFAULT_PROVIDER` must be `chatterbox` or `kokoro`; it is only used when the request or browser Speak preference does not choose a provider. `TTS_EXPLICIT_PROVIDER=true` makes Bear Castle AI send the resolved provider explicitly. `TTS_FALLBACK_POLICY=fail` preserves voice identity by default; `try-default-provider` and `try-other-provider` are opt-in and retry without unloading either provider. `TTS_MAX_TEXT_CHARS` limits expensive requests and should stay reasonable for the voice VM. Legacy `TTS_DEFAULT_VOICE` and `TTS_DEFAULT_SPEED` environment values can remain in existing deployments, but provider-specific defaults are preferred.
 
 If the voice/STT service returns a raw unpunctuated transcript, the gateway can optionally ask the configured local Ollama model to restore punctuation, capitalization, sentence boundaries, and paragraph breaks before appending the transcript to the input box. This is disabled by default to preserve the direct STT behavior and avoid an extra LLM call. Enable it only when needed:
 
@@ -762,9 +779,15 @@ Voice text-to-speech test:
 ```bash
 curl -X POST \
   -H "Content-Type: application/json" \
-  -d '{"text":"Hello from Bear Castle AI.","language":"en"}' \
+  -d '{"provider":"chatterbox","text":"Hello from Bear Castle AI with Chatterbox.","language":"en"}' \
   http://192.168.1.8:8000/api/tts/speak \
-  --output test.wav
+  --output chatterbox-test.wav
+
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"provider":"kokoro","text":"Hello from Bear Castle AI with Kokoro.","voice":"af_heart","language":"a","speed":1}' \
+  http://192.168.1.8:8000/api/tts/speak \
+  --output kokoro-test.wav
 ```
 
 Gateway unauthenticated health test:
@@ -1032,6 +1055,18 @@ scripts/restart.sh
 | `STORAGE_LOW_DISK_WARNING_BYTES` | `53687091200` | Warn in Settings when reported local-ai-llm available bytes are at or below this value. |
 | `VOICE_BASE_URL` | `http://192.168.1.8:8000` | local-ai-voice Node gateway base URL. Bear Castle AI targets modern `/api` routes under this URL and never calls worker-only ports. |
 | `VOICE_TIMEOUT_MS` | `300000` | General voice VM request timeout, including STT transcription and settings reads when a more specific timeout is not used. |
+| `TTS_ENABLED` | `true` | Enables authenticated text-to-speech generation through the Bear Castle AI gateway. |
+| `TTS_DEFAULT_PROVIDER` | `chatterbox` | Orchestration default provider for providerless requests. Valid values are `chatterbox` and `kokoro`. |
+| `TTS_EXPLICIT_PROVIDER` | `true` | Sends the resolved provider in `/api/tts/speak` requests when Bear Castle AI knows the intended provider. |
+| `TTS_FALLBACK_POLICY` | `fail` | Provider failure policy. Valid values are `fail`, `try-default-provider`, and `try-other-provider`; fallback never unloads providers. |
+| `TTS_CHATTERBOX_ENABLED` | `true` | Allows Chatterbox TTS requests through the gateway. |
+| `TTS_CHATTERBOX_DEFAULT_MODEL` | empty | Optional Chatterbox model sent when no request model is chosen. |
+| `TTS_CHATTERBOX_DEFAULT_VOICE` | empty | Optional Chatterbox voice sent when no request voice/reference is chosen. |
+| `TTS_KOKORO_ENABLED` | `true` | Allows Kokoro requests through the gateway. |
+| `TTS_KOKORO_DEFAULT_MODEL` | empty | Optional Kokoro model sent when no request model is chosen. |
+| `TTS_KOKORO_DEFAULT_VOICE` | empty | Optional Kokoro voice sent when no request voice is chosen. |
+| `TTS_TIMEOUT_MS` | `120000` | Per-request timeout for text-to-speech synthesis. |
+| `TTS_MAX_TEXT_CHARS` | `12000` | Maximum text length accepted by authenticated `/api/speak`. |
 | `TRANSCRIPT_FORMATTING_ENABLED` | `false` | Enable optional local-LLM cleanup for raw voice transcripts. |
 | `TRANSCRIPT_FORMATTING_TIMEOUT_MS` | `120000` | Timeout for optional transcript cleanup requests. |
 | `TRANSCRIPT_FORMATTING_MODEL` | empty | Optional Ollama model used for transcript cleanup. Blank or whitespace-only values use the current default LLM model at request time. |

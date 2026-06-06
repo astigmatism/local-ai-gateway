@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiClientError } from '../lib/api.js';
 import { normalizeTextForSpeech } from '../lib/speechText.js';
+import { hasTtsSpeechPreference, readTtsSpeechPreference } from '../lib/ttsPreferences.js';
 
 export type TextToSpeechMessageState = 'idle' | 'loading' | 'playing' | 'error';
 
@@ -11,8 +12,8 @@ interface SpeechErrorState {
 
 const errorMessageForSpeech = (error: unknown) => {
   if (error instanceof ApiClientError) {
-    if (error.status === 502 || error.status === 503) return 'The voice service is unavailable.';
-    if (error.status === 504) return 'The voice service timed out.';
+    if (error.status === 502 || error.status === 503) return error.message || 'The selected TTS provider is unavailable.';
+    if (error.status === 504) return error.message || 'The selected TTS provider timed out.';
     return error.message || 'Could not generate speech.';
   }
 
@@ -96,7 +97,9 @@ export const useTextToSpeechPlayback = (resetKey: string | null | undefined) => 
       setLoadingMessageId(messageId);
 
       try {
-        const audioBlob = await api.speakText(speechText, { signal: controller.signal });
+        const preference = readTtsSpeechPreference();
+        const speechOptions = hasTtsSpeechPreference() ? preference : { speed: preference.speed };
+        const audioBlob = await api.speakText(speechText, { ...speechOptions, signal: controller.signal });
         if (abortControllerRef.current === controller) abortControllerRef.current = null;
         if (controller.signal.aborted || requestIdRef.current !== requestId) return;
 

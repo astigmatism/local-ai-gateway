@@ -2718,6 +2718,120 @@ textarea {
   margin-top: 0.25rem;
 }
 
+.tts-provider-registry-panel {
+  margin: 1rem 0;
+}
+
+.tts-provider-registry,
+.tts-provider-model-groups {
+  display: grid;
+  gap: 0.85rem;
+  padding: 0.85rem;
+}
+
+.tts-provider-registry {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.tts-provider-card,
+.tts-provider-model-group {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 1rem;
+  background: rgba(15, 23, 42, 0.42);
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.9rem;
+}
+
+.tts-provider-card.loaded {
+  border-color: rgba(74, 222, 128, 0.4);
+}
+
+.tts-provider-card.unreachable {
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+.tts-provider-card-header,
+.tts-provider-model-group-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.tts-provider-card-header h4 {
+  margin: 0;
+}
+
+.tts-provider-card-header small,
+.tts-provider-model-group-header small {
+  color: var(--muted);
+}
+
+.tts-provider-facts {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  margin: 0;
+}
+
+.tts-provider-facts div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.tts-provider-facts dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.tts-provider-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.tts-capability-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.tts-capability-list span {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  padding: 0.18rem 0.55rem;
+}
+
+.tts-speech-preference-panel {
+  margin-top: 1rem;
+}
+
+.voice-control-panel select,
+.voice-control-panel textarea,
+.voice-reference-upload select {
+  width: 100%;
+}
+
+.inline-field {
+  flex: 1 1 160px;
+}
+
+.inline-field input {
+  margin-top: 0.35rem;
+}
+
+.voice-reference-panel.disabled {
+  opacity: 0.82;
+}
+
+.compact-warning {
+  display: block;
+  margin: 0;
+}
+
 .voice-reference-panel {
   margin-top: 1rem;
 }

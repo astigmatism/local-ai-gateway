@@ -226,7 +226,7 @@ describe('api client text-to-speech requests', () => {
     vi.stubGlobal('fetch', fetchMock);
     api.setCsrfToken('csrf-token');
 
-    const result = await api.speakText('Hello from Bear Castle AI.', { voice: 'af_heart', speed: 1 });
+    const result = await api.speakText('Hello from Bear Castle AI.', { provider: 'kokoro', voice: 'af_heart', speed: 1 });
 
     expect(result.type).toBe('audio/wav');
     expect(fetchMock).toHaveBeenCalledWith(
@@ -240,11 +240,46 @@ describe('api client text-to-speech requests', () => {
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-token');
     expect(new Headers(init.headers).get('Content-Type')).toBe('application/json');
+    expect(new Headers(init.headers).get('Accept')).toBe('audio/wav');
     expect(JSON.parse(init.body as string)).toEqual({
+      provider: 'kokoro',
       text: 'Hello from Bear Castle AI.',
       voice: 'af_heart',
       speed: 1
     });
+    expect(fetchMock.mock.calls.map((call) => String(call[0]))).not.toContain('/api/settings/voice/models/tts/unload');
+  });
+
+  it('passes explicit Chatterbox provider and reference audio IDs for speech requests', async () => {
+    const { api } = await loadApi();
+    const audioBlob = new Blob(['RIFF'], { type: 'audio/wav' });
+    const fetchMock = vi.fn(async () =>
+      new Response(audioBlob, {
+        status: 200,
+        headers: {
+          'Content-Type': 'audio/wav'
+        }
+      })
+    );
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.speakText('Hello from Chatterbox.', {
+      provider: 'chatterbox',
+      referenceAudioId: 'speaker-profile-001',
+      language: 'en',
+      speed: 1
+    });
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      provider: 'chatterbox',
+      text: 'Hello from Chatterbox.',
+      referenceAudioId: 'speaker-profile-001',
+      language: 'en',
+      speed: 1
+    });
+    expect(fetchMock.mock.calls.map((call) => String(call[0]))).not.toContain('/api/settings/voice/models/tts/unload');
   });
 
   it('surfaces JSON errors from the speech endpoint', async () => {
