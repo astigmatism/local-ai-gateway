@@ -134,8 +134,8 @@ export const createApp = () => {
 
   app.use('/api', requireAuth, csrfProtection);
   app.use('/api/admin/users', requirePasswordChangeCompleted, requireAdmin, adminUsersRouter);
-  app.use('/api/users', requirePasswordChangeCompleted, requireAdmin, usersRouter);
   app.use('/api', requirePasswordChangeCompleted, conversationsRouter);
+  app.use('/api/users', requirePasswordChangeCompleted, requireAdmin, usersRouter);
   app.use('/api/status', requirePasswordChangeCompleted, statusRouter);
   app.use('/api/settings/models', requirePasswordChangeCompleted, settingsModelsRouter);
   app.use('/api/settings/voice', requirePasswordChangeCompleted, settingsVoiceRouter);

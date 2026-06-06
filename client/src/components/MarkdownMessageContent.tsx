@@ -13,12 +13,7 @@ export const MarkdownMessageContent = ({ content }: MarkdownMessageContentProps)
       a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
       pre: ({ node: _node, ...props }) => <pre {...props} tabIndex={0} />,
       table: ({ node: _node, ...props }) => (
-        <div
-          className="markdown-scroll-container markdown-table-scroll"
-          role="region"
-          aria-label="Scrollable table"
-          tabIndex={0}
-        >
+        <div className="markdown-table-scroll" role="region" aria-label="Scrollable table" tabIndex={0}>
           <table {...props} />
         </div>
       )

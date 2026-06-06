@@ -704,10 +704,10 @@ export const App = () => {
     [updateLayout]
   );
 
-  const loadConversations = useCallback(async (userId: string) => {
+  const loadConversations = useCallback(async () => {
     setLoadingConversations(true);
     try {
-      const response = await api.listConversations(userId);
+      const response = await api.listConversations();
       setConversations(response.conversations);
     } catch (loadError) {
       if (!(loadError instanceof ApiClientError && loadError.status === 401)) {
@@ -815,7 +815,7 @@ export const App = () => {
       return;
     }
 
-    void loadConversations(activeUserId);
+    void loadConversations();
   }, [activeUserId, loadConversations, mustChangePassword]);
 
   useEffect(() => {
@@ -885,7 +885,7 @@ export const App = () => {
     setError(null);
     setOptimisticConversation(null);
     setOptimisticMessages([]);
-    const response = await api.createConversation(activeUserId);
+    const response = await api.createConversation();
     setConversations((current) => upsertConversationSummary(current, response.conversation));
     setActiveConversationId(response.conversation.id);
     setDraft('');
@@ -904,7 +904,7 @@ export const App = () => {
       cancelScheduledTitleGeneration(conversation.id);
 
       try {
-        await api.deleteConversation(activeUserId, conversation.id);
+        await api.deleteConversation(conversation.id);
         setConversations((current) => current.filter((item) => item.id !== conversation.id));
 
         if (activeConversationId === conversation.id || optimisticConversation?.id === conversation.id) {
@@ -916,7 +916,7 @@ export const App = () => {
         }
       } catch (deleteError) {
         setError(`Delete failed: ${errorMessage(deleteError)}`);
-        void loadConversations(activeUserId);
+        void loadConversations();
       } finally {
         setDeletingConversationId(null);
       }
@@ -1004,7 +1004,7 @@ export const App = () => {
 
     try {
       if (!conversationId) {
-        const createResponse = await api.createConversation(activeUserId);
+        const createResponse = await api.createConversation();
         createdConversation = createResponse.conversation;
         conversationId = createResponse.conversation.id;
         setActiveConversationId(createResponse.conversation.id);
@@ -1178,7 +1178,7 @@ export const App = () => {
       }
 
       if (conversationId) void loadConversation(conversationId);
-      if (activeUserId) void loadConversations(activeUserId);
+      if (activeUserId) void loadConversations();
     } finally {
       if (activeSendAbortRef.current === abortController) {
         activeSendAbortRef.current = null;

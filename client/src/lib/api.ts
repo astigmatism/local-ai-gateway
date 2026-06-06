@@ -439,23 +439,20 @@ export const api = {
     return jsonRequest<{ user: AdminUser }>(`/api/admin/users/${userId}/reset-password`, 'POST');
   },
 
-  async listConversations(userId: string) {
-    return request<{ conversations: ConversationSummary[] }>(`/api/users/${userId}/conversations`);
+  async listConversations() {
+    return request<{ conversations: ConversationSummary[] }>('/api/conversations');
   },
 
-  async createConversation(userId: string, title?: string) {
-    return jsonRequest<{ conversation: ConversationSummary }>(`/api/users/${userId}/conversations`, 'POST', { title });
+  async createConversation(title?: string) {
+    return jsonRequest<{ conversation: ConversationSummary }>('/api/conversations', 'POST', { title });
   },
 
   async getConversation(conversationId: string) {
     return request<{ conversation: Conversation }>(`/api/conversations/${conversationId}`);
   },
 
-  async deleteConversation(userId: string, conversationId: string) {
-    return jsonRequest<{ conversation: ConversationSummary }>(
-      `/api/users/${userId}/conversations/${conversationId}`,
-      'DELETE'
-    );
+  async deleteConversation(conversationId: string) {
+    return jsonRequest<{ conversation: ConversationSummary }>(`/api/conversations/${conversationId}`, 'DELETE');
   },
 
   async sendMessage(conversationId: string, content: string) {

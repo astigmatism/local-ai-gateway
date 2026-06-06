@@ -433,16 +433,48 @@ const generateAndSaveConversationTitle = async (
   };
 };
 
+const listConversationsForUser = (userId: string) =>
+  prisma.conversation.findMany({
+    where: { userId, archived: false },
+    orderBy: { updatedAt: 'desc' },
+    include: conversationSummaryInclude
+  });
+
+const createConversationForUser = (userId: string, title?: string) =>
+  prisma.conversation.create({
+    data: {
+      userId,
+      title: title || 'New conversation'
+    },
+    include: conversationSummaryInclude
+  });
+
+conversationsRouter.get(
+  '/conversations',
+  asyncHandler(async (req, res) => {
+    const userId = currentUserId(req);
+    const conversations = await listConversationsForUser(userId);
+
+    res.json({ conversations });
+  })
+);
+
+conversationsRouter.post(
+  '/conversations',
+  asyncHandler(async (req, res) => {
+    const userId = currentUserId(req);
+    const body = createConversationSchema.parse(req.body ?? {});
+    const conversation = await createConversationForUser(userId, body.title);
+
+    res.status(201).json({ conversation });
+  })
+);
+
 conversationsRouter.get(
   '/users/:userId/conversations',
   asyncHandler(async (req, res) => {
     const userId = parseOwnUserParam(req);
-
-    const conversations = await prisma.conversation.findMany({
-      where: { userId, archived: false },
-      orderBy: { updatedAt: 'desc' },
-      include: conversationSummaryInclude
-    });
+    const conversations = await listConversationsForUser(userId);
 
     res.json({ conversations });
   })
@@ -453,14 +485,7 @@ conversationsRouter.post(
   asyncHandler(async (req, res) => {
     const userId = parseOwnUserParam(req);
     const body = createConversationSchema.parse(req.body ?? {});
-
-    const conversation = await prisma.conversation.create({
-      data: {
-        userId,
-        title: body.title || 'New conversation'
-      },
-      include: conversationSummaryInclude
-    });
+    const conversation = await createConversationForUser(userId, body.title);
 
     res.status(201).json({ conversation });
   })

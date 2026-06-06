@@ -150,6 +150,66 @@ describe('api client authentication errors', () => {
   });
 });
 
+describe('api client conversation routes', () => {
+  it('uses authenticated conversation endpoints instead of admin-only user-management endpoints', async () => {
+    const { api } = await loadApi();
+    const conversationId = '22222222-2222-4222-8222-222222222222';
+    const conversation = {
+      id: conversationId,
+      userId: '11111111-1111-4111-8111-111111111111',
+      title: 'New conversation',
+      archived: false,
+      createdAt: '2026-05-29T12:00:00.000Z',
+      updatedAt: '2026-05-29T12:00:00.000Z',
+      messages: [],
+      _count: { messages: 0 }
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const method = init?.method ?? 'GET';
+
+      if (path === '/api/conversations' && method === 'GET') {
+        return new Response(JSON.stringify({ conversations: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (path === '/api/conversations' && method === 'POST') {
+        return new Response(JSON.stringify({ conversation }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (path === `/api/conversations/${conversationId}` && method === 'DELETE') {
+        return new Response(JSON.stringify({ conversation: { ...conversation, archived: true } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      return new Response(JSON.stringify({ error: { code: 'UNEXPECTED_ROUTE', message: path } }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    await expect(api.listConversations()).resolves.toEqual({ conversations: [] });
+    await expect(api.createConversation()).resolves.toEqual({ conversation });
+    await expect(api.deleteConversation(conversationId)).resolves.toEqual({
+      conversation: { ...conversation, archived: true }
+    });
+
+    const paths = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(paths).toEqual(['/api/conversations', '/api/conversations', `/api/conversations/${conversationId}`]);
+    expect(paths.some((path) => path.startsWith('/api/users/'))).toBe(false);
+  });
+});
+
 describe('api client text-to-speech requests', () => {
   it('requests speech audio through the gateway with CSRF and returns the WAV blob', async () => {
     const { api } = await loadApi();
