@@ -16,9 +16,9 @@ else
 fi
 
 if [ -f package-lock.json ]; then
-  npm ci --include=dev
+  npm ci --omit=
 else
-  npm install --include=dev
+  npm install --omit=
 fi
 
 npm run db:generate
