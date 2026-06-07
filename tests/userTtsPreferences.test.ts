@@ -204,6 +204,38 @@ describe('TTS preference validation', () => {
     });
   });
 
+  it('accepts the Kokoro canonical default when the appliance model catalog uses a provider alias', async () => {
+    const { parseUserTtsPreferencePatch } = await loadPreferenceService();
+
+    expect(
+      parseUserTtsPreferencePatch(
+        { provider: 'kokoro', kokoro: { model: 'kokoro-default', voice: 'af_heart' } },
+        { chatterbox: ['chatterbox-turbo'], kokoro: ['kokoro'] }
+      )
+    ).toMatchObject({
+      provider: 'kokoro',
+      kokoro: { model: 'kokoro-default', voice: 'af_heart' }
+    });
+  });
+
+  it('includes provider current/default models in model-catalog validation options', async () => {
+    const { knownTtsModelOptionsFromCatalog } = await loadPreferenceService();
+
+    const options = knownTtsModelOptionsFromCatalog({
+      kind: 'tts',
+      worker: null,
+      models: [],
+      providers: {
+        chatterbox: { provider: 'chatterbox', currentModel: 'chatterbox-turbo', worker: null, models: [] },
+        kokoro: { provider: 'kokoro', currentModel: 'kokoro-default', worker: null, models: [] }
+      },
+      raw: {}
+    });
+
+    expect(options.chatterbox).toContain('chatterbox-turbo');
+    expect(options.kokoro).toContain('kokoro-default');
+  });
+
   it('validates speed range and provider-scoped model catalogs', async () => {
     const { parseUserTtsPreferencePatch } = await loadPreferenceService();
 

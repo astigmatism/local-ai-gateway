@@ -244,9 +244,29 @@ export const normalizeUserTtsPreference = (value: unknown, updatedAt?: string): 
   });
 };
 
+const uniqueStrings = (values: Array<string | undefined>) => {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    unique.push(trimmed);
+  }
+  return unique;
+};
+
 const modelValuesForProvider = (catalog: VoiceModelCatalogResponse | null | undefined, provider: TtsProviderId) => {
-  const scopedModels = catalog?.providers?.[provider]?.models ?? catalog?.models.filter((model) => model.provider === provider) ?? [];
-  return scopedModels.flatMap((model: VoiceModelDescriptor) => [model.model, model.name, model.id]).filter((value): value is string => Boolean(value));
+  const providerCatalog = catalog?.providers?.[provider];
+  const scopedModels = providerCatalog?.models ?? catalog?.models?.filter((model) => model.provider === provider) ?? [];
+
+  return uniqueStrings([
+    providerCatalog?.currentModel,
+    providerCatalog?.defaultModel,
+    providerCatalog?.activeModel,
+    providerCatalog?.loadedModel,
+    ...scopedModels.flatMap((model: VoiceModelDescriptor) => [model.model, model.name, model.id])
+  ]);
 };
 
 export const knownTtsModelOptionsFromCatalog = (catalog: VoiceModelCatalogResponse | null | undefined): KnownTtsModelOptions => ({
@@ -254,16 +274,20 @@ export const knownTtsModelOptionsFromCatalog = (catalog: VoiceModelCatalogRespon
   kokoro: modelValuesForProvider(catalog, 'kokoro')
 });
 
+const canonicalModelFallbacks = (provider: TtsProviderId) =>
+  uniqueStrings([providerDefaults(provider).defaultModel, provider === 'kokoro' ? 'kokoro-default' : undefined]);
+
 const validateKnownModel = (provider: TtsProviderId, model: string | undefined, knownModels?: KnownTtsModelOptions) => {
   if (!model) return;
   const allowed = knownModels?.[provider];
   if (!allowed || allowed.length === 0) return;
-  if (!allowed.includes(model)) {
+  const normalizedAllowed = uniqueStrings([...allowed, ...canonicalModelFallbacks(provider)]);
+  if (!normalizedAllowed.includes(model)) {
     throw new ApiError(
       400,
       `${provider === 'kokoro' ? 'Kokoro' : 'Chatterbox TTS'} model ${model} is not in the reported provider model catalog.`,
       'TTS_PREFERENCE_MODEL_UNSUPPORTED',
-      { provider, model, allowedModels: allowed }
+      { provider, model, allowedModels: normalizedAllowed }
     );
   }
 };
