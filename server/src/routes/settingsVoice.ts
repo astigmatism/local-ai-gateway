@@ -28,6 +28,12 @@ import {
   updateVoiceTtsConfig
 } from '../services/voiceClient.js';
 import {
+  getUserTtsPreference,
+  knownTtsModelOptionsFromCatalog,
+  updateUserTtsPreference,
+  type KnownTtsModelOptions
+} from '../services/userTtsPreferenceService.js';
+import {
   deleteVoiceReference,
   getVoiceReferences,
   selectVoiceReference,
@@ -134,6 +140,21 @@ const readReferenceFile = (files: Express.Multer.File[] | Record<string, Express
   return files?.reference_audio?.[0] ?? files?.file?.[0];
 };
 
+
+const requireAuthenticatedUserId = (req: { auth?: { user?: { id?: string } } }) => {
+  const userId = req.auth?.user?.id;
+  if (!userId) throw new ApiError(401, 'Authentication required.', 'AUTH_REQUIRED');
+  return userId;
+};
+
+const getKnownTtsModelOptions = async (): Promise<KnownTtsModelOptions | undefined> => {
+  try {
+    return knownTtsModelOptionsFromCatalog(await getVoiceTtsModels());
+  } catch {
+    return undefined;
+  }
+};
+
 const voiceSettingErrorMessage = (error: unknown) => {
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
@@ -167,6 +188,22 @@ settingsVoiceRouter.get(
   '/',
   asyncHandler(async (_req, res) => {
     res.json(await getVoiceOverviewWithReferences());
+  })
+);
+
+
+settingsVoiceRouter.get(
+  '/preference',
+  asyncHandler(async (req, res) => {
+    res.json(await getUserTtsPreference(requireAuthenticatedUserId(req)));
+  })
+);
+
+settingsVoiceRouter.patch(
+  '/preference',
+  asyncHandler(async (req, res) => {
+    const knownModels = await getKnownTtsModelOptions();
+    res.json(await updateUserTtsPreference(requireAuthenticatedUserId(req), req.body ?? {}, knownModels));
   })
 );
 

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiClientError } from '../lib/api.js';
 import { normalizeTextForSpeech } from '../lib/speechText.js';
-import { hasTtsSpeechPreference, readTtsSpeechPreference } from '../lib/ttsPreferences.js';
 
 export type TextToSpeechMessageState = 'idle' | 'loading' | 'playing' | 'error';
 
@@ -97,9 +96,7 @@ export const useTextToSpeechPlayback = (resetKey: string | null | undefined) => 
       setLoadingMessageId(messageId);
 
       try {
-        const preference = readTtsSpeechPreference();
-        const speechOptions = hasTtsSpeechPreference() ? preference : { speed: preference.speed };
-        const audioBlob = await api.speakText(speechText, { ...speechOptions, signal: controller.signal });
+        const audioBlob = await api.speakText(speechText, { signal: controller.signal });
         if (abortControllerRef.current === controller) abortControllerRef.current = null;
         if (controller.signal.aborted || requestIdRef.current !== requestId) return;
 

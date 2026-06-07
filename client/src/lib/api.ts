@@ -21,6 +21,8 @@ import type {
   StatusResponse,
   TranscribeResponse,
   TtsProviderId,
+  UserTtsPreference,
+  UserTtsPreferencePatch,
   UnloadTtsModelRequest,
   UnloadVoiceModelRequest,
   UpdateSttConfigRequest,
@@ -552,6 +554,14 @@ export const api = {
 
   async getVoiceOverview() {
     return request<VoiceOverviewResponse>('/api/settings/voice');
+  },
+
+  async getVoiceTtsPreference() {
+    return request<UserTtsPreference>('/api/settings/voice/preference');
+  },
+
+  async updateVoiceTtsPreference(body: UserTtsPreferencePatch) {
+    return jsonRequest<UserTtsPreference>('/api/settings/voice/preference', 'PATCH', body);
   },
 
   async getVoiceHealth() {

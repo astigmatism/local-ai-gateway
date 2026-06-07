@@ -7,6 +7,7 @@ import { ApiError } from '../errors/apiError.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { speakText, type TtsProviderId, type VoiceSpeechOptions } from '../services/voiceClient.js';
 import { getSelectedVoiceReferenceIdForTts } from '../services/voiceReferenceService.js';
+import { getUserTtsPreference, type UserTtsPreference } from '../services/userTtsPreferenceService.js';
 
 export const speakRouter = Router();
 
@@ -137,8 +138,11 @@ const parseSpeakRequest = (body: unknown): ParsedSpeakRequest => {
 
 const providerEnabled = (provider: TtsProviderId) => config.tts.providers[provider].enabled;
 
-const resolveRequestProvider = (requestedProvider: TtsProviderId | undefined): TtsProviderId | undefined =>
-  requestedProvider ?? (config.tts.explicitProvider ? config.tts.defaultProvider : undefined);
+const resolveRequestProvider = (
+  requestedProvider: TtsProviderId | undefined,
+  userPreference: UserTtsPreference
+): TtsProviderId | undefined =>
+  requestedProvider ?? userPreference.provider ?? (config.tts.explicitProvider ? config.tts.defaultProvider : undefined);
 
 const resolveFallbackProvider = (provider: TtsProviderId | undefined): TtsProviderId | undefined => {
   if (!provider || config.tts.fallbackPolicy === 'fail') return undefined;
@@ -176,34 +180,64 @@ const safeErrorForLog = (error: unknown) => {
 const buildSpeechOptions = (
   body: ParsedSpeakRequest,
   provider: TtsProviderId | undefined,
+  userPreference: UserTtsPreference,
   selectedReferenceId: string | undefined,
   fallbackUsed: boolean
 ): VoiceSpeechOptions => {
   const providerDefaults = provider ? config.tts.providers[provider] : undefined;
+  const providerPreference = provider ? userPreference[provider] : undefined;
   const isChatterbox = provider === 'chatterbox' || (!provider && config.tts.defaultProvider === 'chatterbox');
   const useChatterboxReference = isChatterbox && !fallbackUsed;
 
+  if (provider === 'kokoro') {
+    return {
+      provider,
+      text: body.text,
+      voice: fallbackUsed ? providerDefaults?.defaultVoice : body.voice ?? providerPreference?.voice ?? providerDefaults?.defaultVoice,
+      speed: body.speed ?? providerPreference?.speed ?? config.tts.defaultSpeed,
+      language: body.language ?? providerPreference?.language ?? 'a',
+      model: fallbackUsed ? providerDefaults?.defaultModel : body.model ?? providerPreference?.model ?? providerDefaults?.defaultModel,
+      format: body.format,
+      metadata: body.metadata,
+      timeoutMs: config.tts.timeoutMs
+    };
+  }
+
+  const chatterboxPreference = userPreference.chatterbox;
   return {
     provider,
     text: body.text,
-    voice: fallbackUsed ? providerDefaults?.defaultVoice : body.voice ?? selectedReferenceId ?? providerDefaults?.defaultVoice,
-    speed: body.speed,
-    language: body.language,
-    model: fallbackUsed ? providerDefaults?.defaultModel : body.model ?? providerDefaults?.defaultModel,
+    voice: fallbackUsed
+      ? providerDefaults?.defaultVoice
+      : body.voice ?? chatterboxPreference.voice ?? selectedReferenceId ?? providerDefaults?.defaultVoice,
+    speed: body.speed ?? chatterboxPreference.speed ?? config.tts.defaultSpeed,
+    language: body.language ?? chatterboxPreference.language ?? 'en',
+    model: fallbackUsed ? providerDefaults?.defaultModel : body.model ?? chatterboxPreference.model ?? providerDefaults?.defaultModel,
     format: body.format,
     metadata: body.metadata,
     timeoutMs: config.tts.timeoutMs,
-    exaggeration: useChatterboxReference ? body.exaggeration : undefined,
-    cfgWeight: useChatterboxReference ? body.cfgWeight : undefined,
-    temperature: useChatterboxReference ? body.temperature : undefined,
-    referenceAudioId: useChatterboxReference ? body.referenceAudioId ?? selectedReferenceId : undefined,
-    referenceAudioPath: useChatterboxReference ? body.referenceAudioPath : undefined
+    exaggeration: useChatterboxReference ? body.exaggeration ?? chatterboxPreference.exaggeration : undefined,
+    cfgWeight: useChatterboxReference ? body.cfgWeight ?? chatterboxPreference.cfgWeight : undefined,
+    temperature: useChatterboxReference ? body.temperature ?? chatterboxPreference.temperature : undefined,
+    referenceAudioId: useChatterboxReference
+      ? body.referenceAudioId ?? chatterboxPreference.referenceAudioId ?? selectedReferenceId
+      : undefined,
+    referenceAudioPath: useChatterboxReference ? body.referenceAudioPath ?? chatterboxPreference.referenceAudioPath ?? undefined : undefined
   };
 };
 
-const selectedReferenceForProvider = async (body: ParsedSpeakRequest, provider: TtsProviderId | undefined, fallbackUsed: boolean) => {
+const selectedReferenceForProvider = async (
+  body: ParsedSpeakRequest,
+  provider: TtsProviderId | undefined,
+  userPreference: UserTtsPreference,
+  fallbackUsed: boolean
+) => {
   const referenceProvider = provider ?? config.tts.defaultProvider;
-  if (referenceProvider !== 'chatterbox' || fallbackUsed || body.voice || body.referenceAudioId || body.referenceAudioPath) return undefined;
+  if (referenceProvider !== 'chatterbox' || fallbackUsed) return undefined;
+  if (body.voice || body.referenceAudioId || body.referenceAudioPath) return undefined;
+  if (userPreference.chatterbox.voice || userPreference.chatterbox.referenceAudioId || userPreference.chatterbox.referenceAudioPath) {
+    return undefined;
+  }
   return getSelectedVoiceReferenceIdForTts();
 };
 
@@ -225,15 +259,22 @@ speakRouter.post(
     }
 
     const body = parseSpeakRequest(req.body);
+    const userPreference = await getUserTtsPreference(req.auth.user.id);
     const requestedProvider = body.provider;
-    const selectedProvider = resolveRequestProvider(requestedProvider);
+    const selectedProvider = resolveRequestProvider(requestedProvider, userPreference);
     if (selectedProvider && !providerEnabled(selectedProvider)) {
       throw new ApiError(403, `Text-to-speech provider ${selectedProvider} is disabled.`, 'TTS_PROVIDER_DISABLED');
     }
+    if (selectedProvider === 'kokoro' && (body.referenceAudioId || body.referenceAudioPath)) {
+      throw new ApiError(400, 'Kokoro does not support Chatterbox reference audio.', 'TTS_REFERENCE_AUDIO_UNSUPPORTED');
+    }
 
+    const speechLogState: { lastSpeechOptions?: VoiceSpeechOptions } = {};
     const speakWithProvider = async (provider: TtsProviderId | undefined, fallbackUsed: boolean) => {
-      const selectedReferenceId = await selectedReferenceForProvider(body, provider, fallbackUsed);
-      return speakText(buildSpeechOptions(body, provider, selectedReferenceId, fallbackUsed));
+      const selectedReferenceId = await selectedReferenceForProvider(body, provider, userPreference, fallbackUsed);
+      const speechOptions = buildSpeechOptions(body, provider, userPreference, selectedReferenceId, fallbackUsed);
+      speechLogState.lastSpeechOptions = speechOptions;
+      return speakText(speechOptions);
     };
 
     const startedAt = Date.now();
@@ -252,6 +293,8 @@ speakRouter.post(
             requestId: requestIdForLog(req),
             provider: selectedProvider ?? 'default',
             requestedProvider: requestedProvider ?? null,
+            resolvedProvider: selectedProvider ?? null,
+            userId: req.auth.user.id,
             fallbackPolicy: config.tts.fallbackPolicy,
             textLength: body.text.length,
             error: safeErrorForLog(error)
@@ -266,6 +309,9 @@ speakRouter.post(
           event: 'tts.speak.fallback',
           requestId: requestIdForLog(req),
           provider: selectedProvider,
+          requestedProvider: requestedProvider ?? null,
+          resolvedProvider: selectedProvider ?? null,
+          userId: req.auth.user.id,
           fallbackProvider,
           fallbackPolicy: config.tts.fallbackPolicy,
           textLength: body.text.length,
@@ -301,10 +347,12 @@ speakRouter.post(
         requestId: requestIdForLog(req),
         provider: responseProvider ?? 'default',
         requestedProvider: requestedProvider ?? null,
-        voice: body.voice,
-        model: body.model,
-        language: body.language,
-        speed: body.speed,
+        resolvedProvider: responseProvider ?? null,
+        userId: req.auth.user.id,
+        voice: speechLogState.lastSpeechOptions?.voice ?? body.voice,
+        model: speechLogState.lastSpeechOptions?.model ?? body.model,
+        language: speechLogState.lastSpeechOptions?.language ?? body.language,
+        speed: speechLogState.lastSpeechOptions?.speed ?? body.speed,
         textLength: body.text.length,
         status: 200,
         durationMs: Date.now() - startedAt,

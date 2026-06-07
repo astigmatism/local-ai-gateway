@@ -282,6 +282,82 @@ describe('api client text-to-speech requests', () => {
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).not.toContain('/api/settings/voice/models/tts/unload');
   });
 
+
+
+  it('reads and updates the authenticated user TTS preference through Settings > Voice endpoints', async () => {
+    const { api } = await loadApi();
+    const preference = {
+      provider: 'kokoro',
+      chatterbox: {
+        model: 'chatterbox-turbo',
+        language: 'en',
+        speed: 1
+      },
+      kokoro: {
+        model: 'kokoro-default',
+        voice: 'af_heart',
+        language: 'a',
+        speed: 1
+      },
+      updatedAt: '2026-06-06T00:00:00.000Z'
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const method = init?.method ?? 'GET';
+      if (path === '/api/settings/voice/preference' && method === 'GET') {
+        return new Response(JSON.stringify(preference), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (path === '/api/settings/voice/preference' && method === 'PATCH') {
+        return new Response(JSON.stringify({ ...preference, provider: 'chatterbox' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ error: { code: 'UNEXPECTED_ROUTE', message: path } }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+    api.setCsrfToken('csrf-token');
+
+    await expect(api.getVoiceTtsPreference()).resolves.toEqual(preference);
+    await expect(
+      api.updateVoiceTtsPreference({
+        provider: 'chatterbox',
+        chatterbox: {
+          model: 'chatterbox-turbo',
+          referenceAudioId: 'speaker-profile-001'
+        }
+      })
+    ).resolves.toMatchObject({ provider: 'chatterbox' });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/settings/voice/preference',
+      expect.objectContaining({ credentials: 'include', method: 'GET' })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/settings/voice/preference',
+      expect.objectContaining({ credentials: 'include', method: 'PATCH' })
+    );
+
+    const patchInit = fetchMock.mock.calls[1]?.[1] as RequestInit;
+    expect(new Headers(patchInit.headers).get('X-CSRF-Token')).toBe('csrf-token');
+    expect(JSON.parse(patchInit.body as string)).toEqual({
+      provider: 'chatterbox',
+      chatterbox: {
+        model: 'chatterbox-turbo',
+        referenceAudioId: 'speaker-profile-001'
+      }
+    });
+  });
+
   it('surfaces JSON errors from the speech endpoint', async () => {
     const { api } = await loadApi();
     const fetchMock = vi.fn(

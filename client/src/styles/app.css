@@ -3608,3 +3608,49 @@ body.mobile-panel-open {
 .mobile-chat-panel .generated-image-links {
   gap: 0.6rem;
 }
+
+.tts-provider-choice-group,
+.provider-preference-fields {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.tts-provider-choice-group {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.tts-provider-choice {
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 1rem;
+  background: rgba(15, 23, 42, 0.48);
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.85rem 0.95rem;
+  text-align: left;
+}
+
+.tts-provider-choice:hover:not(:disabled),
+.tts-provider-choice:focus-visible:not(:disabled) {
+  border-color: rgba(125, 211, 252, 0.65);
+  outline: none;
+}
+
+.tts-provider-choice.selected {
+  border-color: rgba(74, 222, 128, 0.46);
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.tts-provider-choice small,
+.settings-readonly-value {
+  color: var(--muted);
+}
+
+.settings-readonly-value {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 0.75rem;
+  background: rgba(15, 23, 42, 0.36);
+  padding: 0.72rem 0.8rem;
+  overflow-wrap: anywhere;
+}

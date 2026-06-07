@@ -1,14 +1,10 @@
-import type { TtsProviderId } from './types.js';
-
-export interface TtsSpeechPreference {
-  provider: TtsProviderId;
-  voice?: string;
-  model?: string;
-  language?: string;
-  speed?: number;
-}
-
-const storageKey = 'bearCastleAi.ttsSpeechPreference.v1';
+import type {
+  ChatterboxTtsPreference,
+  KokoroTtsPreference,
+  TtsProviderId,
+  UserTtsPreference,
+  UserTtsPreferencePatch
+} from './types.js';
 
 export const ttsProviderOptions = ['chatterbox', 'kokoro'] as const satisfies readonly TtsProviderId[];
 
@@ -25,67 +21,101 @@ const normalizeTtsProviderId = (value: unknown): TtsProviderId | undefined => {
 
 export const isTtsProviderId = (value: unknown): value is TtsProviderId => normalizeTtsProviderId(value) !== undefined;
 
-export const defaultTtsSpeechPreference: TtsSpeechPreference = {
-  provider: 'chatterbox',
-  speed: 1
-};
-
-const browserStorage = () => {
-  if (typeof window === 'undefined') return null;
-  try {
-    return window.localStorage;
-  } catch {
-    return null;
-  }
-};
-
 const cleanString = (value: unknown) => {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed || undefined;
 };
 
-const cleanSpeed = (value: unknown) => {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
-  if (value < 0.25 || value > 4) return undefined;
-  return value;
+const cleanNullableString = (value: unknown) => (value === null ? null : cleanString(value));
+
+const cleanNumber = (value: unknown, fallback?: number) => {
+  const parsed = typeof value === 'string' && value.trim() ? Number(value) : value;
+  if (typeof parsed !== 'number' || !Number.isFinite(parsed) || parsed < 0.25 || parsed > 4) return fallback;
+  return parsed;
 };
 
-const normalizePreference = (value: unknown): TtsSpeechPreference => {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return defaultTtsSpeechPreference;
-  const record = value as Record<string, unknown>;
-  const provider = normalizeTtsProviderId(record.provider) ?? defaultTtsSpeechPreference.provider;
-  return {
-    provider,
-    voice: cleanString(record.voice),
-    model: cleanString(record.model),
-    language: cleanString(record.language),
-    speed: cleanSpeed(record.speed) ?? defaultTtsSpeechPreference.speed
-  };
+const cleanTuningNumber = (value: unknown) => {
+  const parsed = typeof value === 'string' && value.trim() ? Number(value) : value;
+  if (typeof parsed !== 'number' || !Number.isFinite(parsed) || parsed < 0 || parsed > 5) return undefined;
+  return parsed;
 };
 
-export const hasTtsSpeechPreference = () => Boolean(browserStorage()?.getItem(storageKey));
+const stripUndefinedFields = <T extends Record<string, unknown>>(record: T): T => {
+  Object.keys(record).forEach((key) => {
+    if (record[key] === undefined) delete record[key];
+  });
+  return record;
+};
 
-export const readTtsSpeechPreference = (): TtsSpeechPreference => {
-  const storage = browserStorage();
-  if (!storage) return defaultTtsSpeechPreference;
-
-  const raw = storage.getItem(storageKey);
-  if (!raw) return defaultTtsSpeechPreference;
-
-  try {
-    return normalizePreference(JSON.parse(raw) as unknown);
-  } catch {
-    return defaultTtsSpeechPreference;
+export const defaultUserTtsPreference: UserTtsPreference = {
+  provider: 'chatterbox',
+  chatterbox: {
+    language: 'en',
+    speed: 1
+  },
+  kokoro: {
+    model: 'kokoro-default',
+    language: 'a',
+    speed: 1
   }
 };
 
-export const saveTtsSpeechPreference = (preference: TtsSpeechPreference) => {
-  const normalized = normalizePreference(preference);
-  browserStorage()?.setItem(storageKey, JSON.stringify(normalized));
-  return normalized;
+const normalizeChatterboxPreference = (value: unknown): ChatterboxTtsPreference => {
+  const record = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  return stripUndefinedFields({
+    model: cleanString(record.model),
+    voice: cleanString(record.voice),
+    language: cleanString(record.language),
+    speed: cleanNumber(record.speed),
+    referenceAudioId: cleanNullableString(record.referenceAudioId),
+    referenceAudioPath: cleanNullableString(record.referenceAudioPath),
+    exaggeration: cleanTuningNumber(record.exaggeration),
+    cfgWeight: cleanTuningNumber(record.cfgWeight),
+    temperature: cleanTuningNumber(record.temperature)
+  });
 };
 
-export const clearTtsSpeechPreference = () => {
-  browserStorage()?.removeItem(storageKey);
+const normalizeKokoroPreference = (value: unknown): KokoroTtsPreference => {
+  const record = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  return stripUndefinedFields({
+    model: cleanString(record.model),
+    voice: cleanString(record.voice),
+    language: cleanString(record.language),
+    speed: cleanNumber(record.speed)
+  });
 };
+
+export const normalizeUserTtsPreference = (value: unknown): UserTtsPreference => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return defaultUserTtsPreference;
+  const record = value as Record<string, unknown>;
+  return stripUndefinedFields({
+    provider: normalizeTtsProviderId(record.provider) ?? defaultUserTtsPreference.provider,
+    chatterbox: {
+      ...defaultUserTtsPreference.chatterbox,
+      ...normalizeChatterboxPreference(record.chatterbox)
+    },
+    kokoro: {
+      ...defaultUserTtsPreference.kokoro,
+      ...normalizeKokoroPreference(record.kokoro)
+    },
+    updatedAt: cleanString(record.updatedAt)
+  });
+};
+
+export const mergeUserTtsPreference = (
+  current: UserTtsPreference,
+  patch: UserTtsPreferencePatch
+): UserTtsPreference =>
+  normalizeUserTtsPreference({
+    ...current,
+    provider: patch.provider ?? current.provider,
+    chatterbox: {
+      ...current.chatterbox,
+      ...(patch.chatterbox ?? {})
+    },
+    kokoro: {
+      ...current.kokoro,
+      ...(patch.kokoro ?? {})
+    }
+  });

@@ -494,6 +494,37 @@ export interface TtsRegistryState {
   raw?: unknown;
 }
 
+export interface ChatterboxTtsPreference {
+  model?: string;
+  voice?: string;
+  language?: string;
+  speed?: number;
+  referenceAudioId?: string | null;
+  referenceAudioPath?: string | null;
+  exaggeration?: number;
+  cfgWeight?: number;
+  temperature?: number;
+}
+
+export interface KokoroTtsPreference {
+  model?: string;
+  voice?: string;
+  language?: string;
+  speed?: number;
+}
+
+export interface UserTtsPreference {
+  provider: TtsProviderId;
+  chatterbox: ChatterboxTtsPreference;
+  kokoro: KokoroTtsPreference;
+  updatedAt?: string;
+}
+
+export type UserTtsPreferencePatch = Partial<Pick<UserTtsPreference, 'provider'>> & {
+  chatterbox?: Partial<ChatterboxTtsPreference>;
+  kokoro?: Partial<KokoroTtsPreference>;
+};
+
 export interface VoiceProviderModelCatalog {
   provider: TtsProviderId;
   currentModel?: string;
