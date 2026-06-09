@@ -5,6 +5,7 @@ import { logger } from '../config/logger.js';
 import { createRateLimiter } from '../auth/rateLimit.js';
 import { ApiError } from '../errors/apiError.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
+import { normalizeProviderModelForRuntime } from '../services/ttsProviderDefaults.js';
 import { speakText, type TtsProviderId, type VoiceSpeechOptions } from '../services/voiceClient.js';
 import { getSelectedVoiceReferenceIdForTts } from '../services/voiceReferenceService.js';
 import { getUserTtsPreference, type UserTtsPreference } from '../services/userTtsPreferenceService.js';
@@ -177,6 +178,18 @@ const safeErrorForLog = (error: unknown) => {
   return { message: 'Unknown TTS error' };
 };
 
+const resolveSpeechModel = (
+  provider: TtsProviderId,
+  body: ParsedSpeakRequest,
+  providerPreference: { model?: string } | undefined,
+  providerDefaultModel: string | undefined,
+  fallbackUsed: boolean
+) =>
+  normalizeProviderModelForRuntime(
+    provider,
+    fallbackUsed ? providerDefaultModel : body.model ?? providerPreference?.model ?? providerDefaultModel
+  );
+
 const buildSpeechOptions = (
   body: ParsedSpeakRequest,
   provider: TtsProviderId | undefined,
@@ -184,19 +197,20 @@ const buildSpeechOptions = (
   selectedReferenceId: string | undefined,
   fallbackUsed: boolean
 ): VoiceSpeechOptions => {
-  const providerDefaults = provider ? config.tts.providers[provider] : undefined;
-  const providerPreference = provider ? userPreference[provider] : undefined;
-  const isChatterbox = provider === 'chatterbox' || (!provider && config.tts.defaultProvider === 'chatterbox');
+  const effectiveProvider = provider ?? config.tts.defaultProvider;
+  const providerDefaults = config.tts.providers[effectiveProvider];
+  const providerPreference = userPreference[effectiveProvider];
+  const isChatterbox = effectiveProvider === 'chatterbox';
   const useChatterboxReference = isChatterbox && !fallbackUsed;
 
-  if (provider === 'kokoro') {
+  if (effectiveProvider === 'kokoro') {
     return {
       provider,
       text: body.text,
-      voice: fallbackUsed ? providerDefaults?.defaultVoice : body.voice ?? providerPreference?.voice ?? providerDefaults?.defaultVoice,
-      speed: body.speed ?? providerPreference?.speed ?? config.tts.defaultSpeed,
-      language: body.language ?? providerPreference?.language ?? 'a',
-      model: fallbackUsed ? providerDefaults?.defaultModel : body.model ?? providerPreference?.model ?? providerDefaults?.defaultModel,
+      voice: fallbackUsed ? providerDefaults.defaultVoice : body.voice ?? providerPreference.voice ?? providerDefaults.defaultVoice,
+      speed: body.speed ?? providerPreference.speed ?? config.tts.defaultSpeed,
+      language: body.language ?? providerPreference.language ?? 'a',
+      model: resolveSpeechModel('kokoro', body, providerPreference, providerDefaults.defaultModel, fallbackUsed),
       format: body.format,
       metadata: body.metadata,
       timeoutMs: config.tts.timeoutMs
@@ -208,11 +222,11 @@ const buildSpeechOptions = (
     provider,
     text: body.text,
     voice: fallbackUsed
-      ? providerDefaults?.defaultVoice
-      : body.voice ?? chatterboxPreference.voice ?? selectedReferenceId ?? providerDefaults?.defaultVoice,
+      ? providerDefaults.defaultVoice
+      : body.voice ?? chatterboxPreference.voice ?? selectedReferenceId ?? providerDefaults.defaultVoice,
     speed: body.speed ?? chatterboxPreference.speed ?? config.tts.defaultSpeed,
     language: body.language ?? chatterboxPreference.language ?? 'en',
-    model: fallbackUsed ? providerDefaults?.defaultModel : body.model ?? chatterboxPreference.model ?? providerDefaults?.defaultModel,
+    model: resolveSpeechModel('chatterbox', body, chatterboxPreference, providerDefaults.defaultModel, fallbackUsed),
     format: body.format,
     metadata: body.metadata,
     timeoutMs: config.tts.timeoutMs,

@@ -69,6 +69,16 @@ describe('environment configuration optional feature models', () => {
     await expect(loadConfig({ LLM_MODEL: '' })).rejects.toThrow(/LLM_MODEL/);
   });
 
+  it('allows provider TTS model defaults to be omitted', async () => {
+    const config = await loadConfig({
+      TTS_CHATTERBOX_DEFAULT_MODEL: '',
+      TTS_KOKORO_DEFAULT_MODEL: '   '
+    });
+
+    expect(config.tts.providers.chatterbox.defaultModel).toBeUndefined();
+    expect(config.tts.providers.kokoro.defaultModel).toBeUndefined();
+  });
+
   it('loads provider-aware TTS defaults and fallback policy', async () => {
     const config = await loadConfig({
       TTS_DEFAULT_PROVIDER: 'kokoro',
@@ -76,7 +86,7 @@ describe('environment configuration optional feature models', () => {
       TTS_FALLBACK_POLICY: 'try-other-provider',
       TTS_CHATTERBOX_DEFAULT_MODEL: 'chatterbox-turbo',
       TTS_CHATTERBOX_DEFAULT_VOICE: 'default',
-      TTS_KOKORO_DEFAULT_MODEL: 'kokoro-default',
+      TTS_KOKORO_DEFAULT_MODEL: 'kokoro-82m',
       TTS_KOKORO_DEFAULT_VOICE: 'af_heart'
     });
 
@@ -90,7 +100,7 @@ describe('environment configuration optional feature models', () => {
     });
     expect(config.tts.providers.kokoro).toMatchObject({
       enabled: true,
-      defaultModel: 'kokoro-default',
+      defaultModel: 'kokoro-82m',
       defaultVoice: 'af_heart'
     });
   });

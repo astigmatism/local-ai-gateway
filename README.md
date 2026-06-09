@@ -509,7 +509,7 @@ TTS_CHATTERBOX_ENABLED=true
 TTS_CHATTERBOX_DEFAULT_MODEL=chatterbox-turbo
 TTS_CHATTERBOX_DEFAULT_VOICE=default
 TTS_KOKORO_ENABLED=true
-TTS_KOKORO_DEFAULT_MODEL=kokoro-default
+TTS_KOKORO_DEFAULT_MODEL=kokoro-82m
 TTS_KOKORO_DEFAULT_VOICE=af_heart
 TTS_TIMEOUT_MS=120000
 TTS_MAX_TEXT_CHARS=12000
@@ -517,7 +517,7 @@ TTS_RATE_LIMIT_WINDOW_MS=60000
 TTS_RATE_LIMIT_MAX=20
 ```
 
-If `TTS_ENABLED=false`, the gateway rejects text-to-speech requests. `TTS_DEFAULT_PROVIDER` must be `chatterbox` or `kokoro`; it is only used when the request or browser Speak preference does not choose a provider. `TTS_EXPLICIT_PROVIDER=true` makes Bear Castle AI send the resolved provider explicitly. `TTS_FALLBACK_POLICY=fail` preserves voice identity by default; `try-default-provider` and `try-other-provider` are opt-in and retry without unloading either provider. `TTS_MAX_TEXT_CHARS` limits expensive requests and should stay reasonable for the voice VM. Legacy `TTS_DEFAULT_VOICE` and `TTS_DEFAULT_SPEED` environment values can remain in existing deployments, but provider-specific defaults are preferred.
+If `TTS_ENABLED=false`, the gateway rejects text-to-speech requests. `TTS_DEFAULT_PROVIDER` must be `chatterbox` or `kokoro`; it is only used when the request or browser Speak preference does not choose a provider. `TTS_EXPLICIT_PROVIDER=true` makes Bear Castle AI send the resolved provider explicitly. `TTS_FALLBACK_POLICY=fail` preserves voice identity by default; `try-default-provider` and `try-other-provider` are opt-in and retry without unloading either provider. `TTS_MAX_TEXT_CHARS` limits expensive requests and should stay reasonable for the voice VM. Runtime provider model defaults belong in `.env`: change `TTS_CHATTERBOX_DEFAULT_MODEL` or `TTS_KOKORO_DEFAULT_MODEL` there when VoiceVM model names change. If a provider model default is left blank, Bear Castle AI omits the model field and lets the voice appliance choose its own default. Legacy `TTS_DEFAULT_VOICE` and `TTS_DEFAULT_SPEED` environment values can remain in existing deployments, but provider-specific defaults are preferred.
 
 If the voice/STT service returns a raw unpunctuated transcript, the gateway can optionally ask the configured local Ollama model to restore punctuation, capitalization, sentence boundaries, and paragraph breaks before appending the transcript to the input box. This is disabled by default to preserve the direct STT behavior and avoid an extra LLM call. Enable it only when needed:
 
@@ -1060,10 +1060,10 @@ scripts/restart.sh
 | `TTS_EXPLICIT_PROVIDER` | `true` | Sends the resolved provider in `/api/tts/speak` requests when Bear Castle AI knows the intended provider. |
 | `TTS_FALLBACK_POLICY` | `fail` | Provider failure policy. Valid values are `fail`, `try-default-provider`, and `try-other-provider`; fallback never unloads providers. |
 | `TTS_CHATTERBOX_ENABLED` | `true` | Allows Chatterbox TTS requests through the gateway. |
-| `TTS_CHATTERBOX_DEFAULT_MODEL` | empty | Optional Chatterbox model sent when no request model is chosen. |
+| `TTS_CHATTERBOX_DEFAULT_MODEL` | empty | Optional Chatterbox model sent when no request model is chosen. Configure provider model defaults in `.env`, not application source. |
 | `TTS_CHATTERBOX_DEFAULT_VOICE` | empty | Optional Chatterbox voice sent when no request voice/reference is chosen. |
 | `TTS_KOKORO_ENABLED` | `true` | Allows Kokoro requests through the gateway. |
-| `TTS_KOKORO_DEFAULT_MODEL` | empty | Optional Kokoro model sent when no request model is chosen. |
+| `TTS_KOKORO_DEFAULT_MODEL` | empty | Optional Kokoro model sent when no request model is chosen, for example `kokoro-82m`. Configure provider model defaults in `.env`, not application source. |
 | `TTS_KOKORO_DEFAULT_VOICE` | empty | Optional Kokoro voice sent when no request voice is chosen. |
 | `TTS_TIMEOUT_MS` | `120000` | Per-request timeout for text-to-speech synthesis. |
 | `TTS_MAX_TEXT_CHARS` | `12000` | Maximum text length accepted by authenticated `/api/speak`. |

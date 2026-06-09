@@ -45,14 +45,17 @@ const requiredTestEnv = {
   VOICE_BASE_URL: 'http://127.0.0.1:8000',
   TTS_DEFAULT_PROVIDER: 'chatterbox',
   TTS_CHATTERBOX_DEFAULT_MODEL: 'chatterbox-turbo',
-  TTS_KOKORO_DEFAULT_MODEL: 'kokoro-default',
+  TTS_KOKORO_DEFAULT_MODEL: 'kokoro-test-model',
   TTS_KOKORO_DEFAULT_VOICE: 'af_heart'
 } as const;
 
-const loadPreferenceService = async () => {
+const loadPreferenceService = async (overrides: Record<string, string> = {}) => {
   vi.resetModules();
   vi.unstubAllEnvs();
   for (const [name, value] of Object.entries(requiredTestEnv)) {
+    vi.stubEnv(name, value);
+  }
+  for (const [name, value] of Object.entries(overrides)) {
     vi.stubEnv(name, value);
   }
   return import('../server/src/services/userTtsPreferenceService.js');
@@ -101,7 +104,7 @@ describe('server-side per-user TTS preference persistence', () => {
         speed: 1
       },
       kokoro: {
-        model: 'kokoro-default',
+        model: 'kokoro-test-model',
         voice: 'af_heart',
         language: 'a',
         speed: 1
@@ -109,18 +112,54 @@ describe('server-side per-user TTS preference persistence', () => {
     });
   });
 
+  it('derives the default Kokoro model from env config changes', async () => {
+    const { getUserTtsPreference } = await loadPreferenceService({ TTS_KOKORO_DEFAULT_MODEL: 'kokoro-env-swapped-model' });
+
+    await expect(getUserTtsPreference('user-a')).resolves.toMatchObject({
+      kokoro: { model: 'kokoro-env-swapped-model' }
+    });
+  });
+
+  it('omits the Kokoro model when no provider default model is configured', async () => {
+    const { getUserTtsPreference } = await loadPreferenceService({ TTS_KOKORO_DEFAULT_MODEL: '' });
+
+    const preference = await getUserTtsPreference('user-a');
+
+    expect(preference.kokoro).not.toHaveProperty('model');
+    expect(preference.kokoro).toMatchObject({ voice: 'af_heart', language: 'a', speed: 1 });
+  });
+
+  it('normalizes legacy persisted Kokoro placeholder models to the configured default', async () => {
+    const { getUserTtsPreference } = await loadPreferenceService({ TTS_KOKORO_DEFAULT_MODEL: 'kokoro-82m' });
+    prismaState.rows.set('legacy-user', {
+      id: 'pref-legacy-user',
+      userId: 'legacy-user',
+      preference: {
+        provider: 'kokoro',
+        kokoro: { model: 'kokoro-default', voice: 'af_heart', language: 'a', speed: 1 }
+      },
+      createdAt: new Date('2026-06-06T00:00:00.000Z'),
+      updatedAt: new Date('2026-06-06T00:01:00.000Z')
+    });
+
+    await expect(getUserTtsPreference('legacy-user')).resolves.toMatchObject({
+      provider: 'kokoro',
+      kokoro: { model: 'kokoro-82m', voice: 'af_heart', language: 'a', speed: 1 }
+    });
+  });
+
   it('persists different provider preferences for different users', async () => {
     const { getUserTtsPreference, updateUserTtsPreference } = await loadPreferenceService();
     const knownModels = {
       chatterbox: ['chatterbox-turbo', 'chatterbox-small'],
-      kokoro: ['kokoro-default']
+      kokoro: ['kokoro-test-model']
     };
 
     await updateUserTtsPreference(
       'user-a',
       {
         provider: 'kokoro',
-        kokoro: { model: 'kokoro-default', voice: 'af_heart', language: 'a', speed: 1.05 }
+        kokoro: { model: 'kokoro-test-model', voice: 'af_heart', language: 'a', speed: 1.05 }
       },
       knownModels
     );
@@ -141,7 +180,7 @@ describe('server-side per-user TTS preference persistence', () => {
     await expect(getUserTtsPreference('user-b')).resolves.toMatchObject({
       provider: 'chatterbox',
       chatterbox: { model: 'chatterbox-small', referenceAudioId: 'speaker-profile-001', speed: 0.95 },
-      kokoro: { model: 'kokoro-default' }
+      kokoro: { model: 'kokoro-test-model' }
     });
   });
 
@@ -204,17 +243,31 @@ describe('TTS preference validation', () => {
     });
   });
 
-  it('accepts the Kokoro canonical default when the appliance model catalog uses a provider alias', async () => {
+  it('accepts the configured Kokoro default when the appliance model catalog uses a provider alias', async () => {
     const { parseUserTtsPreferencePatch } = await loadPreferenceService();
 
     expect(
       parseUserTtsPreferencePatch(
-        { provider: 'kokoro', kokoro: { model: 'kokoro-default', voice: 'af_heart' } },
+        { provider: 'kokoro', kokoro: { model: 'kokoro-test-model', voice: 'af_heart' } },
         { chatterbox: ['chatterbox-turbo'], kokoro: ['kokoro'] }
       )
     ).toMatchObject({
       provider: 'kokoro',
-      kokoro: { model: 'kokoro-default', voice: 'af_heart' }
+      kokoro: { model: 'kokoro-test-model', voice: 'af_heart' }
+    });
+  });
+
+  it('repairs a legacy Kokoro placeholder model in preference updates before validation', async () => {
+    const { parseUserTtsPreferencePatch } = await loadPreferenceService({ TTS_KOKORO_DEFAULT_MODEL: 'kokoro-82m' });
+
+    expect(
+      parseUserTtsPreferencePatch(
+        { provider: 'kokoro', kokoro: { model: 'kokoro-default', voice: 'af_heart' } },
+        { chatterbox: ['chatterbox-turbo'], kokoro: ['kokoro-82m'] }
+      )
+    ).toMatchObject({
+      provider: 'kokoro',
+      kokoro: { model: 'kokoro-82m', voice: 'af_heart' }
     });
   });
 
@@ -227,13 +280,13 @@ describe('TTS preference validation', () => {
       models: [],
       providers: {
         chatterbox: { provider: 'chatterbox', currentModel: 'chatterbox-turbo', worker: null, models: [] },
-        kokoro: { provider: 'kokoro', currentModel: 'kokoro-default', worker: null, models: [] }
+        kokoro: { provider: 'kokoro', currentModel: 'kokoro-test-model', worker: null, models: [] }
       },
       raw: {}
     });
 
     expect(options.chatterbox).toContain('chatterbox-turbo');
-    expect(options.kokoro).toContain('kokoro-default');
+    expect(options.kokoro).toContain('kokoro-test-model');
   });
 
   it('validates speed range and provider-scoped model catalogs', async () => {
@@ -244,9 +297,9 @@ describe('TTS preference validation', () => {
     );
     expect(() =>
       parseUserTtsPreferencePatch(
-        { provider: 'chatterbox', chatterbox: { model: 'kokoro-default' } },
-        { chatterbox: ['chatterbox-turbo'], kokoro: ['kokoro-default'] }
+        { provider: 'chatterbox', chatterbox: { model: 'kokoro-test-model' } },
+        { chatterbox: ['chatterbox-turbo'], kokoro: ['kokoro-test-model'] }
       )
-    ).toThrow(/Chatterbox TTS model kokoro-default is not in the reported provider model catalog/);
+    ).toThrow(/Chatterbox TTS model kokoro-test-model is not in the reported provider model catalog/);
   });
 });

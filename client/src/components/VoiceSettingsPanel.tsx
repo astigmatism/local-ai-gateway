@@ -266,8 +266,11 @@ export const VoiceSettingsPanel = ({ canManageVoice }: VoiceSettingsPanelProps) 
   const kokoroProviderCatalog = providerCatalog(ttsCatalog, 'kokoro');
   const chatterboxModelOptions = chatterboxProviderCatalog?.models ?? [];
   const kokoroModelOptions = kokoroProviderCatalog?.models ?? [];
-  const chatterboxDefaultModelLabel = chatterboxProviderCatalog?.currentModel ?? chatterboxProviderStatus?.model ?? 'provider default';
-  const kokoroDefaultModelLabel = kokoroProviderCatalog?.currentModel ?? kokoroProviderStatus?.model ?? 'kokoro-default';
+  const configuredProviderDefaultLabel = 'Configured provider default';
+  const chatterboxDefaultModelLabel =
+    chatterboxProviderCatalog?.currentModel ?? chatterboxProviderStatus?.model ?? configuredProviderDefaultLabel;
+  const kokoroDefaultModelLabel =
+    kokoroProviderCatalog?.currentModel ?? kokoroProviderStatus?.model ?? configuredProviderDefaultLabel;
   const lifecycleProviderStatus = ttsRegistry?.providers[ttsLifecycleProvider] ?? null;
   const lifecycleProviderCatalog = providerCatalog(ttsCatalog, ttsLifecycleProvider);
   const lifecycleProviderModelOptions = lifecycleProviderCatalog?.models ?? [];

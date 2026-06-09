@@ -55,7 +55,6 @@ export const defaultUserTtsPreference: UserTtsPreference = {
     speed: 1
   },
   kokoro: {
-    model: 'kokoro-default',
     language: 'a',
     speed: 1
   }

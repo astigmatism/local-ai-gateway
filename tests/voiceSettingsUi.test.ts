@@ -30,5 +30,8 @@ describe('Settings > Voice provider-aware UI', () => {
     expect(source).toContain('Kokoro never receives referenceAudioId or referenceAudioPath');
     expect(source).toContain('Chatterbox reference audio controls are hidden');
     expect(preferencesSource).toContain("kokoro: 'Kokoro'");
+    expect(source).not.toContain('kokoro-default');
+    expect(preferencesSource).not.toContain('kokoro-default');
+    expect(preferencesSource).not.toContain("model: 'kokoro");
   });
 });

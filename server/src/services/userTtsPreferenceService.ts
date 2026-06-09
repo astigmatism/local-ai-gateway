@@ -3,6 +3,11 @@ import { z } from 'zod';
 import { config } from '../config/env.js';
 import { prisma } from '../db/prisma.js';
 import { ApiError } from '../errors/apiError.js';
+import {
+  configuredProviderDefaultModel,
+  normalizeProviderModelForRuntime,
+  providerRuntimeDefaults
+} from './ttsProviderDefaults.js';
 import type { TtsProviderId, VoiceModelCatalogResponse, VoiceModelDescriptor } from './voiceClient.js';
 
 export interface ChatterboxTtsPreference {
@@ -176,7 +181,7 @@ const stripUndefinedFields = <T extends Record<string, unknown>>(record: T): T =
   return record;
 };
 
-const providerDefaults = (provider: TtsProviderId) => config.tts.providers[provider];
+const providerDefaults = providerRuntimeDefaults;
 
 export const getDefaultUserTtsPreference = (): UserTtsPreference => ({
   provider: config.tts.defaultProvider ?? 'chatterbox',
@@ -187,7 +192,7 @@ export const getDefaultUserTtsPreference = (): UserTtsPreference => ({
     speed: config.tts.defaultSpeed
   }),
   kokoro: stripUndefinedFields({
-    model: providerDefaults('kokoro').defaultModel ?? 'kokoro-default',
+    model: configuredProviderDefaultModel('kokoro'),
     voice: providerDefaults('kokoro').defaultVoice ?? config.tts.defaultVoice,
     language: 'a',
     speed: config.tts.defaultSpeed
@@ -197,7 +202,7 @@ export const getDefaultUserTtsPreference = (): UserTtsPreference => ({
 const normalizeStoredChatterboxPreference = (value: unknown): ChatterboxTtsPreference => {
   const record = asRecord(value) ?? {};
   return stripUndefinedFields({
-    model: cleanString(record.model),
+    model: normalizeProviderModelForRuntime('chatterbox', cleanString(record.model)),
     voice: cleanString(record.voice),
     language: cleanString(record.language, 32),
     speed: cleanNumberInRange(record.speed, 0.25, 4),
@@ -212,7 +217,7 @@ const normalizeStoredChatterboxPreference = (value: unknown): ChatterboxTtsPrefe
 const normalizeStoredKokoroPreference = (value: unknown): KokoroTtsPreference => {
   const record = asRecord(value) ?? {};
   return stripUndefinedFields({
-    model: cleanString(record.model),
+    model: normalizeProviderModelForRuntime('kokoro', cleanString(record.model)),
     voice: cleanString(record.voice),
     language: cleanString(record.language, 32),
     speed: cleanNumberInRange(record.speed, 0.25, 4)
@@ -274,14 +279,13 @@ export const knownTtsModelOptionsFromCatalog = (catalog: VoiceModelCatalogRespon
   kokoro: modelValuesForProvider(catalog, 'kokoro')
 });
 
-const canonicalModelFallbacks = (provider: TtsProviderId) =>
-  uniqueStrings([providerDefaults(provider).defaultModel, provider === 'kokoro' ? 'kokoro-default' : undefined]);
+const configuredModelFallbacks = (provider: TtsProviderId) => uniqueStrings([configuredProviderDefaultModel(provider)]);
 
 const validateKnownModel = (provider: TtsProviderId, model: string | undefined, knownModels?: KnownTtsModelOptions) => {
   if (!model) return;
   const allowed = knownModels?.[provider];
   if (!allowed || allowed.length === 0) return;
-  const normalizedAllowed = uniqueStrings([...allowed, ...canonicalModelFallbacks(provider)]);
+  const normalizedAllowed = uniqueStrings([...allowed, ...configuredModelFallbacks(provider)]);
   if (!normalizedAllowed.includes(model)) {
     throw new ApiError(
       400,
@@ -314,10 +318,21 @@ export const parseUserTtsPreferencePatch = (body: unknown, knownModels?: KnownTt
     });
   }
 
-  validateKnownModel('chatterbox', parsed.data.chatterbox?.model, knownModels);
-  validateKnownModel('kokoro', parsed.data.kokoro?.model, knownModels);
+  const patch = stripUndefinedFields({
+    provider: parsed.data.provider,
+    chatterbox: parsed.data.chatterbox,
+    kokoro: parsed.data.kokoro
+      ? stripUndefinedFields({
+          ...parsed.data.kokoro,
+          model: normalizeProviderModelForRuntime('kokoro', parsed.data.kokoro.model)
+        })
+      : undefined
+  });
 
-  return parsed.data;
+  validateKnownModel('chatterbox', patch.chatterbox?.model, knownModels);
+  validateKnownModel('kokoro', patch.kokoro?.model, knownModels);
+
+  return patch;
 };
 
 export const mergeUserTtsPreference = (current: UserTtsPreference, patch: UserTtsPreferencePatch): UserTtsPreference => {

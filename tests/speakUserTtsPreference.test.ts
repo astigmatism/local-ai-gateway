@@ -20,7 +20,7 @@ const requiredTestEnv = {
   TTS_EXPLICIT_PROVIDER: 'true',
   TTS_FALLBACK_POLICY: 'fail',
   TTS_CHATTERBOX_DEFAULT_MODEL: 'chatterbox-turbo',
-  TTS_KOKORO_DEFAULT_MODEL: 'kokoro-default'
+  TTS_KOKORO_DEFAULT_MODEL: 'kokoro-test-model'
 } as const;
 
 interface MockUserTtsPreference {
@@ -80,10 +80,13 @@ const jsonFetch = async (port: number, body: Record<string, unknown>) => {
   return { response, body: await response.arrayBuffer() };
 };
 
-const loadSpeakApp = async (preference: MockUserTtsPreference) => {
+const loadSpeakApp = async (preference: MockUserTtsPreference, envOverrides: Record<string, string> = {}) => {
   vi.resetModules();
   vi.unstubAllEnvs();
   for (const [name, value] of Object.entries(requiredTestEnv)) {
+    vi.stubEnv(name, value);
+  }
+  for (const [name, value] of Object.entries(envOverrides)) {
     vi.stubEnv(name, value);
   }
 
@@ -160,7 +163,7 @@ describe('speak route user TTS preference resolution', () => {
         speed: 1
       },
       kokoro: {
-        model: 'kokoro-default',
+        model: 'kokoro-test-model',
         voice: 'af_heart',
         language: 'a',
         speed: 1.05
@@ -178,7 +181,7 @@ describe('speak route user TTS preference resolution', () => {
         expect.objectContaining({
           provider: 'kokoro',
           text: 'Hello from Kokoro.',
-          model: 'kokoro-default',
+          model: 'kokoro-test-model',
           voice: 'af_heart',
           language: 'a',
           speed: 1.05
@@ -190,6 +193,60 @@ describe('speak route user TTS preference resolution', () => {
       expect(options).not.toHaveProperty('exaggeration');
       expect(options).not.toHaveProperty('cfgWeight');
       expect(options).not.toHaveProperty('temperature');
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('uses the configured Kokoro default model when the saved preference omits a model', async () => {
+    const { app, speakText } = await loadSpeakApp(
+      {
+        provider: 'kokoro',
+        chatterbox: { model: 'chatterbox-turbo', language: 'en', speed: 1 },
+        kokoro: { voice: 'af_heart', language: 'a', speed: 1 }
+      },
+      { TTS_KOKORO_DEFAULT_MODEL: 'kokoro-env-swapped-model' }
+    );
+    const server = createServer(app);
+    const port = await listen(server);
+
+    try {
+      const { response } = await jsonFetch(port, { text: 'Hello from configured Kokoro default.' });
+
+      expect(response.status).toBe(200);
+      expect(speakText).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: 'kokoro',
+          model: 'kokoro-env-swapped-model'
+        })
+      );
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('normalizes a legacy persisted Kokoro placeholder before calling VoiceVM', async () => {
+    const { app, speakText } = await loadSpeakApp(
+      {
+        provider: 'kokoro',
+        chatterbox: { model: 'chatterbox-turbo', language: 'en', speed: 1 },
+        kokoro: { model: 'kokoro-default', voice: 'af_heart', language: 'a', speed: 1 }
+      },
+      { TTS_KOKORO_DEFAULT_MODEL: 'kokoro-82m' }
+    );
+    const server = createServer(app);
+    const port = await listen(server);
+
+    try {
+      const { response } = await jsonFetch(port, { text: 'Legacy Kokoro preference.' });
+
+      expect(response.status).toBe(200);
+      expect(speakText).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: 'kokoro',
+          model: 'kokoro-82m'
+        })
+      );
     } finally {
       await close(server);
     }
@@ -208,7 +265,7 @@ describe('speak route user TTS preference resolution', () => {
         temperature: 0.8
       },
       kokoro: {
-        model: 'kokoro-default',
+        model: 'kokoro-test-model',
         voice: 'af_heart',
         language: 'a',
         speed: 1
@@ -243,7 +300,7 @@ describe('speak route user TTS preference resolution', () => {
     const { app, speakText } = await loadSpeakApp({
       provider: 'kokoro',
       chatterbox: { model: 'chatterbox-turbo', language: 'en', speed: 1 },
-      kokoro: { model: 'kokoro-default', voice: 'af_heart', language: 'a', speed: 1 }
+      kokoro: { model: 'kokoro-test-model', voice: 'af_heart', language: 'a', speed: 1 }
     });
     const server = createServer(app);
     const port = await listen(server);
@@ -270,7 +327,7 @@ describe('speak route user TTS preference resolution', () => {
     const { app, speakText, getUserTtsPreference } = await loadSpeakApp({
       provider: 'kokoro',
       chatterbox: { model: 'chatterbox-turbo', language: 'en', speed: 1 },
-      kokoro: { model: 'kokoro-default', voice: 'af_heart', language: 'a', speed: 1 }
+      kokoro: { model: 'kokoro-test-model', voice: 'af_heart', language: 'a', speed: 1 }
     });
     const server = createServer(app);
     const port = await listen(server);

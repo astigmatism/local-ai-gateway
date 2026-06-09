@@ -294,7 +294,7 @@ describe('api client text-to-speech requests', () => {
         speed: 1
       },
       kokoro: {
-        model: 'kokoro-default',
+        model: 'kokoro-82m',
         voice: 'af_heart',
         language: 'a',
         speed: 1

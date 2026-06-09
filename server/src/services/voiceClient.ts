@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { ApiError } from '../errors/apiError.js';
+import { normalizeProviderModelForRuntime } from './ttsProviderDefaults.js';
 import { maybeFormatTranscript } from './transcriptFormatter.js';
 import { extractTranscriptText } from './transcriptionText.js';
 
@@ -1025,6 +1026,11 @@ export const normalizeVoiceTranscriptionResponse = (
   });
 };
 
+const runtimeSpeechModel = (options: VoiceSpeechOptions) =>
+  options.provider
+    ? normalizeProviderModelForRuntime(options.provider, options.model)
+    : options.model;
+
 export const buildVoiceSpeechJsonBody = (options: VoiceSpeechOptions) => {
   const includeChatterboxFields = options.provider !== 'kokoro';
   return stripUndefinedFields({
@@ -1033,7 +1039,7 @@ export const buildVoiceSpeechJsonBody = (options: VoiceSpeechOptions) => {
     voice: options.voice,
     speed: options.speed,
     language: options.language,
-    model: options.model,
+    model: runtimeSpeechModel(options),
     format: options.format,
     metadata: options.metadata,
     exaggeration: includeChatterboxFields ? options.exaggeration : undefined,
@@ -1064,7 +1070,7 @@ export const speakText = async (options: VoiceSpeechOptions): Promise<VoiceSpeec
           addOptionalFormField(form, 'cfg_weight', options.cfgWeight);
           addOptionalFormField(form, 'temperature', options.temperature);
           addOptionalFormField(form, 'language', options.language);
-          addOptionalFormField(form, 'model', options.model);
+          addOptionalFormField(form, 'model', runtimeSpeechModel(options));
           addOptionalFormField(form, 'referenceAudioId', options.referenceAudioId);
           addOptionalFormField(form, 'referenceAudioPath', options.referenceAudioPath);
           addOptionalFormField(form, 'format', options.format);

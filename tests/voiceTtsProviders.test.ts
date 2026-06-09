@@ -60,7 +60,7 @@ describe('concurrent TTS provider registry normalization', () => {
           displayName: 'Kokoro',
           reachable: true,
           state: 'loaded',
-          model: 'kokoro-default',
+          model: 'kokoro-82m',
           voice: 'default',
           workerPort: 8003,
           capabilities: {
@@ -88,7 +88,7 @@ describe('concurrent TTS provider registry normalization', () => {
       displayName: 'Kokoro',
       reachable: true,
       state: 'loaded',
-      model: 'kokoro-default',
+      model: 'kokoro-82m',
       workerPort: 8003,
       capabilities: { referenceAudio: false }
     });
@@ -106,16 +106,16 @@ describe('concurrent TTS provider registry normalization', () => {
         },
         {
           id: 'kokoro',
-          currentModel: 'kokoro-default',
-          models: ['kokoro-default']
+          currentModel: 'kokoro-82m',
+          models: ['kokoro-82m']
         }
       ]
     });
 
     expect(catalog.providers?.chatterbox?.currentModel).toBe('chatterbox-turbo');
     expect(catalog.providers?.chatterbox?.models.map((model) => model.id)).toEqual(['chatterbox-turbo']);
-    expect(catalog.providers?.kokoro?.currentModel).toBe('kokoro-default');
-    expect(catalog.providers?.kokoro?.models.map((model) => model.id)).toEqual(['kokoro-default']);
+    expect(catalog.providers?.kokoro?.currentModel).toBe('kokoro-82m');
+    expect(catalog.providers?.kokoro?.models.map((model) => model.id)).toEqual(['kokoro-82m']);
   });
 });
 
@@ -143,6 +143,26 @@ describe('provider-aware TTS speak request bodies', () => {
       exaggeration: 0.8,
       cfg_weight: 0.5,
       temperature: 0.7
+    });
+  });
+
+  it('normalizes legacy Kokoro placeholder models before building VoiceVM JSON bodies', async () => {
+    const { buildVoiceSpeechJsonBody } = await loadVoiceClient({ TTS_KOKORO_DEFAULT_MODEL: 'kokoro-82m' });
+
+    expect(
+      buildVoiceSpeechJsonBody({
+        provider: 'kokoro',
+        text: 'Hello',
+        model: 'kokoro-default',
+        voice: 'af_heart',
+        language: 'a'
+      })
+    ).toMatchObject({
+      provider: 'kokoro',
+      text: 'Hello',
+      model: 'kokoro-82m',
+      voice: 'af_heart',
+      language: 'a'
     });
   });
 
