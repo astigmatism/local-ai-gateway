@@ -41,9 +41,10 @@ const cleanTuningNumber = (value: unknown) => {
   return parsed;
 };
 
-const stripUndefinedFields = <T extends Record<string, unknown>>(record: T): T => {
-  Object.keys(record).forEach((key) => {
-    if (record[key] === undefined) delete record[key];
+const stripUndefinedFields = <T extends object>(record: T): T => {
+  const mutable = record as Record<string, unknown>;
+  Object.keys(mutable).forEach((key) => {
+    if (mutable[key] === undefined) delete mutable[key];
   });
   return record;
 };
@@ -99,6 +100,49 @@ export const normalizeUserTtsPreference = (value: unknown): UserTtsPreference =>
       ...normalizeKokoroPreference(record.kokoro)
     },
     updatedAt: cleanString(record.updatedAt)
+  });
+};
+
+
+export interface TtsPreferenceSpeakOptions {
+  provider: TtsProviderId;
+  voice?: string;
+  speed?: number;
+  exaggeration?: number;
+  cfgWeight?: number;
+  temperature?: number;
+  language?: string;
+  model?: string;
+  referenceAudioId?: string;
+  referenceAudioPath?: string;
+}
+
+export const ttsSpeakOptionsFromPreference = (preference: UserTtsPreference): TtsPreferenceSpeakOptions => {
+  const normalized = normalizeUserTtsPreference(preference);
+
+  if (normalized.provider === 'kokoro') {
+    const kokoro = normalized.kokoro;
+    return stripUndefinedFields({
+      provider: 'kokoro',
+      model: kokoro.model,
+      voice: kokoro.voice,
+      language: kokoro.language,
+      speed: kokoro.speed
+    });
+  }
+
+  const chatterbox = normalized.chatterbox;
+  return stripUndefinedFields({
+    provider: 'chatterbox',
+    model: chatterbox.model,
+    voice: chatterbox.voice,
+    language: chatterbox.language,
+    speed: chatterbox.speed,
+    referenceAudioId: chatterbox.referenceAudioId ?? undefined,
+    referenceAudioPath: chatterbox.referenceAudioPath ?? undefined,
+    exaggeration: chatterbox.exaggeration,
+    cfgWeight: chatterbox.cfgWeight,
+    temperature: chatterbox.temperature
   });
 };
 
