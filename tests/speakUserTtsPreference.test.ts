@@ -80,7 +80,11 @@ const jsonFetch = async (port: number, body: Record<string, unknown>) => {
   return { response, body: await response.arrayBuffer() };
 };
 
-const loadSpeakApp = async (preference: MockUserTtsPreference, envOverrides: Record<string, string> = {}) => {
+const loadSpeakApp = async (
+  preference: MockUserTtsPreference,
+  envOverrides: Record<string, string> = {},
+  selectedReferenceId: string | undefined | null = 'loaded-chatterbox-reference'
+) => {
   vi.resetModules();
   vi.unstubAllEnvs();
   for (const [name, value] of Object.entries(requiredTestEnv)) {
@@ -102,7 +106,7 @@ const loadSpeakApp = async (preference: MockUserTtsPreference, envOverrides: Rec
     }
   }));
   const getUserTtsPreference = vi.fn(async () => preference);
-  const getSelectedVoiceReferenceIdForTts = vi.fn(async () => 'loaded-chatterbox-reference');
+  const getSelectedVoiceReferenceIdForTts = vi.fn(async () => selectedReferenceId ?? undefined);
 
   vi.doMock('../server/src/auth/rateLimit.js', () => ({
     createRateLimiter: () => (_req: Request, _res: Response, next: NextFunction) => next()
@@ -291,6 +295,39 @@ describe('speak route user TTS preference resolution', () => {
           temperature: 0.8
         })
       );
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('does not send the legacy Chatterbox reference-upload default voice when no loaded reference exists', async () => {
+    const { app, speakText, getSelectedVoiceReferenceIdForTts } = await loadSpeakApp(
+      {
+        provider: 'chatterbox',
+        chatterbox: { model: 'chatterbox-turbo', language: 'en', speed: 1 },
+        kokoro: { model: 'kokoro-test-model', voice: 'af_heart', language: 'a', speed: 1 }
+      },
+      { TTS_CHATTERBOX_DEFAULT_VOICE: 'reference-upload' },
+      null
+    );
+    const server = createServer(app);
+    const port = await listen(server);
+
+    try {
+      const { response } = await jsonFetch(port, { text: 'Hello from Chatterbox without a loaded reference.' });
+
+      expect(response.status).toBe(200);
+      expect(getSelectedVoiceReferenceIdForTts).toHaveBeenCalledOnce();
+      const options = speakText.mock.calls[0]?.[0] as SpeakOptionsRecord;
+      expect(options).toMatchObject({
+        provider: 'chatterbox',
+        text: 'Hello from Chatterbox without a loaded reference.',
+        model: 'chatterbox-turbo',
+        language: 'en',
+        speed: 1
+      });
+      expect(options).not.toHaveProperty('voice');
+      expect(options).not.toHaveProperty('referenceAudioId');
     } finally {
       await close(server);
     }

@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { ApiError } from '../errors/apiError.js';
-import { normalizeProviderModelForRuntime } from './ttsProviderDefaults.js';
+import { normalizeProviderModelForRuntime, normalizeProviderVoiceForRuntime } from './ttsProviderDefaults.js';
 import { maybeFormatTranscript } from './transcriptFormatter.js';
 import { extractTranscriptText } from './transcriptionText.js';
 
@@ -906,6 +906,11 @@ const normalizeTtsProviderModelCatalogs = (
     if (direct) providerValues.set(provider, direct);
   }
 
+  const rootProvider = normalizeTtsProviderId(root.provider);
+  if (rootProvider && !providerValues.has(rootProvider)) {
+    providerValues.set(rootProvider, root);
+  }
+
   const byProvider = Object.fromEntries(
     ttsProviderIds.flatMap((provider) => {
       const fallbackModels = models.filter((model) => normalizeTtsProviderId(model.provider) === provider);
@@ -1031,12 +1036,17 @@ const runtimeSpeechModel = (options: VoiceSpeechOptions) =>
     ? normalizeProviderModelForRuntime(options.provider, options.model)
     : options.model;
 
+const runtimeSpeechVoice = (options: VoiceSpeechOptions) =>
+  options.provider
+    ? normalizeProviderVoiceForRuntime(options.provider, options.voice)
+    : options.voice;
+
 export const buildVoiceSpeechJsonBody = (options: VoiceSpeechOptions) => {
   const includeChatterboxFields = options.provider !== 'kokoro';
   return stripUndefinedFields({
     provider: options.provider,
     text: options.text,
-    voice: options.voice,
+    voice: runtimeSpeechVoice(options),
     speed: options.speed,
     language: options.language,
     model: runtimeSpeechModel(options),
@@ -1064,7 +1074,7 @@ export const speakText = async (options: VoiceSpeechOptions): Promise<VoiceSpeec
           const form = new FormData();
           addOptionalFormField(form, 'provider', options.provider);
           form.append('text', options.text);
-          addOptionalFormField(form, 'voice', options.voice);
+          addOptionalFormField(form, 'voice', runtimeSpeechVoice(options));
           addOptionalFormField(form, 'speed', options.speed);
           addOptionalFormField(form, 'exaggeration', options.exaggeration);
           addOptionalFormField(form, 'cfg_weight', options.cfgWeight);

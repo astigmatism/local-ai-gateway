@@ -94,6 +94,21 @@ describe('concurrent TTS provider registry normalization', () => {
     });
   });
 
+  it('applies a root-level TTS provider to catalog models before provider bucketing', async () => {
+    const { normalizeVoiceModelCatalog } = await loadVoiceClient();
+
+    const catalog = normalizeVoiceModelCatalog('tts', {
+      provider: 'chatterbox',
+      currentModel: 'chatterbox-turbo',
+      models: ['chatterbox-turbo']
+    });
+
+    expect(catalog.models.map((model) => model.provider)).toEqual(['chatterbox']);
+    expect(catalog.providers?.chatterbox?.currentModel).toBe('chatterbox-turbo');
+    expect(catalog.providers?.chatterbox?.models.map((model) => model.id)).toEqual(['chatterbox-turbo']);
+    expect(catalog.providers?.kokoro).toBeUndefined();
+  });
+
   it('keeps TTS models scoped by provider instead of merging them into one global slot', async () => {
     const { normalizeVoiceModelCatalog } = await loadVoiceClient();
 
@@ -164,6 +179,24 @@ describe('provider-aware TTS speak request bodies', () => {
       voice: 'af_heart',
       language: 'a'
     });
+  });
+
+  it('omits the legacy Chatterbox reference-upload placeholder before sending VoiceVM JSON bodies', async () => {
+    const { buildVoiceSpeechJsonBody } = await loadVoiceClient();
+
+    const body = buildVoiceSpeechJsonBody({
+      provider: 'chatterbox',
+      text: 'Hello',
+      voice: 'reference-upload',
+      language: 'en'
+    });
+
+    expect(body).toMatchObject({
+      provider: 'chatterbox',
+      text: 'Hello',
+      language: 'en'
+    });
+    expect(body).not.toHaveProperty('voice');
   });
 
   it('strips Chatterbox reference and tuning fields from Kokoro requests', async () => {

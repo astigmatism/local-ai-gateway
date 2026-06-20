@@ -5,7 +5,7 @@ import { logger } from '../config/logger.js';
 import { createRateLimiter } from '../auth/rateLimit.js';
 import { ApiError } from '../errors/apiError.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
-import { normalizeProviderModelForRuntime } from '../services/ttsProviderDefaults.js';
+import { normalizeProviderModelForRuntime, normalizeProviderVoiceForRuntime } from '../services/ttsProviderDefaults.js';
 import { speakText, type TtsProviderId, type VoiceSpeechOptions } from '../services/voiceClient.js';
 import { getSelectedVoiceReferenceIdForTts } from '../services/voiceReferenceService.js';
 import { getUserTtsPreference, type UserTtsPreference } from '../services/userTtsPreferenceService.js';
@@ -190,6 +190,9 @@ const resolveSpeechModel = (
     fallbackUsed ? providerDefaultModel : body.model ?? providerPreference?.model ?? providerDefaultModel
   );
 
+const resolveSpeechVoice = (provider: TtsProviderId, voice: string | undefined) =>
+  normalizeProviderVoiceForRuntime(provider, voice);
+
 const buildSpeechOptions = (
   body: ParsedSpeakRequest,
   provider: TtsProviderId | undefined,
@@ -207,7 +210,10 @@ const buildSpeechOptions = (
     return {
       provider,
       text: body.text,
-      voice: fallbackUsed ? providerDefaults.defaultVoice : body.voice ?? providerPreference.voice ?? providerDefaults.defaultVoice,
+      voice: resolveSpeechVoice(
+        'kokoro',
+        fallbackUsed ? providerDefaults.defaultVoice : body.voice ?? providerPreference.voice ?? providerDefaults.defaultVoice
+      ),
       speed: body.speed ?? providerPreference.speed ?? config.tts.defaultSpeed,
       language: body.language ?? providerPreference.language ?? 'a',
       model: resolveSpeechModel('kokoro', body, providerPreference, providerDefaults.defaultModel, fallbackUsed),
@@ -221,9 +227,12 @@ const buildSpeechOptions = (
   return {
     provider,
     text: body.text,
-    voice: fallbackUsed
-      ? providerDefaults.defaultVoice
-      : body.voice ?? chatterboxPreference.voice ?? selectedReferenceId ?? providerDefaults.defaultVoice,
+    voice: resolveSpeechVoice(
+      'chatterbox',
+      fallbackUsed
+        ? providerDefaults.defaultVoice
+        : body.voice ?? chatterboxPreference.voice ?? selectedReferenceId ?? providerDefaults.defaultVoice
+    ),
     speed: body.speed ?? chatterboxPreference.speed ?? config.tts.defaultSpeed,
     language: body.language ?? chatterboxPreference.language ?? 'en',
     model: resolveSpeechModel('chatterbox', body, chatterboxPreference, providerDefaults.defaultModel, fallbackUsed),

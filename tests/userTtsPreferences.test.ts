@@ -112,6 +112,35 @@ describe('server-side per-user TTS preference persistence', () => {
     });
   });
 
+  it('does not treat the legacy Chatterbox reference-upload placeholder as a default user voice', async () => {
+    const { getUserTtsPreference } = await loadPreferenceService({ TTS_CHATTERBOX_DEFAULT_VOICE: 'reference-upload' });
+
+    const preference = await getUserTtsPreference('user-a');
+
+    expect(preference.chatterbox).toMatchObject({ model: 'chatterbox-turbo', language: 'en', speed: 1 });
+    expect(preference.chatterbox).not.toHaveProperty('voice');
+  });
+
+  it('strips legacy persisted Chatterbox reference-upload voices so the loaded reference can be used', async () => {
+    const { getUserTtsPreference } = await loadPreferenceService();
+    prismaState.rows.set('legacy-chatterbox-user', {
+      id: 'pref-legacy-chatterbox-user',
+      userId: 'legacy-chatterbox-user',
+      preference: {
+        provider: 'chatterbox',
+        chatterbox: { model: 'chatterbox-turbo', voice: 'reference-upload', language: 'en', speed: 1 }
+      },
+      createdAt: new Date('2026-06-06T00:00:00.000Z'),
+      updatedAt: new Date('2026-06-06T00:01:00.000Z')
+    });
+
+    const preference = await getUserTtsPreference('legacy-chatterbox-user');
+
+    expect(preference.provider).toBe('chatterbox');
+    expect(preference.chatterbox).toMatchObject({ model: 'chatterbox-turbo', language: 'en', speed: 1 });
+    expect(preference.chatterbox).not.toHaveProperty('voice');
+  });
+
   it('derives the default Kokoro model from env config changes', async () => {
     const { getUserTtsPreference } = await loadPreferenceService({ TTS_KOKORO_DEFAULT_MODEL: 'kokoro-env-swapped-model' });
 

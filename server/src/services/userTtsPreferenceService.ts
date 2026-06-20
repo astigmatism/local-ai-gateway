@@ -5,7 +5,9 @@ import { prisma } from '../db/prisma.js';
 import { ApiError } from '../errors/apiError.js';
 import {
   configuredProviderDefaultModel,
+  configuredProviderDefaultVoice,
   normalizeProviderModelForRuntime,
+  normalizeProviderVoiceForRuntime,
   providerRuntimeDefaults
 } from './ttsProviderDefaults.js';
 import type { TtsProviderId, VoiceModelCatalogResponse, VoiceModelDescriptor } from './voiceClient.js';
@@ -187,13 +189,12 @@ export const getDefaultUserTtsPreference = (): UserTtsPreference => ({
   provider: config.tts.defaultProvider ?? 'chatterbox',
   chatterbox: stripUndefinedFields({
     model: providerDefaults('chatterbox').defaultModel,
-    voice: providerDefaults('chatterbox').defaultVoice,
     language: 'en',
     speed: config.tts.defaultSpeed
   }),
   kokoro: stripUndefinedFields({
     model: configuredProviderDefaultModel('kokoro'),
-    voice: providerDefaults('kokoro').defaultVoice ?? config.tts.defaultVoice,
+    voice: configuredProviderDefaultVoice('kokoro') ?? config.tts.defaultVoice,
     language: 'a',
     speed: config.tts.defaultSpeed
   })
@@ -203,7 +204,7 @@ const normalizeStoredChatterboxPreference = (value: unknown): ChatterboxTtsPrefe
   const record = asRecord(value) ?? {};
   return stripUndefinedFields({
     model: normalizeProviderModelForRuntime('chatterbox', cleanString(record.model)),
-    voice: cleanString(record.voice),
+    voice: normalizeProviderVoiceForRuntime('chatterbox', cleanString(record.voice)),
     language: cleanString(record.language, 32),
     speed: cleanNumberInRange(record.speed, 0.25, 4),
     referenceAudioId: cleanNullableString(record.referenceAudioId ?? record.reference_audio_id, 240),
@@ -218,7 +219,7 @@ const normalizeStoredKokoroPreference = (value: unknown): KokoroTtsPreference =>
   const record = asRecord(value) ?? {};
   return stripUndefinedFields({
     model: normalizeProviderModelForRuntime('kokoro', cleanString(record.model)),
-    voice: cleanString(record.voice),
+    voice: normalizeProviderVoiceForRuntime('kokoro', cleanString(record.voice)),
     language: cleanString(record.language, 32),
     speed: cleanNumberInRange(record.speed, 0.25, 4)
   });
@@ -320,11 +321,18 @@ export const parseUserTtsPreferencePatch = (body: unknown, knownModels?: KnownTt
 
   const patch = stripUndefinedFields({
     provider: parsed.data.provider,
-    chatterbox: parsed.data.chatterbox,
+    chatterbox: parsed.data.chatterbox
+      ? stripUndefinedFields({
+          ...parsed.data.chatterbox,
+          model: normalizeProviderModelForRuntime('chatterbox', parsed.data.chatterbox.model),
+          voice: normalizeProviderVoiceForRuntime('chatterbox', parsed.data.chatterbox.voice)
+        })
+      : undefined,
     kokoro: parsed.data.kokoro
       ? stripUndefinedFields({
           ...parsed.data.kokoro,
-          model: normalizeProviderModelForRuntime('kokoro', parsed.data.kokoro.model)
+          model: normalizeProviderModelForRuntime('kokoro', parsed.data.kokoro.model),
+          voice: normalizeProviderVoiceForRuntime('kokoro', parsed.data.kokoro.voice)
         })
       : undefined
   });
