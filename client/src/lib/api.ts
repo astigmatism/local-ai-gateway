@@ -37,6 +37,7 @@ import type {
   VoiceOverviewResponse
 } from './types.js';
 import { audioMimeTypeToFileExtension } from './audioRecording.js';
+import { sanitizeThinkingBlocks, ThinkingBlockSuppressor, type ThinkingBlockFilterResult } from './thinkingBlocks.js';
 
 interface ApiErrorShape {
   error?: {
@@ -234,6 +235,91 @@ const parseJsonErrorResponse = async (response: Response, options: RequestOption
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+type MessageContentShape = {
+  role: string;
+  content: string;
+};
+
+const sanitizeAssistantMessage = <T extends MessageContentShape>(message: T): T => {
+  if (message.role !== 'assistant') return message;
+
+  const sanitized = sanitizeThinkingBlocks(message.content, { trim: true });
+  if (!sanitized.hasThinkingBlock && sanitized.content === message.content) return message;
+
+  return {
+    ...message,
+    content: sanitized.content
+  } as T;
+};
+
+const sanitizeConversationSummary = <T extends { messages?: MessageContentShape[] }>(conversation: T): T => {
+  if (!conversation.messages) return conversation;
+
+  let changed = false;
+  const messages = conversation.messages.map((message) => {
+    const sanitized = sanitizeAssistantMessage(message);
+    changed = changed || sanitized !== message;
+    return sanitized;
+  });
+
+  return changed ? ({ ...conversation, messages } as T) : conversation;
+};
+
+const sanitizeConversation = <T extends { messages: MessageContentShape[] }>(conversation: T): T => {
+  let changed = false;
+  const messages = conversation.messages.map((message) => {
+    const sanitized = sanitizeAssistantMessage(message);
+    changed = changed || sanitized !== message;
+    return sanitized;
+  });
+
+  return changed ? ({ ...conversation, messages } as T) : conversation;
+};
+
+const recordThinkingBlockResult = (
+  current: { hasThinkingBlock: boolean; suppressedThinkingBlock: boolean },
+  result: ThinkingBlockFilterResult
+) => ({
+  hasThinkingBlock: current.hasThinkingBlock || result.hasThinkingBlock,
+  suppressedThinkingBlock: current.suppressedThinkingBlock || result.suppressedThinkingBlock
+});
+
+const mergeThinkingMetadata = (
+  metadata: Record<string, unknown> | undefined,
+  flags: { hasThinkingBlock: boolean; suppressedThinkingBlock: boolean }
+) => {
+  if (!flags.hasThinkingBlock && !flags.suppressedThinkingBlock) return metadata;
+
+  return {
+    ...(metadata ?? {}),
+    hasRawThinkingTag: Boolean(metadata?.hasRawThinkingTag) || flags.hasThinkingBlock,
+    rawThinkingTagSuppressed: Boolean(metadata?.rawThinkingTagSuppressed) || flags.suppressedThinkingBlock
+  };
+};
+
+const sanitizeDoneEvent = (
+  event: LlmStreamDoneEvent,
+  streamedContent: string,
+  flags: { hasThinkingBlock: boolean; suppressedThinkingBlock: boolean }
+): LlmStreamDoneEvent => {
+  const finalSanitized = sanitizeThinkingBlocks(event.assistantMessage.content, { trim: true });
+  const finalContent = finalSanitized.content || streamedContent.trim();
+  const nextFlags = {
+    hasThinkingBlock: flags.hasThinkingBlock || finalSanitized.hasThinkingBlock,
+    suppressedThinkingBlock: flags.suppressedThinkingBlock || finalSanitized.suppressedThinkingBlock
+  };
+
+  return {
+    ...event,
+    assistantMessage: {
+      ...event.assistantMessage,
+      content: finalContent
+    },
+    conversation: sanitizeConversationSummary(event.conversation),
+    metadata: mergeThinkingMetadata(event.metadata, nextFlags)
+  };
+};
+
 const isLlmStreamEvent = (value: unknown): value is LlmStreamEvent => {
   if (!isRecord(value) || typeof value.type !== 'string') return false;
 
@@ -281,19 +367,51 @@ const parseLlmChatStream = async (
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
+  const thinkingBlockSuppressor = new ThinkingBlockSuppressor();
   let buffer = '';
+  let visibleContent = '';
+  let thinkingBlockFlags = { hasThinkingBlock: false, suppressedThinkingBlock: false };
   let doneEvent: LlmStreamDoneEvent | null = null;
-  let errorEvent: LlmStreamErrorEvent | null = null;
+  let errorEvent: LlmStreamErrorEvent | null = null as LlmStreamErrorEvent | null;
+
+  const emitVisibleDelta = (delta: string, generatedAt: string) => {
+    const visibleDelta = visibleContent.length === 0 ? delta.replace(/^\s+/, '') : delta;
+    if (visibleDelta.length === 0) return;
+
+    visibleContent += visibleDelta;
+    onEvent?.({
+      type: 'delta',
+      delta: visibleDelta,
+      content: visibleContent,
+      generatedAt
+    });
+  };
 
   const handleLine = (line: string) => {
     const event = parseLlmStreamEventLine(line);
     if (!event) return;
 
-    onEvent?.(event);
+    if (event.type === 'delta') {
+      const sanitized = thinkingBlockSuppressor.feed(event.delta);
+      thinkingBlockFlags = recordThinkingBlockResult(thinkingBlockFlags, sanitized);
+      emitVisibleDelta(sanitized.delta, event.generatedAt);
+      return;
+    }
 
     if (event.type === 'done') {
-      doneEvent = event;
-    } else if (event.type === 'error') {
+      const flushed = thinkingBlockSuppressor.flush();
+      thinkingBlockFlags = recordThinkingBlockResult(thinkingBlockFlags, flushed);
+      emitVisibleDelta(flushed.delta, event.assistantMessage.createdAt);
+
+      const sanitizedDoneEvent = sanitizeDoneEvent(event, visibleContent, thinkingBlockFlags);
+      doneEvent = sanitizedDoneEvent;
+      onEvent?.(sanitizedDoneEvent);
+      return;
+    }
+
+    onEvent?.(event);
+
+    if (event.type === 'error') {
       errorEvent = event;
     }
   };
@@ -334,7 +452,7 @@ const parseModelPullStream = async (
   const decoder = new TextDecoder();
   let buffer = '';
   let lastEvent: ModelPullProgressEvent | null = null;
-  let errorEvent: ModelPullProgressEvent | null = null;
+  let errorEvent: ModelPullProgressEvent | null = null as ModelPullProgressEvent | null;
 
   const handleLine = (line: string) => {
     const trimmed = line.trim();
@@ -451,23 +569,32 @@ export const api = {
   },
 
   async listConversations() {
-    return request<{ conversations: ConversationSummary[] }>('/api/conversations');
+    const response = await request<{ conversations: ConversationSummary[] }>('/api/conversations');
+    return { conversations: response.conversations.map(sanitizeConversationSummary) };
   },
 
   async createConversation(title?: string) {
-    return jsonRequest<{ conversation: ConversationSummary }>('/api/conversations', 'POST', { title });
+    const response = await jsonRequest<{ conversation: ConversationSummary }>('/api/conversations', 'POST', { title });
+    return { conversation: sanitizeConversationSummary(response.conversation) };
   },
 
   async getConversation(conversationId: string) {
-    return request<{ conversation: Conversation }>(`/api/conversations/${conversationId}`);
+    const response = await request<{ conversation: Conversation }>(`/api/conversations/${conversationId}`);
+    return { conversation: sanitizeConversation(response.conversation) };
   },
 
   async deleteConversation(conversationId: string) {
-    return jsonRequest<{ conversation: ConversationSummary }>(`/api/conversations/${conversationId}`, 'DELETE');
+    const response = await jsonRequest<{ conversation: ConversationSummary }>(`/api/conversations/${conversationId}`, 'DELETE');
+    return { conversation: sanitizeConversationSummary(response.conversation) };
   },
 
   async sendMessage(conversationId: string, content: string) {
-    return jsonRequest<SendMessageResponse>(`/api/conversations/${conversationId}/messages`, 'POST', { content });
+    const response = await jsonRequest<SendMessageResponse>(`/api/conversations/${conversationId}/messages`, 'POST', { content });
+    return {
+      ...response,
+      assistantMessage: sanitizeAssistantMessage(response.assistantMessage),
+      conversation: sanitizeConversationSummary(response.conversation)
+    };
   },
 
   async sendMessageStream(conversationId: string, content: string, options: SendMessageStreamOptions = {}) {
@@ -493,11 +620,15 @@ export const api = {
   },
 
   async generateConversationTitle(conversationId: string, source = 'first-message') {
-    return jsonRequest<GenerateConversationTitleResponse>(
+    const response = await jsonRequest<GenerateConversationTitleResponse>(
       `/api/conversations/${conversationId}/generate-title`,
       'POST',
       { source }
     );
+    return {
+      ...response,
+      conversation: sanitizeConversationSummary(response.conversation)
+    };
   },
 
   async speakText(text: string, options: SpeakTextOptions = {}) {

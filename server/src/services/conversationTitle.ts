@@ -2,6 +2,7 @@ import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { generateWithLlm } from './llmClient.js';
 import { resolveOptionalLlmFeatureModel } from './modelSettingsService.js';
+import { sanitizeThinkingBlocks } from './thinkingBlocks.js';
 
 const genericConversationTitles = new Set([
   'new conversation',
@@ -65,7 +66,9 @@ export const conversationNeedsGeneratedTitle = ({
 };
 
 export const buildConversationTitlePrompt = (firstUserPrompt: string, firstAssistantResponse?: string | null) => {
-  const trimmedAssistantResponse = firstAssistantResponse?.trim();
+  const trimmedAssistantResponse = firstAssistantResponse
+    ? sanitizeThinkingBlocks(firstAssistantResponse, { trim: true }).content
+    : undefined;
 
   return [
     'You create concise titles for AI chat conversations.',
@@ -98,15 +101,8 @@ export const buildConversationTitlePrompt = (firstUserPrompt: string, firstAssis
   ].join('\n');
 };
 
-const stripThinkingBlocks = (value: string) =>
-  value
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
-    .replace(/<think>[\s\S]*$/gi, '')
-    .replace(/<thinking>[\s\S]*$/gi, '');
-
 const unwrapAccidentalFence = (value: string) => {
-  const trimmed = stripThinkingBlocks(value).trim();
+  const trimmed = sanitizeThinkingBlocks(value, { trim: true }).content;
   const fenceMatch = trimmed.match(/^```(?:text|txt|title|markdown|md)?\s*\n([\s\S]*?)\n```$/i);
   return fenceMatch?.[1]?.trim() ?? trimmed;
 };
@@ -202,7 +198,10 @@ export const generateConversationTitle = async (
   firstAssistantResponse?: string | null
 ): Promise<ConversationTitleResult> => {
   const trimmedPrompt = firstUserPrompt.trim();
-  const trimmedAssistantResponse = firstAssistantResponse?.trim();
+  const sanitizedAssistantResponse = firstAssistantResponse
+    ? sanitizeThinkingBlocks(firstAssistantResponse, { trim: true }).content
+    : undefined;
+  const trimmedAssistantResponse = sanitizedAssistantResponse?.trim();
   const fallbackTitle = makeFallbackConversationTitle(trimmedPrompt);
 
   if (!trimmedPrompt) {

@@ -1,4 +1,5 @@
 import type { MessageRole } from '@prisma/client';
+import { sanitizeThinkingBlocks } from './thinkingBlocks.js';
 
 export interface PromptMessage {
   role: MessageRole;
@@ -23,14 +24,11 @@ const roleLabel = (role: MessageRole) => {
   }
 };
 
-const stripThinkingBlocks = (value: string) =>
-  value
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
-    .replace(/<think>[\s\S]*$/gi, '')
-    .replace(/<thinking>[\s\S]*$/gi, '');
-
-const sanitizeMessage = (content: string) => stripThinkingBlocks(content.replace(/\r\n/g, '\n')).trim();
+const sanitizeMessage = (message: PromptMessage) => {
+  const normalizedContent = message.content.replace(/\r\n/g, '\n');
+  if (message.role !== 'assistant') return normalizedContent.trim();
+  return sanitizeThinkingBlocks(normalizedContent, { trim: true }).content;
+};
 
 export const buildConversationPrompt = (messages: PromptMessage[], options: PromptOptions): string => {
   const newestFirst = messages
@@ -53,7 +51,10 @@ export const buildConversationPrompt = (messages: PromptMessage[], options: Prom
   let usedChars = header.length + footer.length;
 
   for (const message of newestFirst) {
-    const chunk = `${roleLabel(message.role)}: ${sanitizeMessage(message.content)}`;
+    const sanitizedContent = sanitizeMessage(message);
+    if (sanitizedContent.length === 0) continue;
+
+    const chunk = `${roleLabel(message.role)}: ${sanitizedContent}`;
     const extraChars = chunk.length + 2;
 
     if (selected.length > 0 && usedChars + extraChars > options.maxChars) {
@@ -62,7 +63,7 @@ export const buildConversationPrompt = (messages: PromptMessage[], options: Prom
 
     if (selected.length === 0 && usedChars + extraChars > options.maxChars) {
       const available = Math.max(200, options.maxChars - usedChars - 20);
-      selected.push(`${roleLabel(message.role)}: ${sanitizeMessage(message.content).slice(0, available)}`);
+      selected.push(`${roleLabel(message.role)}: ${sanitizedContent.slice(0, available)}`);
       usedChars = options.maxChars;
       break;
     }

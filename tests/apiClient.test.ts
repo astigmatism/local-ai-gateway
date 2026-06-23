@@ -208,6 +208,74 @@ describe('api client conversation routes', () => {
     expect(paths).toEqual(['/api/conversations', '/api/conversations', `/api/conversations/${conversationId}`]);
     expect(paths.some((path) => path.startsWith('/api/users/'))).toBe(false);
   });
+
+  it('hides persisted assistant think blocks when loading conversation data', async () => {
+    const { api } = await loadApi();
+    const conversationId = '22222222-2222-4222-8222-222222222222';
+    const summary = {
+      id: conversationId,
+      userId: '11111111-1111-4111-8111-111111111111',
+      title: 'New conversation',
+      archived: false,
+      createdAt: '2026-05-29T12:00:00.000Z',
+      updatedAt: '2026-05-29T12:01:00.000Z',
+      messages: [
+        {
+          role: 'assistant',
+          content: '<think>persisted reasoning</think>Visible answer',
+          createdAt: '2026-05-29T12:01:00.000Z'
+        }
+      ],
+      _count: { messages: 2 }
+    };
+    const conversation = {
+      ...summary,
+      messages: [
+        {
+          id: '33333333-3333-4333-8333-333333333333',
+          conversationId,
+          role: 'user',
+          content: 'Explain <think>literal user example</think>',
+          createdAt: '2026-05-29T12:00:00.000Z'
+        },
+        {
+          id: '44444444-4444-4444-8444-444444444444',
+          conversationId,
+          role: 'assistant',
+          content: '<think>persisted reasoning</think>Visible answer',
+          createdAt: '2026-05-29T12:01:00.000Z'
+        }
+      ]
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === '/api/conversations') {
+        return new Response(JSON.stringify({ conversations: [summary] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (path === `/api/conversations/${conversationId}`) {
+        return new Response(JSON.stringify({ conversation }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ error: { code: 'UNEXPECTED_ROUTE', message: path } }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    const listResponse = await api.listConversations();
+    const detailResponse = await api.getConversation(conversationId);
+
+    expect(listResponse.conversations[0]?.messages?.[0]?.content).toBe('Visible answer');
+    expect(detailResponse.conversation.messages[0]?.content).toBe('Explain <think>literal user example</think>');
+    expect(detailResponse.conversation.messages[1]?.content).toBe('Visible answer');
+  });
 });
 
 describe('api client text-to-speech requests', () => {
@@ -926,6 +994,101 @@ describe('api client chat streaming requests', () => {
     expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-token');
     expect(new Headers(init.headers).get('Accept')).toBe('application/x-ndjson');
     expect(JSON.parse(init.body as string)).toEqual({ content: 'Tell me about streaming.' });
+  });
+
+  it('hides raw think blocks in chat streams even if the server leaks them', async () => {
+    const { api } = await loadApi();
+    const encoder = new TextEncoder();
+    const events = [
+      {
+        type: 'start',
+        conversationId: '22222222-2222-4222-8222-222222222222',
+        userMessage: {
+          id: '33333333-3333-4333-8333-333333333333',
+          conversationId: '22222222-2222-4222-8222-222222222222',
+          role: 'user',
+          content: 'Hello',
+          createdAt: '2026-05-28T12:00:00.000Z'
+        },
+        assistantMessageTempId: 'stream-assistant-temp',
+        model: 'qwen3:14b',
+        createdAt: '2026-05-28T12:00:00.000Z'
+      },
+      {
+        type: 'delta',
+        delta: '<thi',
+        content: '<thi',
+        generatedAt: '2026-05-28T12:00:01.000Z'
+      },
+      {
+        type: 'delta',
+        delta: 'nk>private browser-side reasoning</think>\n\nVisible answer',
+        content: '<think>private browser-side reasoning</think>\n\nVisible answer',
+        generatedAt: '2026-05-28T12:00:02.000Z'
+      },
+      {
+        type: 'done',
+        assistantMessage: {
+          id: '44444444-4444-4444-8444-444444444444',
+          conversationId: '22222222-2222-4222-8222-222222222222',
+          role: 'assistant',
+          content: '<think>persisted private reasoning</think>\n\nVisible answer',
+          createdAt: '2026-05-28T12:00:03.000Z'
+        },
+        conversation: {
+          id: '22222222-2222-4222-8222-222222222222',
+          userId: '11111111-1111-4111-8111-111111111111',
+          title: 'New conversation',
+          archived: false,
+          createdAt: '2026-05-28T12:00:00.000Z',
+          updatedAt: '2026-05-28T12:00:03.000Z',
+          messages: [
+            {
+              role: 'assistant',
+              content: '<think>summary private reasoning</think>Visible answer',
+              createdAt: '2026-05-28T12:00:03.000Z'
+            }
+          ]
+        },
+        metadata: {}
+      }
+    ];
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(`${JSON.stringify(events[0])}\n${JSON.stringify(events[1])}\n`));
+        controller.enqueue(encoder.encode(`${JSON.stringify(events[2])}\n${JSON.stringify(events[3])}\n`));
+        controller.close();
+      }
+    });
+    const onEvent = vi.fn();
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(stream, {
+            status: 201,
+            headers: { 'Content-Type': 'application/x-ndjson' }
+          })
+      )
+    );
+
+    const doneEvent = await api.sendMessageStream('22222222-2222-4222-8222-222222222222', 'Hello', { onEvent });
+
+    expect(onEvent.mock.calls.map((call) => call[0].type)).toEqual(['start', 'delta', 'done']);
+    expect(onEvent.mock.calls[1]?.[0]).toMatchObject({
+      type: 'delta',
+      delta: 'Visible answer',
+      content: 'Visible answer'
+    });
+    expect(doneEvent.assistantMessage.content).toBe('Visible answer');
+    expect(doneEvent.conversation.messages?.[0]?.content).toBe('Visible answer');
+    expect(doneEvent.metadata).toMatchObject({
+      hasRawThinkingTag: true,
+      rawThinkingTagSuppressed: true
+    });
+    expect(JSON.stringify(onEvent.mock.calls)).not.toContain('private browser-side reasoning');
+    expect(JSON.stringify(doneEvent)).not.toContain('persisted private reasoning');
   });
 
   it('turns chat stream error events into ApiClientError failures', async () => {

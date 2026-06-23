@@ -4,6 +4,12 @@ import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { ApiError } from '../errors/apiError.js';
 import { resolveDefaultLlmModel } from './modelSettingsService.js';
+import {
+  sanitizeThinkingBlocks,
+  ThinkingBlockSuppressor,
+  type ThinkingBlockFilterResult,
+  type ThinkingBlockMetadata
+} from './thinkingBlocks.js';
 
 const ollamaModelDetailsSchema = z
   .object({
@@ -150,17 +156,6 @@ interface OllamaThinkingRequestDecision {
   thinkDisabledReason?: 'capability' | 'known-reasoning-model';
 }
 
-interface RawThinkTagFilterResult {
-  delta: string;
-  hasRawThinkingTag: boolean;
-  suppressedRawThinkingTag: boolean;
-}
-
-interface RawThinkTagMetadata {
-  hasRawThinkingTag: boolean;
-  suppressedRawThinkingTag: boolean;
-}
-
 export interface LlmStreamDeltaEvent {
   type: 'delta';
   delta: string;
@@ -216,116 +211,13 @@ const axiosErrorMessage = (error: unknown, timeoutMs = config.llm.timeoutMs) => 
 
 const isAbortError = (error: unknown) => error instanceof Error && error.name === 'AbortError';
 
-const parseMaybeJson = (text: string): unknown => {
-  if (text.trim() === '') return null;
+const parseMaybeJson = (value: string): unknown => {
+  if (value.trim() === '') return null;
   try {
-    return JSON.parse(text) as unknown;
+    return JSON.parse(value) as unknown;
   } catch {
-    return text;
+    return value;
   }
-};
-
-const rawThinkOpenTag = '<think>';
-const rawThinkCloseTag = '</think>';
-
-const indexOfCaseInsensitive = (value: string, search: string) => value.toLowerCase().indexOf(search);
-
-const trailingTagPrefixLength = (value: string, tag: string) => {
-  const lowerValue = value.toLowerCase();
-  const maxLength = Math.min(tag.length - 1, value.length);
-
-  for (let length = maxLength; length > 0; length -= 1) {
-    if (tag.startsWith(lowerValue.slice(-length))) {
-      return length;
-    }
-  }
-
-  return 0;
-};
-
-class RawThinkTagSuppressor {
-  private pending = '';
-
-  private insideRawThinkBlock = false;
-
-  private hasRawThinkingTagValue = false;
-
-  private suppressedRawThinkingTagValue = false;
-
-  feed(input: string): RawThinkTagFilterResult {
-    let text = `${this.pending}${input}`;
-    this.pending = '';
-    let visible = '';
-
-    while (text.length > 0) {
-      if (this.insideRawThinkBlock) {
-        const closeIndex = indexOfCaseInsensitive(text, rawThinkCloseTag);
-
-        if (closeIndex === -1) {
-          const keepLength = trailingTagPrefixLength(text, rawThinkCloseTag);
-          this.pending = keepLength > 0 ? text.slice(-keepLength) : '';
-          this.suppressedRawThinkingTagValue = true;
-          break;
-        }
-
-        this.suppressedRawThinkingTagValue = true;
-        text = text.slice(closeIndex + rawThinkCloseTag.length);
-        this.insideRawThinkBlock = false;
-        continue;
-      }
-
-      const openIndex = indexOfCaseInsensitive(text, rawThinkOpenTag);
-
-      if (openIndex === -1) {
-        const keepLength = trailingTagPrefixLength(text, rawThinkOpenTag);
-        if (keepLength > 0) {
-          visible += text.slice(0, -keepLength);
-          this.pending = text.slice(-keepLength);
-        } else {
-          visible += text;
-        }
-        break;
-      }
-
-      visible += text.slice(0, openIndex);
-      text = text.slice(openIndex + rawThinkOpenTag.length);
-      this.hasRawThinkingTagValue = true;
-      this.suppressedRawThinkingTagValue = true;
-      this.insideRawThinkBlock = true;
-    }
-
-    return this.snapshot(visible);
-  }
-
-  flush(): RawThinkTagFilterResult {
-    const visible = this.insideRawThinkBlock ? '' : this.pending;
-    if (this.insideRawThinkBlock && this.pending.length > 0) {
-      this.suppressedRawThinkingTagValue = true;
-    }
-    this.pending = '';
-
-    return this.snapshot(visible);
-  }
-
-  private snapshot(delta: string): RawThinkTagFilterResult {
-    return {
-      delta,
-      hasRawThinkingTag: this.hasRawThinkingTagValue,
-      suppressedRawThinkingTag: this.suppressedRawThinkingTagValue
-    };
-  }
-}
-
-const sanitizeRawThinkTags = (value: string) => {
-  const suppressor = new RawThinkTagSuppressor();
-  const first = suppressor.feed(value);
-  const flushed = suppressor.flush();
-
-  return {
-    content: `${first.delta}${flushed.delta}`.trim(),
-    hasRawThinkingTag: first.hasRawThinkingTag || flushed.hasRawThinkingTag,
-    suppressedRawThinkingTag: first.suppressedRawThinkingTag || flushed.suppressedRawThinkingTag
-  };
 };
 
 const extractOllamaErrorMessage = (body: unknown) => {
@@ -358,7 +250,7 @@ const metadataFromOllamaGenerate = (
   model: string,
   hasThinkingField: boolean,
   thinkingDecision: OllamaThinkingRequestDecision,
-  rawThinkTagMetadata: RawThinkTagMetadata = { hasRawThinkingTag: false, suppressedRawThinkingTag: false }
+  thinkingBlockMetadata: ThinkingBlockMetadata = { hasThinkingBlock: false, suppressedThinkingBlock: false }
 ): Record<string, unknown> => {
   const ollamaMetadata: Record<string, unknown> = { ...parsed };
   delete ollamaMetadata.response;
@@ -369,8 +261,8 @@ const metadataFromOllamaGenerate = (
     model,
     generatedAt: new Date().toISOString(),
     hasThinkingField,
-    hasRawThinkingTag: rawThinkTagMetadata.hasRawThinkingTag,
-    rawThinkingTagSuppressed: rawThinkTagMetadata.suppressedRawThinkingTag,
+    hasRawThinkingTag: thinkingBlockMetadata.hasThinkingBlock,
+    rawThinkingTagSuppressed: thinkingBlockMetadata.suppressedThinkingBlock,
     thinkingCapabilityDetected: thinkingDecision.supportsThinking,
     thinkDisabled: thinkingDecision.thinkDisabled,
     ...(thinkingDecision.thinkDisabledReason ? { thinkDisabledReason: thinkingDecision.thinkDisabledReason } : {}),
@@ -591,7 +483,7 @@ export const generateWithLlm = async (
     const response = await client.post('/api/generate', body, { timeout: timeoutMs });
 
     const parsed = ollamaGenerateResponseSchema.parse(response.data);
-    const sanitized = sanitizeRawThinkTags(parsed.response ?? '');
+    const sanitized = sanitizeThinkingBlocks(parsed.response ?? '', { trim: true });
     const content = sanitized.content;
 
     if (!content) {
@@ -603,8 +495,8 @@ export const generateWithLlm = async (
     return {
       content,
       metadata: metadataFromOllamaGenerate(parsed, model, parsed.thinking !== undefined, thinkingDecision, {
-        hasRawThinkingTag: sanitized.hasRawThinkingTag,
-        suppressedRawThinkingTag: sanitized.suppressedRawThinkingTag
+        hasThinkingBlock: sanitized.hasThinkingBlock,
+        suppressedThinkingBlock: sanitized.suppressedThinkingBlock
       })
     };
   } catch (error) {
@@ -760,7 +652,7 @@ export async function* generateWithLlmStream(
   let hasThinkingField = false;
   let hasRawThinkingTag = false;
   let suppressedRawThinkingTag = false;
-  const rawThinkTagSuppressor = new RawThinkTagSuppressor();
+  const thinkingBlockSuppressor = new ThinkingBlockSuppressor();
 
   try {
     const { body, thinkingDecision } = await buildOllamaGenerateRequestBody(model, prompt, true);
@@ -796,9 +688,9 @@ export async function* generateWithLlmStream(
     const decoder = new TextDecoder();
     let buffer = '';
 
-    const recordRawThinkTagResult = (result: RawThinkTagFilterResult) => {
-      hasRawThinkingTag = hasRawThinkingTag || result.hasRawThinkingTag;
-      suppressedRawThinkingTag = suppressedRawThinkingTag || result.suppressedRawThinkingTag;
+    const recordThinkingBlockResult = (result: ThinkingBlockFilterResult) => {
+      hasRawThinkingTag = hasRawThinkingTag || result.hasThinkingBlock;
+      suppressedRawThinkingTag = suppressedRawThinkingTag || result.suppressedThinkingBlock;
     };
 
     const appendVisibleDelta = function* (delta: string): Generator<LlmStreamDeltaEvent> {
@@ -824,8 +716,8 @@ export async function* generateWithLlmStream(
 
       const delta = typeof parsed.response === 'string' ? parsed.response : '';
       if (delta.length > 0) {
-        const sanitized = rawThinkTagSuppressor.feed(delta);
-        recordRawThinkTagResult(sanitized);
+        const sanitized = thinkingBlockSuppressor.feed(delta);
+        recordThinkingBlockResult(sanitized);
         yield* appendVisibleDelta(sanitized.delta);
       }
 
@@ -856,8 +748,8 @@ export async function* generateWithLlmStream(
       }
     }
 
-    const flushed = rawThinkTagSuppressor.flush();
-    recordRawThinkTagResult(flushed);
+    const flushed = thinkingBlockSuppressor.flush();
+    recordThinkingBlockResult(flushed);
     if (flushed.delta.length > 0) {
       for (const event of appendVisibleDelta(flushed.delta)) {
         yield event;
@@ -881,8 +773,8 @@ export async function* generateWithLlmStream(
       type: 'done',
       content: finalContent,
       metadata: metadataFromOllamaGenerate(finalChunk, model, hasThinkingField, thinkingDecision, {
-        hasRawThinkingTag,
-        suppressedRawThinkingTag
+        hasThinkingBlock: hasRawThinkingTag,
+        suppressedThinkingBlock: suppressedRawThinkingTag
       })
     };
   } catch (error) {

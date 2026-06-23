@@ -22,6 +22,7 @@ import { generatedImageMetadataFromMessage, generatedImagePath, saveGeneratedIma
 import { detectImageIntent, type ImageIntentDetection } from '../services/imageIntent.js';
 import { resolveDefaultLlmModel } from '../services/modelSettingsService.js';
 import { buildConversationPrompt } from '../services/promptBuilder.js';
+import { sanitizeThinkingBlocks } from '../services/thinkingBlocks.js';
 
 export const conversationsRouter = Router();
 
@@ -264,6 +265,72 @@ const generatedImageUrl = (conversationId: string, messageId: string) =>
 
 const imageAssistantContent = (prompt: string) => `Generated image for: ${prompt}`;
 
+type MessageContentShape = {
+  role: MessageRole;
+  content: string;
+};
+
+const sanitizeAssistantMessageForResponse = <T extends MessageContentShape>(message: T): T => {
+  if (message.role !== MessageRole.assistant) return message;
+
+  const sanitized = sanitizeThinkingBlocks(message.content, { trim: true });
+  if (!sanitized.hasThinkingBlock && sanitized.content === message.content) return message;
+
+  return {
+    ...message,
+    content: sanitized.content
+  } as T;
+};
+
+const sanitizeConversationSummaryForResponse = <T extends { messages?: MessageContentShape[] }>(conversation: T): T => {
+  if (!conversation.messages) return conversation;
+
+  let changed = false;
+  const messages = conversation.messages.map((message) => {
+    const sanitized = sanitizeAssistantMessageForResponse(message);
+    changed = changed || sanitized !== message;
+    return sanitized;
+  });
+
+  return changed ? ({ ...conversation, messages } as T) : conversation;
+};
+
+const sanitizeConversationForResponse = <T extends { messages: MessageContentShape[] }>(conversation: T): T => {
+  let changed = false;
+  const messages = conversation.messages.map((message) => {
+    const sanitized = sanitizeAssistantMessageForResponse(message);
+    changed = changed || sanitized !== message;
+    return sanitized;
+  });
+
+  return changed ? ({ ...conversation, messages } as T) : conversation;
+};
+
+const mergeThinkingSuppressionMetadata = (
+  metadata: Record<string, unknown> | undefined,
+  sanitized: ReturnType<typeof sanitizeThinkingBlocks>
+) => {
+  if (!sanitized.hasThinkingBlock && !sanitized.suppressedThinkingBlock) return metadata;
+
+  return {
+    ...(metadata ?? {}),
+    hasRawThinkingTag: Boolean(metadata?.hasRawThinkingTag) || sanitized.hasThinkingBlock,
+    rawThinkingTagSuppressed: Boolean(metadata?.rawThinkingTagSuppressed) || sanitized.suppressedThinkingBlock
+  };
+};
+
+const sanitizeAssistantTextForPersistence = (content: string, metadata?: Record<string, unknown>) => {
+  const sanitized = sanitizeThinkingBlocks(content, { trim: true });
+  if (!sanitized.content) {
+    throw new ApiError(502, 'LLM returned an empty response after hiding internal thinking.', 'LLM_EMPTY_RESPONSE');
+  }
+
+  return {
+    content: sanitized.content,
+    metadata: mergeThinkingSuppressionMetadata(metadata, sanitized)
+  };
+};
+
 const createImageAssistantMessage = async (conversationId: string, prompt: string, signal?: AbortSignal) => {
   const imageResult = await generateImageWithLlm(prompt, { signal });
   const storedImage = await saveGeneratedImage(imageResult.image);
@@ -326,7 +393,7 @@ const noTitleGenerationNeededResponse = async (
   userId: string,
   reason: string
 ): Promise<TitleGenerationEndpointResponse> => ({
-  conversation: await loadConversationSummaryForUser(conversationId, userId),
+  conversation: sanitizeConversationSummaryForResponse(await loadConversationSummaryForUser(conversationId, userId)),
   titleGeneration: {
     needed: false,
     generated: false,
@@ -407,7 +474,7 @@ const generateAndSaveConversationTitle = async (
     });
   }
 
-  const updatedConversation = await loadConversationSummaryForUser(conversationId, userId);
+  const updatedConversation = sanitizeConversationSummaryForResponse(await loadConversationSummaryForUser(conversationId, userId));
 
   logger.info(
     {
@@ -422,7 +489,7 @@ const generateAndSaveConversationTitle = async (
   );
 
   return {
-    conversation: updatedConversation,
+    conversation: sanitizeConversationSummaryForResponse(updatedConversation),
     titleGeneration: {
       needed: false,
       generated: titleResult.generated,
@@ -455,7 +522,7 @@ conversationsRouter.get(
     const userId = currentUserId(req);
     const conversations = await listConversationsForUser(userId);
 
-    res.json({ conversations });
+    res.json({ conversations: conversations.map(sanitizeConversationSummaryForResponse) });
   })
 );
 
@@ -476,7 +543,7 @@ conversationsRouter.get(
     const userId = parseOwnUserParam(req);
     const conversations = await listConversationsForUser(userId);
 
-    res.json({ conversations });
+    res.json({ conversations: conversations.map(sanitizeConversationSummaryForResponse) });
   })
 );
 
@@ -537,7 +604,7 @@ conversationsRouter.get(
       throw new ApiError(404, 'Conversation not found.', 'CONVERSATION_NOT_FOUND');
     }
 
-    res.json({ conversation });
+    res.json({ conversation: sanitizeConversationForResponse(conversation) });
   })
 );
 
@@ -760,7 +827,7 @@ conversationsRouter.post(
         await writeNdjsonEvent(res, {
           type: 'done',
           assistantMessage,
-          conversation: updatedConversation,
+          conversation: sanitizeConversationSummaryForResponse(updatedConversation),
           titleGeneration: {
             needed: titleGenerationNeeded
           },
@@ -852,12 +919,13 @@ conversationsRouter.post(
         throw new ApiError(502, 'LLM stream ended without a completed response.', 'LLM_STREAM_INCOMPLETE');
       }
 
+      const assistantResponse = sanitizeAssistantTextForPersistence(llmDone.content, llmDone.metadata);
       const assistantMessage = await prisma.message.create({
         data: {
           conversationId,
           role: MessageRole.assistant,
-          content: llmDone.content,
-          metadata: llmDone.metadata as Prisma.InputJsonValue
+          content: assistantResponse.content,
+          metadata: assistantResponse.metadata as Prisma.InputJsonValue
         }
       });
 
@@ -873,11 +941,11 @@ conversationsRouter.post(
       await writeNdjsonEvent(res, {
         type: 'done',
         assistantMessage,
-        conversation: updatedConversation,
+        conversation: sanitizeConversationSummaryForResponse(updatedConversation),
         titleGeneration: {
           needed: titleGenerationNeeded
         },
-        metadata: llmDone.metadata
+        metadata: assistantResponse.metadata
       });
 
       streamFinished = true;
@@ -1028,15 +1096,16 @@ conversationsRouter.post(
         });
 
         const llmResult = await generateWithLlm(prompt, { model: llmModel });
+        const assistantResponse = sanitizeAssistantTextForPersistence(llmResult.content, llmResult.metadata);
         assistantMessage = await prisma.message.create({
           data: {
             conversationId,
             role: MessageRole.assistant,
-            content: llmResult.content,
-            metadata: llmResult.metadata as Prisma.InputJsonValue
+            content: assistantResponse.content,
+            metadata: assistantResponse.metadata as Prisma.InputJsonValue
           }
         });
-        responseMetadata = llmResult.metadata;
+        responseMetadata = assistantResponse.metadata;
       }
     } catch (error) {
       if (fallbackTitleShouldUpdate) {
@@ -1077,7 +1146,7 @@ conversationsRouter.post(
     res.status(201).json({
       userMessage,
       assistantMessage,
-      conversation: updatedConversation,
+      conversation: sanitizeConversationSummaryForResponse(updatedConversation),
       titleGeneration: {
         needed: titleGenerationNeeded
       },

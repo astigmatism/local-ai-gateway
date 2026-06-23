@@ -48,4 +48,17 @@ describe('buildConversationPrompt', () => {
     expect(prompt).not.toContain('<think>private reasoning');
     expect(prompt).not.toContain('</think>');
   });
+
+  it('preserves user-provided literal think tag examples in prompt history', () => {
+    const prompt = buildConversationPrompt(
+      [
+        { role: 'user', content: 'Explain why this string appears: <think>debug</think>' },
+        { role: 'assistant', content: 'It is usually raw model reasoning markup.' }
+      ],
+      { maxMessages: 20, maxChars: 24000, modelName: 'qwen3:30b' }
+    );
+
+    expect(prompt).toContain('User: Explain why this string appears: <think>debug</think>');
+  });
+
 });
