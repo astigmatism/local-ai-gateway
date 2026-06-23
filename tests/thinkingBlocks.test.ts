@@ -39,6 +39,19 @@ describe('thinking block sanitizer', () => {
     expect(visible).not.toContain('private streamed reasoning');
   });
 
+  it('strips Qwen-style thought control tokens even when split across chunks', () => {
+    const suppressor = new ThinkingBlockSuppressor();
+    let visible = '';
+
+    for (const chunk of ['<|begin_of', '_thought|>hidden reasoning<|end_', 'of_thought|>\nFinal answer']) {
+      visible += suppressor.feed(chunk).delta;
+    }
+    visible += suppressor.flush().delta;
+
+    expect(visible.trim()).toBe('Final answer');
+    expect(visible).not.toContain('hidden reasoning');
+  });
+
   it('does not strip unrelated tags or words that only start with think', () => {
     expect(sanitizeThinkingBlocks('Use <thinker>literally</thinker> here.', { trim: true })).toMatchObject({
       content: 'Use <thinker>literally</thinker> here.',

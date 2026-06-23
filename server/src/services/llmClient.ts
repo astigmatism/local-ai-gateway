@@ -321,6 +321,23 @@ const isKnownRawThinkingModel = (model: string, details?: OllamaModelDetails | n
   return identifiers.some((identifier) => knownRawThinkingModelMarkers.some((marker) => identifier.includes(marker)));
 };
 
+const qwenNoThinkModelMarkers = ['qwen', 'qwq'];
+
+const isKnownQwenThinkingModelName = (model: string) => {
+  const normalizedModel = model.trim().toLowerCase();
+  return qwenNoThinkModelMarkers.some((marker) => normalizedModel.includes(marker));
+};
+
+const noThinkDirectivePattern = /(?:^|\n)\s*\/no_think\b/i;
+
+const applyNoThinkPromptDirective = (prompt: string, model: string, thinkingDecision: OllamaThinkingRequestDecision) => {
+  if (!thinkingDecision.thinkDisabled) return prompt;
+  if (!isKnownQwenThinkingModelName(model)) return prompt;
+  if (noThinkDirectivePattern.test(prompt)) return prompt;
+
+  return `/no_think\n\n${prompt.trimStart()}`;
+};
+
 const readCachedModelCapabilities = (model: string) => {
   const cached = modelCapabilityCache.get(model);
   if (!cached || Date.now() - cached.cachedAt > modelCapabilityCacheTtlMs) return null;
@@ -392,7 +409,7 @@ const buildOllamaGenerateRequestBody = async (model: string, prompt: string, str
   return {
     body: {
       model,
-      prompt,
+      prompt: applyNoThinkPromptDirective(prompt, model, thinkingDecision),
       stream,
       ...(thinkingDecision.thinkDisabled ? { think: false } : {})
     },

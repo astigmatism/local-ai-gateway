@@ -4,13 +4,23 @@ export interface ThinkingBlockFilterResult {
   suppressedThinkingBlock: boolean;
 }
 
+
 export interface SanitizeThinkingBlocksOptions {
   trim?: boolean;
 }
 
-const thinkingOpenTagPattern = /<\s*(?:think|thinking)\b[^>]*>/i;
-const thinkingCloseTagPattern = /<\s*\/\s*(?:think|thinking)\s*>/i;
 const thinkingTagNames = ['think', 'thinking'];
+const thinkingOpenTokenMarkers = ['<|begin_of_thought|>', '<|start_of_thought|>', '<|begin▁of▁thought|>'];
+const thinkingCloseTokenMarkers = ['<|end_of_thought|>', '<|stop_of_thought|>', '<|end▁of▁thought|>'];
+
+const thinkingOpenTagPattern = new RegExp(
+  String.raw`<\s*(?:${thinkingTagNames.join('|')})\b[^>]*>|${thinkingOpenTokenMarkers.map((marker) => marker.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&')).join('|')}`,
+  'i'
+);
+const thinkingCloseTagPattern = new RegExp(
+  String.raw`<\s*\/\s*(?:${thinkingTagNames.join('|')})\s*>|${thinkingCloseTokenMarkers.map((marker) => marker.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&')).join('|')}`,
+  'i'
+);
 
 const findPattern = (value: string, pattern: RegExp) => {
   const match = pattern.exec(value);
@@ -19,8 +29,14 @@ const findPattern = (value: string, pattern: RegExp) => {
   return { index: match.index, text };
 };
 
+const matchesTokenPrefix = (fragment: string, markers: string[]) => {
+  const normalizedFragment = fragment.toLowerCase();
+  return markers.some((marker) => marker.toLowerCase().startsWith(normalizedFragment));
+};
+
 const isPotentialOpenTagPrefix = (fragment: string) => {
   if (!fragment.startsWith('<') || fragment.includes('>')) return false;
+  if (matchesTokenPrefix(fragment, thinkingOpenTokenMarkers)) return true;
 
   const tagPrefix = fragment.slice(1).trimStart().toLowerCase();
   if (tagPrefix.startsWith('/')) return false;
@@ -33,6 +49,7 @@ const isPotentialOpenTagPrefix = (fragment: string) => {
 
 const isPotentialCloseTagPrefix = (fragment: string) => {
   if (!fragment.startsWith('<') || fragment.includes('>')) return false;
+  if (matchesTokenPrefix(fragment, thinkingCloseTokenMarkers)) return true;
 
   const afterOpeningBracket = fragment.slice(1).trimStart().toLowerCase();
   if (afterOpeningBracket.length === 0) return true;
