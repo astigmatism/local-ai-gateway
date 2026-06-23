@@ -28,13 +28,13 @@ const roleLabel = (role: MessageRole) => {
 const sanitizeMessage = (message: PromptMessage) => {
   const normalizedContent = message.content.replace(/\r\n/g, '\n');
   if (message.role !== 'assistant') return normalizedContent.trim();
-  return sanitizeThinkingBlocks(normalizedContent, { trim: true }).content;
+  return sanitizeThinkingBlocks(normalizedContent, { trim: true, extractUntaggedReasoning: true }).content;
 };
 
 const thinkingInstruction = (enabled?: boolean) =>
   enabled
-    ? 'Thinking mode is enabled for this response. If the model emits reasoning, keep it in a provider reasoning field or a <think> block before the final answer; do not repeat that reasoning in the final answer.'
-    : 'Thinking mode is disabled for this response. Do not include chain-of-thought, internal reasoning, analysis text, or <think> blocks in your response.';
+    ? 'Thinking mode is enabled for this response. If the model emits reasoning, keep it in a provider reasoning field or a <think> block before the final answer; then write the user-facing answer after that reasoning and do not repeat reasoning in the final answer.'
+    : 'Thinking mode is disabled for this response. Do not include chain-of-thought, internal reasoning, analysis headings, planning steps, draft/refine/checklist text, or <think> blocks in your response; provide only the final user-facing answer.';
 
 export const buildConversationPrompt = (messages: PromptMessage[], options: PromptOptions): string => {
   const newestFirst = messages

@@ -1074,7 +1074,10 @@ describe('api client chat streaming requests', () => {
       )
     );
 
-    const doneEvent = await api.sendMessageStream('22222222-2222-4222-8222-222222222222', 'Hello', { onEvent });
+    const doneEvent = await api.sendMessageStream('22222222-2222-4222-8222-222222222222', 'Hello', {
+      enableThinking: true,
+      onEvent
+    });
 
     expect(onEvent.mock.calls.map((call) => call[0].type)).toEqual(['start', 'thinking_delta', 'delta', 'done']);
     expect(onEvent.mock.calls[1]?.[0]).toMatchObject({
@@ -1096,6 +1099,101 @@ describe('api client chat streaming requests', () => {
     });
     expect(JSON.stringify(onEvent.mock.calls.filter((call) => call[0].type === 'delta'))).not.toContain('private browser-side reasoning');
     expect(doneEvent.assistantMessage.content).not.toContain('persisted private reasoning');
+  });
+
+
+  it('keeps untagged streamed analysis out of the assistant bubble when thinking is disabled', async () => {
+    const { api } = await loadApi();
+    const encoder = new TextEncoder();
+    const analysis = [
+      'Analysis:',
+      'Analyze user input and identify key elements in input.',
+      'Determine best practices, draft, refine, and check against constraints.',
+      '',
+      'Final answer:',
+      'Visible answer'
+    ].join('\n');
+    const events = [
+      {
+        type: 'start',
+        conversationId: '22222222-2222-4222-8222-222222222222',
+        userMessage: {
+          id: '33333333-3333-4333-8333-333333333333',
+          conversationId: '22222222-2222-4222-8222-222222222222',
+          role: 'user',
+          content: 'Hello',
+          createdAt: '2026-05-28T12:00:00.000Z'
+        },
+        assistantMessageTempId: 'stream-assistant-temp',
+        model: 'plain:latest',
+        createdAt: '2026-05-28T12:00:00.000Z'
+      },
+      {
+        type: 'delta',
+        delta: 'Analysis:\nAnalyze user input and identify key elements in input.\n',
+        content: 'Analysis:\nAnalyze user input and identify key elements in input.\n',
+        generatedAt: '2026-05-28T12:00:01.000Z'
+      },
+      {
+        type: 'delta',
+        delta: 'Determine best practices, draft, refine, and check against constraints.\n\nFinal answer:\nVisible answer',
+        content: analysis,
+        generatedAt: '2026-05-28T12:00:02.000Z'
+      },
+      {
+        type: 'done',
+        assistantMessage: {
+          id: '44444444-4444-4444-8444-444444444444',
+          conversationId: '22222222-2222-4222-8222-222222222222',
+          role: 'assistant',
+          content: analysis,
+          createdAt: '2026-05-28T12:00:03.000Z'
+        },
+        conversation: {
+          id: '22222222-2222-4222-8222-222222222222',
+          userId: '11111111-1111-4111-8111-111111111111',
+          title: 'New conversation',
+          archived: false,
+          createdAt: '2026-05-28T12:00:00.000Z',
+          updatedAt: '2026-05-28T12:00:03.000Z'
+        },
+        metadata: {}
+      }
+    ];
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(events.map((event) => JSON.stringify(event)).join('\n') + '\n'));
+        controller.close();
+      }
+    });
+    const onEvent = vi.fn();
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(stream, {
+            status: 201,
+            headers: { 'Content-Type': 'application/x-ndjson' }
+          })
+      )
+    );
+
+    const doneEvent = await api.sendMessageStream('22222222-2222-4222-8222-222222222222', 'Hello', { onEvent });
+
+    expect(onEvent.mock.calls.map((call) => call[0].type)).toEqual(['start', 'delta', 'done']);
+    expect(onEvent.mock.calls[1]?.[0]).toMatchObject({
+      type: 'delta',
+      delta: 'Visible answer',
+      content: 'Visible answer'
+    });
+    expect(doneEvent.assistantMessage.content).toBe('Visible answer');
+    expect(doneEvent.metadata).toMatchObject({
+      hasUntaggedReasoning: true,
+      untaggedReasoningSuppressed: true
+    });
+    expect(doneEvent.metadata).not.toHaveProperty('thinkingContent');
+    expect(JSON.stringify(onEvent.mock.calls)).not.toContain('Determine best practices');
   });
 
   it('turns chat stream error events into ApiClientError failures', async () => {

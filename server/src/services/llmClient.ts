@@ -264,7 +264,8 @@ const metadataFromOllamaGenerate = (
   hasThinkingField: boolean,
   thinkingDecision: OllamaThinkingRequestDecision,
   thinkingBlockMetadata: ThinkingBlockMetadata = { hasThinkingBlock: false, suppressedThinkingBlock: false },
-  thinkingContent = ''
+  thinkingContent = '',
+  thinkingContentSuppressed = false
 ): Record<string, unknown> => {
   const ollamaMetadata: Record<string, unknown> = { ...parsed };
   delete ollamaMetadata.response;
@@ -279,6 +280,8 @@ const metadataFromOllamaGenerate = (
     hasThinkingField,
     hasRawThinkingTag: thinkingBlockMetadata.hasThinkingBlock,
     rawThinkingTagSuppressed: thinkingBlockMetadata.suppressedThinkingBlock,
+    hasUntaggedReasoning: Boolean(thinkingBlockMetadata.hasUntaggedReasoning),
+    untaggedReasoningSuppressed: Boolean(thinkingBlockMetadata.suppressedUntaggedReasoning),
     thinkingCapabilityDetected: thinkingDecision.supportsThinking,
     thinkingRequested: thinkingDecision.requestedThinking,
     thinkingEnabled: thinkingDecision.thinkEnabled,
@@ -287,6 +290,7 @@ const metadataFromOllamaGenerate = (
     ...(thinkingDecision.thinkEnabledReason ? { thinkEnabledReason: thinkingDecision.thinkEnabledReason } : {}),
     ...(thinkingDecision.thinkDisabledReason ? { thinkDisabledReason: thinkingDecision.thinkDisabledReason } : {}),
     ...(trimmedThinkingContent ? { thinkingContent: trimmedThinkingContent } : {}),
+    ...(thinkingContentSuppressed ? { thinkingContentSuppressed: true } : {}),
     ...(thinkingDecision.modelCapabilities ? { modelCapabilities: thinkingDecision.modelCapabilities } : {}),
     ollama: ollamaMetadata
   };
@@ -450,7 +454,7 @@ const resolveThinkingRequestDecision = async (
     thinkDisabled,
     ...(thinkEnabled && reason ? { thinkEnabledReason: reason } : {}),
     ...(thinkDisabled && reason ? { thinkDisabledReason: reason } : {}),
-    assumeLeadingThinking: thinkEnabled && looksLikeRawThinkingModel
+    assumeLeadingThinking: supportsThinkingControl && looksLikeRawThinkingModel
   };
 };
 
@@ -558,10 +562,13 @@ export const generateWithLlm = async (
     const parsed = ollamaGenerateResponseSchema.parse(response.data);
     const sanitized = sanitizeThinkingBlocks(parsed.response ?? '', {
       trim: true,
-      assumeLeadingThinking: thinkingDecision.assumeLeadingThinking
+      assumeLeadingThinking: thinkingDecision.assumeLeadingThinking,
+      extractUntaggedReasoning: true
     });
     const content = sanitized.content;
-    const thinkingContent = mergeThinkingContent(stringifyThinkingField(parsed.thinking), sanitized.thinking);
+    const rawThinkingContent = mergeThinkingContent(stringifyThinkingField(parsed.thinking), sanitized.thinking);
+    const thinkingContent = thinkingDecision.requestedThinking ? rawThinkingContent : '';
+    const thinkingContentSuppressed = !thinkingDecision.requestedThinking && rawThinkingContent.trim().length > 0;
 
     if (!content) {
       throw new ApiError(502, 'LLM returned an empty response.', 'LLM_EMPTY_RESPONSE', {
@@ -578,9 +585,12 @@ export const generateWithLlm = async (
         thinkingDecision,
         {
           hasThinkingBlock: sanitized.hasThinkingBlock,
-          suppressedThinkingBlock: sanitized.suppressedThinkingBlock
+          suppressedThinkingBlock: sanitized.suppressedThinkingBlock,
+          hasUntaggedReasoning: sanitized.hasUntaggedReasoning,
+          suppressedUntaggedReasoning: sanitized.suppressedUntaggedReasoning
         },
-        thinkingContent
+        thinkingContent,
+        thinkingContentSuppressed
       )
     };
   } catch (error) {
@@ -737,11 +747,16 @@ export async function* generateWithLlmStream(
   let hasThinkingField = false;
   let hasRawThinkingTag = false;
   let suppressedRawThinkingTag = false;
+  let hasUntaggedReasoning = false;
+  let suppressedUntaggedReasoning = false;
+  let thinkingContentSuppressed = false;
 
   try {
     const { body, thinkingDecision } = await buildOllamaGenerateRequestBody(model, prompt, true, options);
+    const exposeThinking = thinkingDecision.requestedThinking;
     const thinkingBlockExtractor = new ThinkingBlockExtractor({
-      assumeLeadingThinking: thinkingDecision.assumeLeadingThinking
+      assumeLeadingThinking: thinkingDecision.assumeLeadingThinking,
+      extractUntaggedReasoning: true
     });
     const response = await fetch(`${config.llm.baseUrl}/api/generate`, {
       method: 'POST',
@@ -778,11 +793,18 @@ export async function* generateWithLlmStream(
     const recordThinkingBlockResult = (result: ThinkingBlockExtractionResult) => {
       hasRawThinkingTag = hasRawThinkingTag || result.hasThinkingBlock;
       suppressedRawThinkingTag = suppressedRawThinkingTag || result.suppressedThinkingBlock;
+      hasUntaggedReasoning = hasUntaggedReasoning || Boolean(result.hasUntaggedReasoning);
+      suppressedUntaggedReasoning = suppressedUntaggedReasoning || Boolean(result.suppressedUntaggedReasoning);
     };
 
     const appendThinkingDelta = function* (delta: string): Generator<LlmStreamThinkingDeltaEvent> {
       const thinkingDelta = thinkingContent.length === 0 ? delta.replace(/^\s+/, '') : delta;
       if (thinkingDelta.length === 0) return;
+
+      if (!exposeThinking) {
+        thinkingContentSuppressed = true;
+        return;
+      }
 
       thinkingContent += thinkingDelta;
       yield {
@@ -883,9 +905,12 @@ export async function* generateWithLlmStream(
         thinkingDecision,
         {
           hasThinkingBlock: hasRawThinkingTag,
-          suppressedThinkingBlock: suppressedRawThinkingTag
+          suppressedThinkingBlock: suppressedRawThinkingTag,
+          hasUntaggedReasoning,
+          suppressedUntaggedReasoning
         },
-        thinkingContent
+        thinkingContent,
+        thinkingContentSuppressed
       )
     };
   } catch (error) {

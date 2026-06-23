@@ -107,6 +107,23 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
         }
       }}
     >
+      <div className="composer-toolbar" aria-label="Thinking controls">
+        <label className={`thinking-toggle ${enableThinking ? 'thinking-toggle-enabled' : ''}`}>
+          <input
+            type="checkbox"
+            checked={enableThinking}
+            onChange={(event) => setEnableThinking(event.target.checked)}
+            disabled={disabled || isSending}
+          />
+          <span className="thinking-toggle-copy">
+            <span className="thinking-toggle-title">Enable thinking</span>
+            <span className="thinking-toggle-description">
+              {enableThinking ? 'Show model reasoning separately above the answer.' : 'Keep reasoning hidden from the answer bubble.'}
+            </span>
+          </span>
+        </label>
+      </div>
+
       <div className={`composer-box ${showVoiceCaptureControls ? 'composer-box-listening' : ''}`}>
         <textarea
           ref={textareaRef}
@@ -160,15 +177,6 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
         )}
       </div>
       <div className="composer-footer">
-        <label className="thinking-toggle">
-          <input
-            type="checkbox"
-            checked={enableThinking}
-            onChange={(event) => setEnableThinking(event.target.checked)}
-            disabled={disabled || isSending}
-          />
-          <span>Enable thinking</span>
-        </label>
         <div className="composer-status" aria-live="polite">
           <span className={isListening ? 'recording-dot' : ''}>{statusText}</span>
         </div>

@@ -53,6 +53,50 @@ describe('thinking block sanitizer', () => {
     expect(visible).not.toContain('hidden reasoning');
   });
 
+  it('extracts untagged analysis sections before the final answer when enabled', () => {
+    const leaked = [
+      'Analysis:',
+      'Analyze user input and identify key elements in input.',
+      'Determine best practices, draft, refine, and check against constraints.',
+      '',
+      'Final answer:',
+      'Visible answer only.'
+    ].join('\n');
+
+    const server = sanitizeThinkingBlocks(leaked, { trim: true, extractUntaggedReasoning: true });
+    const client = sanitizeClientThinkingBlocks(leaked, { trim: true, extractUntaggedReasoning: true });
+
+    expect(server).toMatchObject({
+      content: 'Visible answer only.',
+      hasUntaggedReasoning: true,
+      suppressedUntaggedReasoning: true
+    });
+    expect(server.thinking).toContain('Analyze user input');
+    expect(client).toMatchObject({
+      content: 'Visible answer only.',
+      hasUntaggedReasoning: true,
+      suppressedUntaggedReasoning: true
+    });
+  });
+
+  it('keeps streamed untagged analysis out of visible content until the final marker arrives', () => {
+    const extractor = new ThinkingBlockExtractor({ extractUntaggedReasoning: true });
+    let visible = '';
+    let thinking = '';
+
+    for (const chunk of ['Analysis:\nAnalyze user input.\n', 'Identify key elements.\n\nFinal answer:\n', 'Visible answer.']) {
+      const result = extractor.feed(chunk);
+      visible += result.contentDelta;
+      thinking += result.thinkingDelta;
+    }
+    const final = extractor.flush();
+    visible += final.contentDelta;
+    thinking += final.thinkingDelta;
+
+    expect(visible.trim()).toBe('Visible answer.');
+    expect(thinking).toContain('Analyze user input');
+    expect(visible).not.toContain('Identify key elements');
+  });
 
   it('can extract thinking text separately from final content', () => {
     const extractor = new ThinkingBlockExtractor();

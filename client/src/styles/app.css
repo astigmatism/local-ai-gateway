@@ -1330,11 +1330,17 @@ textarea {
   }
 }
 
+.composer-toolbar {
+  flex: 0 0 auto;
+  width: min(100%, 1000px);
+  margin: 0 auto 0.55rem;
+}
+
 .composer-footer {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 0.85rem;
   width: min(100%, 1000px);
   min-height: 1.25rem;
@@ -1346,21 +1352,53 @@ textarea {
 .thinking-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
-  min-width: max-content;
+  gap: 0.62rem;
+  max-width: min(100%, 32rem);
+  padding: 0.48rem 0.68rem;
+  border: 1px solid rgba(143, 180, 255, 0.28);
+  border-radius: 16px;
   color: #dbeafe;
+  background: rgba(143, 180, 255, 0.08);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
   font-weight: 750;
+  cursor: pointer;
+}
+
+.thinking-toggle-enabled {
+  border-color: rgba(143, 180, 255, 0.48);
+  background: rgba(69, 109, 186, 0.22);
 }
 
 .thinking-toggle input {
-  width: 1rem;
-  height: 1rem;
+  flex: 0 0 auto;
+  width: 1.1rem;
+  height: 1.1rem;
   margin: 0;
   accent-color: var(--accent-strong);
 }
 
-.thinking-toggle input:disabled + span {
-  opacity: 0.62;
+.thinking-toggle:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.66;
+}
+
+.thinking-toggle-copy {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.thinking-toggle-title {
+  color: #eff6ff;
+  font-size: 0.84rem;
+  line-height: 1.15;
+}
+
+.thinking-toggle-description {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1.25;
 }
 
 .composer-status {
@@ -3529,6 +3567,11 @@ body.mobile-panel-open {
   border-radius: 15px;
 }
 
+.mobile-composer-pane .composer-toolbar {
+  width: 100%;
+  margin: 0 0 0.42rem;
+}
+
 .mobile-composer-pane .composer-footer {
   width: 100%;
   margin: 0.35rem 0 0;
@@ -3540,7 +3583,14 @@ body.mobile-panel-open {
 }
 
 .mobile-composer-pane .thinking-toggle {
-  flex: 0 0 auto;
+  width: 100%;
+  max-width: none;
+  padding: 0.42rem 0.55rem;
+  border-radius: 15px;
+}
+
+.mobile-composer-pane .thinking-toggle-description {
+  font-size: 0.68rem;
 }
 
 .mobile-composer-pane .composer-status {

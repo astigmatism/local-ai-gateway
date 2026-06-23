@@ -42,11 +42,30 @@ describe('buildConversationPrompt', () => {
       { maxMessages: 20, maxChars: 24000, modelName: 'Qwen3.6-27B-Abliterated-MTP-GGUF:Q8_0' }
     );
 
-    expect(prompt).toContain('Thinking mode is disabled for this response. Do not include chain-of-thought, internal reasoning, analysis text, or <think> blocks in your response.');
+    expect(prompt).toContain('Thinking mode is disabled for this response. Do not include chain-of-thought, internal reasoning, analysis headings, planning steps, draft/refine/checklist text, or <think> blocks in your response; provide only the final user-facing answer.');
     expect(prompt).toContain('Assistant: I am Q8.');
     expect(prompt).not.toContain('private reasoning that must not be replayed');
     expect(prompt).not.toContain('<think>private reasoning');
     expect(prompt).not.toContain('</think>');
+  });
+
+
+  it('strips prior assistant untagged analysis from prompt history', () => {
+    const prompt = buildConversationPrompt(
+      [
+        { role: 'user', content: 'Give me the answer.' },
+        {
+          role: 'assistant',
+          content: 'Analysis:\nAnalyze user input and identify key elements.\n\nFinal answer:\nVisible answer.'
+        },
+        { role: 'user', content: 'Repeat it.' }
+      ],
+      { maxMessages: 20, maxChars: 24000, modelName: 'qwen3:30b' }
+    );
+
+    expect(prompt).toContain('Assistant: Visible answer.');
+    expect(prompt).not.toContain('Analyze user input');
+    expect(prompt).not.toContain('Final answer:');
   });
 
 

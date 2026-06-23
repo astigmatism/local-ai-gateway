@@ -288,7 +288,15 @@ const mergeThinkingResponseMetadata = (
   sanitized: ReturnType<typeof sanitizeThinkingBlocks>
 ): Record<string, unknown> | undefined => {
   const thinkingContent = sanitized.thinking.trim();
-  if (!sanitized.hasThinkingBlock && !sanitized.suppressedThinkingBlock && !thinkingContent) {
+  const hasUntaggedReasoning = Boolean(sanitized.hasUntaggedReasoning);
+  const suppressedUntaggedReasoning = Boolean(sanitized.suppressedUntaggedReasoning);
+  if (
+    !sanitized.hasThinkingBlock &&
+    !sanitized.suppressedThinkingBlock &&
+    !hasUntaggedReasoning &&
+    !suppressedUntaggedReasoning &&
+    !thinkingContent
+  ) {
     return metadataRecord(metadata);
   }
 
@@ -297,6 +305,8 @@ const mergeThinkingResponseMetadata = (
     ...(current ?? {}),
     hasRawThinkingTag: Boolean(current?.hasRawThinkingTag) || sanitized.hasThinkingBlock,
     rawThinkingTagSuppressed: Boolean(current?.rawThinkingTagSuppressed) || sanitized.suppressedThinkingBlock,
+    hasUntaggedReasoning: Boolean(current?.hasUntaggedReasoning) || hasUntaggedReasoning,
+    untaggedReasoningSuppressed: Boolean(current?.untaggedReasoningSuppressed) || suppressedUntaggedReasoning,
     ...(thinkingContent && typeof current?.thinkingContent !== 'string' ? { thinkingContent } : {})
   };
 };
@@ -304,10 +314,15 @@ const mergeThinkingResponseMetadata = (
 const sanitizeAssistantMessageForResponse = <T extends MessageContentShape>(message: T): T => {
   if (message.role !== MessageRole.assistant) return message;
 
-  const sanitized = sanitizeThinkingBlocks(message.content, { trim: true });
+  const sanitized = sanitizeThinkingBlocks(message.content, { trim: true, extractUntaggedReasoning: true });
   const nextMetadata = mergeThinkingResponseMetadata(message.metadata, sanitized);
   const metadataChanged = nextMetadata !== metadataRecord(message.metadata);
-  if (!sanitized.hasThinkingBlock && sanitized.content === message.content && !metadataChanged) return message;
+  if (
+    !sanitized.hasThinkingBlock &&
+    !sanitized.hasUntaggedReasoning &&
+    sanitized.content === message.content &&
+    !metadataChanged
+  ) return message;
 
   return {
     ...message,
@@ -345,18 +360,28 @@ const mergeThinkingSuppressionMetadata = (
   sanitized: ReturnType<typeof sanitizeThinkingBlocks>
 ) => {
   const thinkingContent = sanitized.thinking.trim();
-  if (!sanitized.hasThinkingBlock && !sanitized.suppressedThinkingBlock && !thinkingContent) return metadata;
+  const hasUntaggedReasoning = Boolean(sanitized.hasUntaggedReasoning);
+  const suppressedUntaggedReasoning = Boolean(sanitized.suppressedUntaggedReasoning);
+  if (
+    !sanitized.hasThinkingBlock &&
+    !sanitized.suppressedThinkingBlock &&
+    !hasUntaggedReasoning &&
+    !suppressedUntaggedReasoning &&
+    !thinkingContent
+  ) return metadata;
 
   return {
     ...(metadata ?? {}),
     hasRawThinkingTag: Boolean(metadata?.hasRawThinkingTag) || sanitized.hasThinkingBlock,
     rawThinkingTagSuppressed: Boolean(metadata?.rawThinkingTagSuppressed) || sanitized.suppressedThinkingBlock,
+    hasUntaggedReasoning: Boolean(metadata?.hasUntaggedReasoning) || hasUntaggedReasoning,
+    untaggedReasoningSuppressed: Boolean(metadata?.untaggedReasoningSuppressed) || suppressedUntaggedReasoning,
     ...(thinkingContent && typeof metadata?.thinkingContent !== 'string' ? { thinkingContent } : {})
   };
 };
 
 const sanitizeAssistantTextForPersistence = (content: string, metadata?: Record<string, unknown>) => {
-  const sanitized = sanitizeThinkingBlocks(content, { trim: true });
+  const sanitized = sanitizeThinkingBlocks(content, { trim: true, extractUntaggedReasoning: true });
   if (!sanitized.content) {
     throw new ApiError(502, 'LLM returned an empty response after hiding internal thinking.', 'LLM_EMPTY_RESPONSE');
   }

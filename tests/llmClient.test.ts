@@ -242,8 +242,10 @@ describe('generateWithLlm', () => {
       thinkDisabledReason: 'known-reasoning-model',
       hasRawThinkingTag: true,
       rawThinkingTagSuppressed: true,
+      thinkingContentSuppressed: true,
       modelCapabilities: ['completion']
     });
+    expect(result.metadata).not.toHaveProperty('thinkingContent');
     expect(textClient.post).toHaveBeenCalledWith(
       '/api/generate',
       {
@@ -295,20 +297,23 @@ describe('generateWithLlmStream', () => {
       events.push(event);
     }
 
-    expect(events.map((event) => event.type)).toEqual(['metadata', 'delta', 'thinking_delta', 'delta', 'done']);
-    expect(events[1]).toMatchObject({ type: 'delta', delta: 'Hel', content: 'Hel' });
-    expect(events[2]).toMatchObject({ type: 'thinking_delta', delta: 'hidden reasoning chunk', thinking: 'hidden reasoning chunk' });
-    expect(events[3]).toMatchObject({ type: 'delta', delta: 'lo', content: 'Hello' });
-    expect(events[4]).toMatchObject({
+    expect(events.map((event) => event.type)).toEqual(['metadata', 'delta', 'done']);
+    expect(events[1]).toMatchObject({ type: 'delta', delta: 'Hello', content: 'Hello' });
+    expect(events[2]).toMatchObject({
       type: 'done',
       content: 'Hello',
       metadata: {
         provider: 'ollama',
         model: 'qwen3:14b',
         hasThinkingField: true,
-        thinkingContent: 'hidden reasoning chunk'
+        thinkingContentSuppressed: true
       }
     });
+    const hiddenThinkingDoneEvent = events[2];
+    if (!hiddenThinkingDoneEvent || hiddenThinkingDoneEvent.type !== 'done') {
+      throw new Error('Expected stream to finish with a done event.');
+    }
+    expect(hiddenThinkingDoneEvent.metadata).not.toHaveProperty('thinkingContent');
     expect(events.filter((event) => event.type === 'delta').map((event) => JSON.stringify(event)).join('')).not.toContain('hidden reasoning chunk');
     expect(fetchMock).toHaveBeenCalledWith(
       'http://ollama.test/api/generate',
@@ -331,7 +336,65 @@ describe('generateWithLlmStream', () => {
     });
   });
 
-  it('suppresses literal think blocks that arrive split across streamed response chunks', async () => {
+
+  it('suppresses untagged streamed analysis before the final response', async () => {
+    const encoder = new TextEncoder();
+    const payload = [
+      JSON.stringify({ model: 'plain:latest', response: 'Analysis:\nAnalyze user input and identify key elements.\n', done: false }),
+      JSON.stringify({
+        model: 'plain:latest',
+        response: 'Determine best practices, draft, refine, and check against constraints.\n\nFinal answer:\n',
+        done: false
+      }),
+      JSON.stringify({ model: 'plain:latest', response: 'Visible answer.', done: false }),
+      JSON.stringify({ model: 'plain:latest', done: true, total_duration: 123, eval_count: 3 })
+    ].join('\n');
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(`${payload}\n`));
+        controller.close();
+      }
+    });
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'application/x-ndjson' }
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const { textClient } = mockAxiosClients();
+    textClient.post.mockResolvedValueOnce({ data: { capabilities: ['completion'], digest: 'plain-digest' } });
+
+    const { generateWithLlmStream } = await loadLlmClient();
+    const events: LlmStreamEvent[] = [];
+    for await (const event of generateWithLlmStream('User: hello\nAssistant:', { model: 'plain:latest' })) {
+      events.push(event);
+    }
+
+    expect(events.map((event) => event.type)).toEqual(['metadata', 'delta', 'done']);
+    expect(events[1]).toMatchObject({ type: 'delta', delta: 'Visible answer.', content: 'Visible answer.' });
+    expect(events[2]).toMatchObject({
+      type: 'done',
+      content: 'Visible answer.',
+      metadata: {
+        model: 'plain:latest',
+        hasUntaggedReasoning: true,
+        untaggedReasoningSuppressed: true,
+        thinkingContentSuppressed: true
+      }
+    });
+    expect(JSON.stringify(events.filter((event) => event.type === 'delta'))).not.toContain('Analyze user input');
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toEqual({
+      model: 'plain:latest',
+      prompt: 'User: hello\nAssistant:',
+      stream: true
+    });
+  });
+
+  it('separates literal think blocks that arrive split across streamed response chunks when thinking is enabled', async () => {
     const encoder = new TextEncoder();
     const payload = [
       JSON.stringify({ model: 'hf-qwen', response: '<thi', done: false }),
@@ -366,7 +429,7 @@ describe('generateWithLlmStream', () => {
     const model = 'hf.co/gaston-parravicini/Qwen3.6-27B-Abliterated-MTP-GGUF:Q8_0';
     const { generateWithLlmStream } = await loadLlmClient();
     const events: LlmStreamEvent[] = [];
-    for await (const event of generateWithLlmStream('User: hi\nAssistant:', { model })) {
+    for await (const event of generateWithLlmStream('User: hi\nAssistant:', { model, enableThinking: true })) {
       events.push(event);
     }
 
@@ -384,8 +447,9 @@ describe('generateWithLlmStream', () => {
         provider: 'ollama',
         model,
         thinkingCapabilityDetected: false,
-        thinkDisabled: true,
-        thinkDisabledReason: 'known-reasoning-model',
+        thinkingRequested: true,
+        thinkingEnabled: true,
+        thinkEnabledReason: 'known-reasoning-model',
         hasRawThinkingTag: true,
         rawThinkingTagSuppressed: true,
         thinkingContent: 'private streamed reasoning'
@@ -396,9 +460,9 @@ describe('generateWithLlmStream', () => {
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(JSON.parse(init.body as string)).toEqual({
       model,
-      prompt: '/no_think\n\nUser: hi\nAssistant:',
+      prompt: '/think\n\nUser: hi\nAssistant:',
       stream: true,
-      think: false
+      think: true
     });
   });
 
