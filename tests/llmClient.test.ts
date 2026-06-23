@@ -93,9 +93,61 @@ describe('generateWithLlm', () => {
       '/api/generate',
       {
         model: 'qwen3:14b',
-        prompt: 'Reply with exactly backend-ok',
+        prompt: '/no_think\n\nReply with exactly backend-ok',
         stream: false,
         think: false
+      },
+      expect.objectContaining({ timeout: 600000 })
+    );
+  });
+
+  it('enables Ollama thinking when requested for a thinking-capable Qwen model', async () => {
+    const { textClient } = mockAxiosClients();
+    textClient.post.mockImplementation(async (url: string, body: unknown) => {
+      if (url === '/api/show') {
+        return {
+          data: {
+            capabilities: ['completion', 'thinking'],
+            digest: 'thinking-model-digest'
+          }
+        };
+      }
+
+      if (url === '/api/generate') {
+        return {
+          data: {
+            response: '<think>private reasoning</think>\n\nbackend-ok',
+            done: true,
+            done_reason: 'stop'
+          }
+        };
+      }
+
+      throw new Error(`Unexpected text client POST ${url} with ${JSON.stringify(body)}`);
+    });
+
+    const { generateWithLlm } = await loadLlmClient();
+    const result = await generateWithLlm('Reply with exactly backend-ok', { model: 'qwen3:14b', enableThinking: true });
+
+    expect(result.content).toBe('backend-ok');
+    expect(result.metadata).toMatchObject({
+      provider: 'ollama',
+      model: 'qwen3:14b',
+      thinkingCapabilityDetected: true,
+      thinkingRequested: true,
+      thinkingEnabled: true,
+      thinkEnabledReason: 'capability',
+      hasRawThinkingTag: true,
+      rawThinkingTagSuppressed: true,
+      thinkingContent: 'private reasoning'
+    });
+    expect(textClient.post).toHaveBeenCalledWith(
+      '/api/generate',
+      {
+        model: 'qwen3:14b',
+        prompt: '/think\n\nReply with exactly backend-ok',
+        stream: false,
+        think: true
       },
       expect.objectContaining({ timeout: 600000 })
     );
@@ -196,7 +248,7 @@ describe('generateWithLlm', () => {
       '/api/generate',
       {
         model,
-        prompt: 'Reply with exactly backend-ok',
+        prompt: '/no_think\n\nReply with exactly backend-ok',
         stream: false,
         think: false
       },
@@ -243,19 +295,21 @@ describe('generateWithLlmStream', () => {
       events.push(event);
     }
 
-    expect(events.map((event) => event.type)).toEqual(['metadata', 'delta', 'delta', 'done']);
+    expect(events.map((event) => event.type)).toEqual(['metadata', 'delta', 'thinking_delta', 'delta', 'done']);
     expect(events[1]).toMatchObject({ type: 'delta', delta: 'Hel', content: 'Hel' });
-    expect(events[2]).toMatchObject({ type: 'delta', delta: 'lo', content: 'Hello' });
-    expect(events[3]).toMatchObject({
+    expect(events[2]).toMatchObject({ type: 'thinking_delta', delta: 'hidden reasoning chunk', thinking: 'hidden reasoning chunk' });
+    expect(events[3]).toMatchObject({ type: 'delta', delta: 'lo', content: 'Hello' });
+    expect(events[4]).toMatchObject({
       type: 'done',
       content: 'Hello',
       metadata: {
         provider: 'ollama',
         model: 'qwen3:14b',
-        hasThinkingField: true
+        hasThinkingField: true,
+        thinkingContent: 'hidden reasoning chunk'
       }
     });
-    expect(JSON.stringify(events)).not.toContain('hidden reasoning chunk');
+    expect(events.filter((event) => event.type === 'delta').map((event) => JSON.stringify(event)).join('')).not.toContain('hidden reasoning chunk');
     expect(fetchMock).toHaveBeenCalledWith(
       'http://ollama.test/api/generate',
       expect.objectContaining({
@@ -271,7 +325,7 @@ describe('generateWithLlmStream', () => {
     expect(textClient.post).toHaveBeenCalledWith('/api/show', { model: 'qwen3:14b' }, expect.objectContaining({ timeout: 5000 }));
     expect(JSON.parse(init.body as string)).toEqual({
       model: 'qwen3:14b',
-      prompt: 'User: hello\nAssistant:',
+      prompt: '/no_think\n\nUser: hello\nAssistant:',
       stream: true,
       think: false
     });
@@ -316,9 +370,14 @@ describe('generateWithLlmStream', () => {
       events.push(event);
     }
 
-    expect(events.map((event) => event.type)).toEqual(['metadata', 'delta', 'done']);
-    expect(events[1]).toMatchObject({ type: 'delta', delta: 'I am Q8.', content: 'I am Q8.' });
-    expect(events[2]).toMatchObject({
+    expect(events.map((event) => event.type)).toEqual(['metadata', 'thinking_delta', 'delta', 'done']);
+    expect(events[1]).toMatchObject({
+      type: 'thinking_delta',
+      delta: 'private streamed reasoning',
+      thinking: 'private streamed reasoning'
+    });
+    expect(events[2]).toMatchObject({ type: 'delta', delta: 'I am Q8.', content: 'I am Q8.' });
+    expect(events[3]).toMatchObject({
       type: 'done',
       content: 'I am Q8.',
       metadata: {
@@ -328,15 +387,16 @@ describe('generateWithLlmStream', () => {
         thinkDisabled: true,
         thinkDisabledReason: 'known-reasoning-model',
         hasRawThinkingTag: true,
-        rawThinkingTagSuppressed: true
+        rawThinkingTagSuppressed: true,
+        thinkingContent: 'private streamed reasoning'
       }
     });
-    expect(JSON.stringify(events)).not.toContain('private streamed reasoning');
+    expect(events.filter((event) => event.type === 'delta').map((event) => JSON.stringify(event)).join('')).not.toContain('private streamed reasoning');
 
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(JSON.parse(init.body as string)).toEqual({
       model,
-      prompt: 'User: hi\nAssistant:',
+      prompt: '/no_think\n\nUser: hi\nAssistant:',
       stream: true,
       think: false
     });

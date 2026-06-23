@@ -14,6 +14,8 @@ interface ChatInputProps {
   audioLevels: number[];
   isSending: boolean;
   disabled: boolean;
+  enableThinking: boolean;
+  setEnableThinking: (value: boolean) => void;
   composerNotice?: string | null;
   variant?: 'desktop' | 'mobile';
 }
@@ -60,6 +62,8 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
     audioLevels,
     isSending,
     disabled,
+    enableThinking,
+    setEnableThinking,
     composerNotice,
     variant = 'desktop'
   },
@@ -155,8 +159,19 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
           />
         )}
       </div>
-      <div className="composer-status" aria-live="polite">
-        <span className={isListening ? 'recording-dot' : ''}>{statusText}</span>
+      <div className="composer-footer">
+        <label className="thinking-toggle">
+          <input
+            type="checkbox"
+            checked={enableThinking}
+            onChange={(event) => setEnableThinking(event.target.checked)}
+            disabled={disabled || isSending}
+          />
+          <span>Enable thinking</span>
+        </label>
+        <div className="composer-status" aria-live="polite">
+          <span className={isListening ? 'recording-dot' : ''}>{statusText}</span>
+        </div>
       </div>
     </footer>
   );

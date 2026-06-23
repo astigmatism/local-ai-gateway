@@ -25,6 +25,8 @@ interface MobileAppLayoutProps {
   recordingStatus: AudioRecordingStatus;
   audioLevels: number[];
   isSending: boolean;
+  enableThinking: boolean;
+  setEnableThinking: (value: boolean) => void;
   composerRef: Ref<HTMLTextAreaElement>;
   setDraft: (value: string) => void;
   onCreateConversation: () => Promise<void>;
@@ -79,6 +81,8 @@ export const MobileAppLayout = ({
   recordingStatus,
   audioLevels,
   isSending,
+  enableThinking,
+  setEnableThinking,
   composerRef,
   setDraft,
   onCreateConversation,
@@ -252,6 +256,8 @@ export const MobileAppLayout = ({
             audioLevels={audioLevels}
             isSending={isSending}
             disabled={!activeUserId}
+            enableThinking={enableThinking}
+            setEnableThinking={setEnableThinking}
             composerNotice={composerNotice}
           />
         </section>

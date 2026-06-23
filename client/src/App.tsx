@@ -24,6 +24,10 @@ const layoutStorageKeys = {
   healthCollapsed: 'bearCastleAi.layout.healthCollapsed'
 } as const;
 
+const chatStorageKeys = {
+  enableThinking: 'bearCastleAi.chat.enableThinking'
+} as const;
+
 const splitterSize = 8;
 const collapsedHealthPaneHeight = 52;
 const defaultLeftColumnWidth = 300;
@@ -347,6 +351,7 @@ export const App = () => {
   const [optimisticConversation, setOptimisticConversation] = useState<Conversation | null>(null);
   const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState('');
+  const [enableThinking, setEnableThinking] = useState(() => getStoredBoolean(chatStorageKeys.enableThinking, false));
   const [composerNotice, setComposerNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<GatewayStatus | null>(null);
@@ -495,6 +500,10 @@ export const App = () => {
     if (isMobileLayout) return;
     window.localStorage.setItem(layoutStorageKeys.healthCollapsed, String(layout.healthCollapsed));
   }, [isMobileLayout, layout.healthCollapsed]);
+
+  useEffect(() => {
+    window.localStorage.setItem(chatStorageKeys.enableThinking, String(enableThinking));
+  }, [enableThinking]);
 
   useEffect(() => {
     if (isMobileLayout) return undefined;
@@ -979,6 +988,10 @@ export const App = () => {
       createdAt: new Date(submittedAt.getTime() + 1),
       submittedAt: submittedAtIso
     });
+    optimisticThinkingMessage.metadata = {
+      ...(optimisticThinkingMessage.metadata ?? {}),
+      thinkingEnabled: enableThinking
+    };
     const optimisticShell = createOptimisticConversationShell({
       conversationId: optimisticConversationId,
       userId: activeUserId,
@@ -1020,6 +1033,7 @@ export const App = () => {
 
       const doneEvent = await api.sendMessageStream(conversationId, content, {
         signal: abortController.signal,
+        enableThinking,
         onEvent: (event) => {
           if (event.type === 'start') {
             persistedUserMessage = event.userMessage;
@@ -1039,7 +1053,8 @@ export const App = () => {
                       deliveryStatus: event.requestKind === 'image' ? 'imageGenerating' : 'thinking',
                       model: event.model,
                       streaming: event.requestKind !== 'image',
-                      requestKind: event.requestKind ?? 'chat'
+                      requestKind: event.requestKind ?? 'chat',
+                      thinkingEnabled: enableThinking
                     }
                   };
                 }
@@ -1048,6 +1063,26 @@ export const App = () => {
                   ? { ...message, conversationId: event.conversationId }
                   : message;
               })
+            );
+            return;
+          }
+
+          if (event.type === 'thinking_delta') {
+            setOptimisticMessages((current) =>
+              current.map((message) =>
+                message.id === assistantMessageTempId
+                  ? {
+                      ...message,
+                      metadata: {
+                        ...(message.metadata ?? {}),
+                        deliveryStatus: message.content.length > 0 && message.content !== 'Thinking…' ? 'streaming' : 'thinking',
+                        streaming: true,
+                        thinkingContent: event.thinking,
+                        thinkingEnabled: true
+                      }
+                    }
+                  : message
+              )
             );
             return;
           }
@@ -1190,6 +1225,7 @@ export const App = () => {
     activeConversationId,
     activeUserId,
     draft,
+    enableThinking,
     isSending,
     loadConversation,
     loadConversations,
@@ -1303,6 +1339,8 @@ export const App = () => {
           recordingStatus={recorder.status}
           audioLevels={recorder.audioLevels}
           isSending={isSending}
+          enableThinking={enableThinking}
+          setEnableThinking={setEnableThinking}
           composerRef={composerRef}
           setDraft={setDraft}
           onCreateConversation={handleCreateConversation}
@@ -1423,6 +1461,8 @@ export const App = () => {
               audioLevels={recorder.audioLevels}
               isSending={isSending}
               disabled={!activeUserId}
+              enableThinking={enableThinking}
+              setEnableThinking={setEnableThinking}
               composerNotice={composerNotice}
             />
           </section>

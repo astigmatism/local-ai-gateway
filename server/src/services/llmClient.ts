@@ -6,8 +6,8 @@ import { ApiError } from '../errors/apiError.js';
 import { resolveDefaultLlmModel } from './modelSettingsService.js';
 import {
   sanitizeThinkingBlocks,
-  ThinkingBlockSuppressor,
-  type ThinkingBlockFilterResult,
+  ThinkingBlockExtractor,
+  type ThinkingBlockExtractionResult,
   type ThinkingBlockMetadata
 } from './thinkingBlocks.js';
 
@@ -115,6 +115,7 @@ export interface LlmGenerateResult {
 export interface LlmGenerateOptions {
   model?: string;
   timeoutMs?: number;
+  enableThinking?: boolean;
 }
 
 export interface LlmStreamOptions extends LlmGenerateOptions {
@@ -152,8 +153,13 @@ interface OllamaModelCapabilityCacheEntry {
 interface OllamaThinkingRequestDecision {
   modelCapabilities?: string[];
   supportsThinking: boolean | null;
+  requestedThinking: boolean;
+  supportsThinkingControl: boolean;
+  thinkEnabled: boolean;
   thinkDisabled: boolean;
+  thinkEnabledReason?: 'capability' | 'known-reasoning-model';
   thinkDisabledReason?: 'capability' | 'known-reasoning-model';
+  assumeLeadingThinking: boolean;
 }
 
 export interface LlmStreamDeltaEvent {
@@ -163,13 +169,20 @@ export interface LlmStreamDeltaEvent {
   generatedAt: string;
 }
 
+export interface LlmStreamThinkingDeltaEvent {
+  type: 'thinking_delta';
+  delta: string;
+  thinking: string;
+  generatedAt: string;
+}
+
 export interface LlmStreamDoneEvent {
   type: 'done';
   content: string;
   metadata: Record<string, unknown>;
 }
 
-export type LlmStreamEvent = LlmStreamMetadataEvent | LlmStreamDeltaEvent | LlmStreamDoneEvent;
+export type LlmStreamEvent = LlmStreamMetadataEvent | LlmStreamDeltaEvent | LlmStreamThinkingDeltaEvent | LlmStreamDoneEvent;
 
 const client = axios.create({
   baseURL: config.llm.baseUrl,
@@ -250,11 +263,14 @@ const metadataFromOllamaGenerate = (
   model: string,
   hasThinkingField: boolean,
   thinkingDecision: OllamaThinkingRequestDecision,
-  thinkingBlockMetadata: ThinkingBlockMetadata = { hasThinkingBlock: false, suppressedThinkingBlock: false }
+  thinkingBlockMetadata: ThinkingBlockMetadata = { hasThinkingBlock: false, suppressedThinkingBlock: false },
+  thinkingContent = ''
 ): Record<string, unknown> => {
   const ollamaMetadata: Record<string, unknown> = { ...parsed };
   delete ollamaMetadata.response;
   delete ollamaMetadata.thinking;
+
+  const trimmedThinkingContent = thinkingContent.trim();
 
   return {
     provider: 'ollama',
@@ -264,8 +280,13 @@ const metadataFromOllamaGenerate = (
     hasRawThinkingTag: thinkingBlockMetadata.hasThinkingBlock,
     rawThinkingTagSuppressed: thinkingBlockMetadata.suppressedThinkingBlock,
     thinkingCapabilityDetected: thinkingDecision.supportsThinking,
+    thinkingRequested: thinkingDecision.requestedThinking,
+    thinkingEnabled: thinkingDecision.thinkEnabled,
     thinkDisabled: thinkingDecision.thinkDisabled,
+    supportsThinkingControl: thinkingDecision.supportsThinkingControl,
+    ...(thinkingDecision.thinkEnabledReason ? { thinkEnabledReason: thinkingDecision.thinkEnabledReason } : {}),
     ...(thinkingDecision.thinkDisabledReason ? { thinkDisabledReason: thinkingDecision.thinkDisabledReason } : {}),
+    ...(trimmedThinkingContent ? { thinkingContent: trimmedThinkingContent } : {}),
     ...(thinkingDecision.modelCapabilities ? { modelCapabilities: thinkingDecision.modelCapabilities } : {}),
     ollama: ollamaMetadata
   };
@@ -280,6 +301,24 @@ const fetchErrorMessage = (error: unknown, timeoutMs: number) => {
   if (isAbortError(error)) return `request timed out or was canceled after ${timeoutMs} ms`;
   return error instanceof Error ? error.message : 'unknown error';
 };
+
+const stringifyThinkingField = (value: unknown) => {
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+};
+
+const mergeThinkingContent = (...parts: string[]) =>
+  parts
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .join('\n\n');
 
 const imageCapabilityUnavailableMessage = (capability: LocalAiImageGenerationCapability) =>
   capability.reason ??
@@ -328,14 +367,15 @@ const isKnownQwenThinkingModelName = (model: string) => {
   return qwenNoThinkModelMarkers.some((marker) => normalizedModel.includes(marker));
 };
 
-const noThinkDirectivePattern = /(?:^|\n)\s*\/no_think\b/i;
+const thinkingDirectivePattern = /(?:^|\n)\s*\/(?:no_think|think)\b/i;
 
-const applyNoThinkPromptDirective = (prompt: string, model: string, thinkingDecision: OllamaThinkingRequestDecision) => {
-  if (!thinkingDecision.thinkDisabled) return prompt;
+const applyThinkingPromptDirective = (prompt: string, model: string, thinkingDecision: OllamaThinkingRequestDecision) => {
   if (!isKnownQwenThinkingModelName(model)) return prompt;
-  if (noThinkDirectivePattern.test(prompt)) return prompt;
+  if (thinkingDirectivePattern.test(prompt)) return prompt;
 
-  return `/no_think\n\n${prompt.trimStart()}`;
+  if (thinkingDecision.thinkEnabled) return `/think\n\n${prompt.trimStart()}`;
+  if (thinkingDecision.thinkDisabled) return `/no_think\n\n${prompt.trimStart()}`;
+  return prompt;
 };
 
 const readCachedModelCapabilities = (model: string) => {
@@ -384,33 +424,49 @@ const fetchOllamaModelDetails = async (model: string): Promise<OllamaModelDetail
   }
 };
 
-const resolveThinkingRequestDecision = async (model: string): Promise<OllamaThinkingRequestDecision> => {
+const resolveThinkingRequestDecision = async (
+  model: string,
+  requestedThinking = false
+): Promise<OllamaThinkingRequestDecision> => {
   const details = await fetchOllamaModelDetails(model);
   const capabilities = details?.capabilities;
   const supportsThinking = capabilities ? hasThinkingCapability(capabilities) : null;
   const looksLikeRawThinkingModel = isKnownRawThinkingModel(model, details);
-  const thinkDisabled = supportsThinking === true || looksLikeRawThinkingModel;
-  const thinkDisabledReason = supportsThinking === true
+  const supportsThinkingControl = supportsThinking === true || looksLikeRawThinkingModel;
+  const reason = supportsThinking === true
     ? 'capability'
     : looksLikeRawThinkingModel
       ? 'known-reasoning-model'
       : undefined;
+  const thinkEnabled = requestedThinking && supportsThinkingControl;
+  const thinkDisabled = !requestedThinking && supportsThinkingControl;
 
   return {
     ...(capabilities ? { modelCapabilities: capabilities } : {}),
     supportsThinking,
+    requestedThinking,
+    supportsThinkingControl,
+    thinkEnabled,
     thinkDisabled,
-    ...(thinkDisabledReason ? { thinkDisabledReason } : {})
+    ...(thinkEnabled && reason ? { thinkEnabledReason: reason } : {}),
+    ...(thinkDisabled && reason ? { thinkDisabledReason: reason } : {}),
+    assumeLeadingThinking: thinkEnabled && looksLikeRawThinkingModel
   };
 };
 
-const buildOllamaGenerateRequestBody = async (model: string, prompt: string, stream: boolean) => {
-  const thinkingDecision = await resolveThinkingRequestDecision(model);
+const buildOllamaGenerateRequestBody = async (
+  model: string,
+  prompt: string,
+  stream: boolean,
+  options: Pick<LlmGenerateOptions, 'enableThinking'> = {}
+) => {
+  const thinkingDecision = await resolveThinkingRequestDecision(model, options.enableThinking === true);
   return {
     body: {
       model,
-      prompt: applyNoThinkPromptDirective(prompt, model, thinkingDecision),
+      prompt: applyThinkingPromptDirective(prompt, model, thinkingDecision),
       stream,
+      ...(thinkingDecision.thinkEnabled ? { think: true } : {}),
       ...(thinkingDecision.thinkDisabled ? { think: false } : {})
     },
     thinkingDecision
@@ -496,12 +552,16 @@ export const generateWithLlm = async (
   const timeoutMs = options.timeoutMs ?? config.llm.timeoutMs;
 
   try {
-    const { body, thinkingDecision } = await buildOllamaGenerateRequestBody(model, prompt, false);
+    const { body, thinkingDecision } = await buildOllamaGenerateRequestBody(model, prompt, false, options);
     const response = await client.post('/api/generate', body, { timeout: timeoutMs });
 
     const parsed = ollamaGenerateResponseSchema.parse(response.data);
-    const sanitized = sanitizeThinkingBlocks(parsed.response ?? '', { trim: true });
+    const sanitized = sanitizeThinkingBlocks(parsed.response ?? '', {
+      trim: true,
+      assumeLeadingThinking: thinkingDecision.assumeLeadingThinking
+    });
     const content = sanitized.content;
+    const thinkingContent = mergeThinkingContent(stringifyThinkingField(parsed.thinking), sanitized.thinking);
 
     if (!content) {
       throw new ApiError(502, 'LLM returned an empty response.', 'LLM_EMPTY_RESPONSE', {
@@ -511,10 +571,17 @@ export const generateWithLlm = async (
 
     return {
       content,
-      metadata: metadataFromOllamaGenerate(parsed, model, parsed.thinking !== undefined, thinkingDecision, {
-        hasThinkingBlock: sanitized.hasThinkingBlock,
-        suppressedThinkingBlock: sanitized.suppressedThinkingBlock
-      })
+      metadata: metadataFromOllamaGenerate(
+        parsed,
+        model,
+        parsed.thinking !== undefined,
+        thinkingDecision,
+        {
+          hasThinkingBlock: sanitized.hasThinkingBlock,
+          suppressedThinkingBlock: sanitized.suppressedThinkingBlock
+        },
+        thinkingContent
+      )
     };
   } catch (error) {
     if (error instanceof ApiError) {
@@ -666,13 +733,16 @@ export async function* generateWithLlmStream(
 
   let finalChunk: OllamaGenerateResponse | null = null;
   let content = '';
+  let thinkingContent = '';
   let hasThinkingField = false;
   let hasRawThinkingTag = false;
   let suppressedRawThinkingTag = false;
-  const thinkingBlockSuppressor = new ThinkingBlockSuppressor();
 
   try {
-    const { body, thinkingDecision } = await buildOllamaGenerateRequestBody(model, prompt, true);
+    const { body, thinkingDecision } = await buildOllamaGenerateRequestBody(model, prompt, true, options);
+    const thinkingBlockExtractor = new ThinkingBlockExtractor({
+      assumeLeadingThinking: thinkingDecision.assumeLeadingThinking
+    });
     const response = await fetch(`${config.llm.baseUrl}/api/generate`, {
       method: 'POST',
       headers: {
@@ -705,9 +775,22 @@ export async function* generateWithLlmStream(
     const decoder = new TextDecoder();
     let buffer = '';
 
-    const recordThinkingBlockResult = (result: ThinkingBlockFilterResult) => {
+    const recordThinkingBlockResult = (result: ThinkingBlockExtractionResult) => {
       hasRawThinkingTag = hasRawThinkingTag || result.hasThinkingBlock;
       suppressedRawThinkingTag = suppressedRawThinkingTag || result.suppressedThinkingBlock;
+    };
+
+    const appendThinkingDelta = function* (delta: string): Generator<LlmStreamThinkingDeltaEvent> {
+      const thinkingDelta = thinkingContent.length === 0 ? delta.replace(/^\s+/, '') : delta;
+      if (thinkingDelta.length === 0) return;
+
+      thinkingContent += thinkingDelta;
+      yield {
+        type: 'thinking_delta',
+        delta: thinkingDelta,
+        thinking: thinkingContent,
+        generatedAt: new Date().toISOString()
+      };
     };
 
     const appendVisibleDelta = function* (delta: string): Generator<LlmStreamDeltaEvent> {
@@ -723,19 +806,26 @@ export async function* generateWithLlmStream(
       };
     };
 
-    const readLine = function* (line: string): Generator<LlmStreamDeltaEvent> {
+    const appendExtractedDeltas = function* (
+      extracted: ThinkingBlockExtractionResult
+    ): Generator<LlmStreamDeltaEvent | LlmStreamThinkingDeltaEvent> {
+      recordThinkingBlockResult(extracted);
+      yield* appendThinkingDelta(extracted.thinkingDelta);
+      yield* appendVisibleDelta(extracted.contentDelta);
+    };
+
+    const readLine = function* (line: string): Generator<LlmStreamDeltaEvent | LlmStreamThinkingDeltaEvent> {
       const parsed = parseOllamaGenerateStreamLine(line);
       if (!parsed) return;
 
       if (parsed.thinking !== undefined) {
         hasThinkingField = true;
+        yield* appendThinkingDelta(stringifyThinkingField(parsed.thinking));
       }
 
       const delta = typeof parsed.response === 'string' ? parsed.response : '';
       if (delta.length > 0) {
-        const sanitized = thinkingBlockSuppressor.feed(delta);
-        recordThinkingBlockResult(sanitized);
-        yield* appendVisibleDelta(sanitized.delta);
+        yield* appendExtractedDeltas(thinkingBlockExtractor.feed(delta));
       }
 
       if (parsed.done === true) {
@@ -765,12 +855,9 @@ export async function* generateWithLlmStream(
       }
     }
 
-    const flushed = thinkingBlockSuppressor.flush();
-    recordThinkingBlockResult(flushed);
-    if (flushed.delta.length > 0) {
-      for (const event of appendVisibleDelta(flushed.delta)) {
-        yield event;
-      }
+    const flushed = thinkingBlockExtractor.flush();
+    for (const event of appendExtractedDeltas(flushed)) {
+      yield event;
     }
 
     if (!finalChunk) {
@@ -789,10 +876,17 @@ export async function* generateWithLlmStream(
     yield {
       type: 'done',
       content: finalContent,
-      metadata: metadataFromOllamaGenerate(finalChunk, model, hasThinkingField, thinkingDecision, {
-        hasThinkingBlock: hasRawThinkingTag,
-        suppressedThinkingBlock: suppressedRawThinkingTag
-      })
+      metadata: metadataFromOllamaGenerate(
+        finalChunk,
+        model,
+        hasThinkingField,
+        thinkingDecision,
+        {
+          hasThinkingBlock: hasRawThinkingTag,
+          suppressedThinkingBlock: suppressedRawThinkingTag
+        },
+        thinkingContent
+      )
     };
   } catch (error) {
     if (options.signal?.aborted) {

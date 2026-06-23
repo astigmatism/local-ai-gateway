@@ -368,6 +368,13 @@ export interface LlmStreamDeltaEvent {
   generatedAt: string;
 }
 
+export interface LlmStreamThinkingDeltaEvent {
+  type: 'thinking_delta';
+  delta: string;
+  thinking: string;
+  generatedAt: string;
+}
+
 export interface LlmStreamMetadataEvent {
   type: 'metadata';
   provider: 'ollama';
@@ -394,6 +401,7 @@ export interface LlmStreamErrorEvent {
 export type LlmStreamEvent =
   | LlmStreamStartEvent
   | LlmStreamDeltaEvent
+  | LlmStreamThinkingDeltaEvent
   | LlmStreamMetadataEvent
   | LlmStreamDoneEvent
   | LlmStreamErrorEvent;

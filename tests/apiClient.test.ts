@@ -975,6 +975,7 @@ describe('api client chat streaming requests', () => {
     api.setCsrfToken('csrf-token');
 
     const doneEvent = await api.sendMessageStream('22222222-2222-4222-8222-222222222222', 'Tell me about streaming.', {
+      enableThinking: true,
       onEvent
     });
 
@@ -993,10 +994,10 @@ describe('api client chat streaming requests', () => {
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-token');
     expect(new Headers(init.headers).get('Accept')).toBe('application/x-ndjson');
-    expect(JSON.parse(init.body as string)).toEqual({ content: 'Tell me about streaming.' });
+    expect(JSON.parse(init.body as string)).toEqual({ content: 'Tell me about streaming.', enableThinking: true });
   });
 
-  it('hides raw think blocks in chat streams even if the server leaks them', async () => {
+  it('separates raw think blocks in chat streams even if the server leaks them', async () => {
     const { api } = await loadApi();
     const encoder = new TextEncoder();
     const events = [
@@ -1075,8 +1076,13 @@ describe('api client chat streaming requests', () => {
 
     const doneEvent = await api.sendMessageStream('22222222-2222-4222-8222-222222222222', 'Hello', { onEvent });
 
-    expect(onEvent.mock.calls.map((call) => call[0].type)).toEqual(['start', 'delta', 'done']);
+    expect(onEvent.mock.calls.map((call) => call[0].type)).toEqual(['start', 'thinking_delta', 'delta', 'done']);
     expect(onEvent.mock.calls[1]?.[0]).toMatchObject({
+      type: 'thinking_delta',
+      delta: 'private browser-side reasoning',
+      thinking: 'private browser-side reasoning'
+    });
+    expect(onEvent.mock.calls[2]?.[0]).toMatchObject({
       type: 'delta',
       delta: 'Visible answer',
       content: 'Visible answer'
@@ -1085,10 +1091,11 @@ describe('api client chat streaming requests', () => {
     expect(doneEvent.conversation.messages?.[0]?.content).toBe('Visible answer');
     expect(doneEvent.metadata).toMatchObject({
       hasRawThinkingTag: true,
-      rawThinkingTagSuppressed: true
+      rawThinkingTagSuppressed: true,
+      thinkingContent: 'private browser-side reasoning\n\npersisted private reasoning'
     });
-    expect(JSON.stringify(onEvent.mock.calls)).not.toContain('private browser-side reasoning');
-    expect(JSON.stringify(doneEvent)).not.toContain('persisted private reasoning');
+    expect(JSON.stringify(onEvent.mock.calls.filter((call) => call[0].type === 'delta'))).not.toContain('private browser-side reasoning');
+    expect(doneEvent.assistantMessage.content).not.toContain('persisted private reasoning');
   });
 
   it('turns chat stream error events into ApiClientError failures', async () => {

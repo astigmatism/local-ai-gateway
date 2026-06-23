@@ -42,11 +42,22 @@ describe('buildConversationPrompt', () => {
       { maxMessages: 20, maxChars: 24000, modelName: 'Qwen3.6-27B-Abliterated-MTP-GGUF:Q8_0' }
     );
 
-    expect(prompt).toContain('Do not include chain-of-thought, internal reasoning, or <think> blocks in your response.');
+    expect(prompt).toContain('Thinking mode is disabled for this response. Do not include chain-of-thought, internal reasoning, analysis text, or <think> blocks in your response.');
     expect(prompt).toContain('Assistant: I am Q8.');
     expect(prompt).not.toContain('private reasoning that must not be replayed');
     expect(prompt).not.toContain('<think>private reasoning');
     expect(prompt).not.toContain('</think>');
+  });
+
+
+  it('adds an explicit thinking-mode instruction when the composer toggle is enabled', () => {
+    const prompt = buildConversationPrompt(
+      [{ role: 'user', content: 'Think through the tradeoffs, then answer.' }],
+      { maxMessages: 20, maxChars: 24000, modelName: 'qwen3:30b', enableThinking: true }
+    );
+
+    expect(prompt).toContain('Thinking mode is enabled for this response.');
+    expect(prompt).toContain('keep it in a provider reasoning field or a <think> block before the final answer');
   });
 
   it('preserves user-provided literal think tag examples in prompt history', () => {

@@ -52,7 +52,8 @@ const updateConversationSchema = z.object({
 });
 
 const sendMessageSchema = z.object({
-  content: z.string().trim().min(1).max(50000)
+  content: z.string().trim().min(1).max(50000),
+  enableThinking: z.boolean().optional().default(false)
 });
 
 const generateTitleSchema = z.object({
@@ -109,6 +110,13 @@ interface ConversationStreamDeltaEvent {
   generatedAt: string;
 }
 
+interface ConversationStreamThinkingDeltaEvent {
+  type: 'thinking_delta';
+  delta: string;
+  thinking: string;
+  generatedAt: string;
+}
+
 interface ConversationStreamMetadataEvent {
   type: 'metadata';
   provider: 'ollama';
@@ -137,6 +145,7 @@ interface ConversationStreamErrorEvent {
 type ConversationStreamEvent =
   | ConversationStreamStartEvent
   | ConversationStreamDeltaEvent
+  | ConversationStreamThinkingDeltaEvent
   | ConversationStreamMetadataEvent
   | ConversationStreamDoneEvent
   | ConversationStreamErrorEvent;
@@ -268,17 +277,42 @@ const imageAssistantContent = (prompt: string) => `Generated image for: ${prompt
 type MessageContentShape = {
   role: MessageRole;
   content: string;
+  metadata?: unknown;
+};
+
+const metadataRecord = (value: unknown): Record<string, unknown> | undefined =>
+  value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+
+const mergeThinkingResponseMetadata = (
+  metadata: unknown,
+  sanitized: ReturnType<typeof sanitizeThinkingBlocks>
+): Record<string, unknown> | undefined => {
+  const thinkingContent = sanitized.thinking.trim();
+  if (!sanitized.hasThinkingBlock && !sanitized.suppressedThinkingBlock && !thinkingContent) {
+    return metadataRecord(metadata);
+  }
+
+  const current = metadataRecord(metadata);
+  return {
+    ...(current ?? {}),
+    hasRawThinkingTag: Boolean(current?.hasRawThinkingTag) || sanitized.hasThinkingBlock,
+    rawThinkingTagSuppressed: Boolean(current?.rawThinkingTagSuppressed) || sanitized.suppressedThinkingBlock,
+    ...(thinkingContent && typeof current?.thinkingContent !== 'string' ? { thinkingContent } : {})
+  };
 };
 
 const sanitizeAssistantMessageForResponse = <T extends MessageContentShape>(message: T): T => {
   if (message.role !== MessageRole.assistant) return message;
 
   const sanitized = sanitizeThinkingBlocks(message.content, { trim: true });
-  if (!sanitized.hasThinkingBlock && sanitized.content === message.content) return message;
+  const nextMetadata = mergeThinkingResponseMetadata(message.metadata, sanitized);
+  const metadataChanged = nextMetadata !== metadataRecord(message.metadata);
+  if (!sanitized.hasThinkingBlock && sanitized.content === message.content && !metadataChanged) return message;
 
   return {
     ...message,
-    content: sanitized.content
+    content: sanitized.content,
+    ...(nextMetadata ? { metadata: nextMetadata } : {})
   } as T;
 };
 
@@ -310,12 +344,14 @@ const mergeThinkingSuppressionMetadata = (
   metadata: Record<string, unknown> | undefined,
   sanitized: ReturnType<typeof sanitizeThinkingBlocks>
 ) => {
-  if (!sanitized.hasThinkingBlock && !sanitized.suppressedThinkingBlock) return metadata;
+  const thinkingContent = sanitized.thinking.trim();
+  if (!sanitized.hasThinkingBlock && !sanitized.suppressedThinkingBlock && !thinkingContent) return metadata;
 
   return {
     ...(metadata ?? {}),
     hasRawThinkingTag: Boolean(metadata?.hasRawThinkingTag) || sanitized.hasThinkingBlock,
-    rawThinkingTagSuppressed: Boolean(metadata?.rawThinkingTagSuppressed) || sanitized.suppressedThinkingBlock
+    rawThinkingTagSuppressed: Boolean(metadata?.rawThinkingTagSuppressed) || sanitized.suppressedThinkingBlock,
+    ...(thinkingContent && typeof metadata?.thinkingContent !== 'string' ? { thinkingContent } : {})
   };
 };
 
@@ -725,6 +761,7 @@ conversationsRouter.post(
     const startedAt = Date.now();
     const conversationId = uuidParamSchema.parse(req.params.conversationId);
     const body = sendMessageSchema.parse(req.body ?? {});
+    const enableThinking = body.enableThinking;
     const detection = detectImageIntent(body.content);
     const content = detection.prompt;
     if (!content) {
@@ -865,7 +902,8 @@ conversationsRouter.post(
       const prompt = buildConversationPrompt(recentMessages, {
         maxMessages: config.conversation.contextMaxMessages,
         maxChars: config.conversation.contextMaxChars,
-        modelName: llmModel
+        modelName: llmModel,
+        enableThinking
       });
 
       const startWritten = await writeNdjsonEvent(res, {
@@ -886,7 +924,7 @@ conversationsRouter.post(
 
       let llmDone: LlmStreamDoneEvent | null = null;
 
-      for await (const event of generateWithLlmStream(prompt, { model: llmModel, signal: abortController.signal })) {
+      for await (const event of generateWithLlmStream(prompt, { model: llmModel, signal: abortController.signal, enableThinking })) {
         if (event.type === 'metadata') {
           const keepStreaming = await writeNdjsonEvent(res, event);
           if (!keepStreaming) {
@@ -902,6 +940,21 @@ conversationsRouter.post(
             type: 'delta',
             delta: event.delta,
             content: event.content,
+            generatedAt: event.generatedAt
+          });
+          if (!keepStreaming) {
+            abortController.abort();
+            streamFinished = true;
+            return;
+          }
+          continue;
+        }
+
+        if (event.type === 'thinking_delta') {
+          const keepStreaming = await writeNdjsonEvent(res, {
+            type: 'thinking_delta',
+            delta: event.delta,
+            thinking: event.thinking,
             generatedAt: event.generatedAt
           });
           if (!keepStreaming) {
@@ -1014,6 +1067,7 @@ conversationsRouter.post(
     const startedAt = Date.now();
     const conversationId = uuidParamSchema.parse(req.params.conversationId);
     const body = sendMessageSchema.parse(req.body ?? {});
+    const enableThinking = body.enableThinking;
     const detection = detectImageIntent(body.content);
     const content = detection.prompt;
     if (!content) {
@@ -1092,10 +1146,11 @@ conversationsRouter.post(
         const prompt = buildConversationPrompt(recentMessages, {
           maxMessages: config.conversation.contextMaxMessages,
           maxChars: config.conversation.contextMaxChars,
-          modelName: llmModel
+          modelName: llmModel,
+          enableThinking
         });
 
-        const llmResult = await generateWithLlm(prompt, { model: llmModel });
+        const llmResult = await generateWithLlm(prompt, { model: llmModel, enableThinking });
         const assistantResponse = sanitizeAssistantTextForPersistence(llmResult.content, llmResult.metadata);
         assistantMessage = await prisma.message.create({
           data: {

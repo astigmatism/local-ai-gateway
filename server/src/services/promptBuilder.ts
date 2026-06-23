@@ -10,6 +10,7 @@ export interface PromptOptions {
   maxMessages: number;
   maxChars: number;
   modelName: string;
+  enableThinking?: boolean;
 }
 
 const roleLabel = (role: MessageRole) => {
@@ -30,6 +31,11 @@ const sanitizeMessage = (message: PromptMessage) => {
   return sanitizeThinkingBlocks(normalizedContent, { trim: true }).content;
 };
 
+const thinkingInstruction = (enabled?: boolean) =>
+  enabled
+    ? 'Thinking mode is enabled for this response. If the model emits reasoning, keep it in a provider reasoning field or a <think> block before the final answer; do not repeat that reasoning in the final answer.'
+    : 'Thinking mode is disabled for this response. Do not include chain-of-thought, internal reasoning, analysis text, or <think> blocks in your response.';
+
 export const buildConversationPrompt = (messages: PromptMessage[], options: PromptOptions): string => {
   const newestFirst = messages
     .filter((message) => message.content.trim().length > 0)
@@ -40,7 +46,7 @@ export const buildConversationPrompt = (messages: PromptMessage[], options: Prom
     'You are the assistant in a private local AI gateway application.',
     `The configured local model is ${options.modelName}.`,
     'Answer the latest user message naturally and helpfully.',
-    'Do not include chain-of-thought, internal reasoning, or <think> blocks in your response.',
+    thinkingInstruction(options.enableThinking),
     'Use the recent conversation only as context. Do not invent system capabilities.',
     '',
     'Recent conversation:'

@@ -584,6 +584,26 @@ textarea {
   grid-row: 1;
 }
 
+.message-stack {
+  min-width: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.message-row.assistant .message-stack,
+.message-row.system .message-stack {
+  grid-column: 2;
+}
+
+.message-row.user .message-stack {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.message-stack .message-bubble {
+  grid-column: auto;
+}
+
 .message-row.user .message-bubble {
   grid-column: 1;
   background: rgba(69, 109, 186, 0.18);
@@ -621,6 +641,80 @@ textarea {
   border-radius: 22px;
   padding: 1rem 1.1rem;
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.18);
+}
+
+.thinking-trace {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px dashed rgba(143, 180, 255, 0.28);
+  border-radius: 18px;
+  background: rgba(143, 180, 255, 0.075);
+  color: var(--muted);
+}
+
+.thinking-trace.active {
+  border-style: solid;
+  background: rgba(143, 180, 255, 0.1);
+}
+
+.thinking-trace summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  padding: 0.68rem 0.78rem;
+  cursor: pointer;
+  list-style: none;
+  color: #dbeafe;
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.thinking-trace summary::-webkit-details-marker {
+  display: none;
+}
+
+.thinking-trace summary::before {
+  content: '>';
+  color: var(--accent);
+  transition: transform 0.16s ease;
+}
+
+.thinking-trace[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.thinking-trace summary span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.thinking-trace summary small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.thinking-trace-content,
+.thinking-trace-placeholder {
+  border-top: 1px solid rgba(143, 180, 255, 0.16);
+  padding: 0.7rem 0.78rem 0.78rem;
+  line-height: 1.55;
+  font-size: 0.84rem;
+}
+
+.thinking-trace-content {
+  max-height: 15rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.thinking-trace-placeholder {
+  color: var(--muted);
+  font-style: italic;
 }
 
 .message-meta {
@@ -1236,13 +1330,43 @@ textarea {
   }
 }
 
-.composer-status {
+.composer-footer {
   flex: 0 0 auto;
-  min-height: 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem;
   width: min(100%, 1000px);
+  min-height: 1.25rem;
+  margin: 0.45rem auto 0;
   color: var(--muted);
   font-size: 0.8rem;
-  margin: 0.45rem auto 0;
+}
+
+.thinking-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: max-content;
+  color: #dbeafe;
+  font-weight: 750;
+}
+
+.thinking-toggle input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  accent-color: var(--accent-strong);
+}
+
+.thinking-toggle input:disabled + span {
+  opacity: 0.62;
+}
+
+.composer-status {
+  flex: 1 1 auto;
+  min-height: 1.25rem;
+  text-align: right;
 }
 
 .recording-dot::before {
@@ -3263,6 +3387,33 @@ body.mobile-panel-open {
   display: none;
 }
 
+.mobile-chat-panel .message-stack,
+.mobile-chat-panel .message-row.user .message-stack {
+  grid-column: 1;
+  width: fit-content;
+  max-width: min(100%, 42rem);
+}
+
+.mobile-chat-panel .message-row.user .message-stack {
+  justify-self: end;
+  max-width: min(92%, 34rem);
+}
+
+.mobile-chat-panel .message-row.assistant .message-stack,
+.mobile-chat-panel .message-row.system .message-stack {
+  justify-self: start;
+}
+
+.mobile-chat-panel .thinking-trace {
+  border-radius: 16px;
+}
+
+.mobile-chat-panel .thinking-trace summary {
+  flex-wrap: wrap;
+  gap: 0.35rem 0.65rem;
+  padding: 0.6rem 0.68rem;
+}
+
 .mobile-chat-panel .message-bubble {
   width: fit-content;
   max-width: min(100%, 42rem);
@@ -3378,13 +3529,22 @@ body.mobile-panel-open {
   border-radius: 15px;
 }
 
-.mobile-composer-pane .composer-status {
+.mobile-composer-pane .composer-footer {
   width: 100%;
-  min-height: 1rem;
   margin: 0.35rem 0 0;
   padding: 0 0.15rem;
+  align-items: flex-start;
+  gap: 0.55rem;
   font-size: 0.72rem;
   line-height: 1.35;
+}
+
+.mobile-composer-pane .thinking-toggle {
+  flex: 0 0 auto;
+}
+
+.mobile-composer-pane .composer-status {
+  min-height: 1rem;
 }
 
 .mobile-composer-pane .voice-capture-panel {

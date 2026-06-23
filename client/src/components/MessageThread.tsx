@@ -153,6 +153,38 @@ const PendingImageContent = () => (
   </div>
 );
 
+const messageMetadataRecord = (message: Message) =>
+  message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata) ? message.metadata : null;
+
+const messageThinkingContent = (message: Message) => {
+  const value = messageMetadataRecord(message)?.thinkingContent;
+  return typeof value === 'string' ? value.trim() : '';
+};
+
+const messageThinkingEnabled = (message: Message) => messageMetadataRecord(message)?.thinkingEnabled === true;
+
+const ThinkingTrace = ({ message, status }: { message: Message; status: DeliveryStatus | null }) => {
+  const content = messageThinkingContent(message);
+  const isActive = status === 'thinking' || status === 'streaming';
+  const shouldRender = message.role === 'assistant' && (content.length > 0 || (isActive && messageThinkingEnabled(message)));
+
+  if (!shouldRender) return null;
+
+  return (
+    <details className={`thinking-trace ${isActive ? 'active' : ''}`} open={isActive ? true : undefined}>
+      <summary>
+        <span>{isActive ? 'Thinking...' : 'Thinking'}</span>
+        <small>{content.length > 0 ? (isActive ? 'Reasoning is streaming separately' : 'View captured reasoning') : 'Waiting for reasoning'}</small>
+      </summary>
+      {content.length > 0 ? (
+        <div className="thinking-trace-content">{content}</div>
+      ) : (
+        <div className="thinking-trace-placeholder">The model has not emitted reasoning text yet.</div>
+      )}
+    </details>
+  );
+};
+
 const MessageContent = ({ message }: { message: Message }) => {
   const status = deliveryStatus(message);
   const imageMetadata = generatedImageMetadata(message);
@@ -239,28 +271,31 @@ const MessageBubble = ({
       <div className="message-avatar" aria-hidden="true">
         {message.role === 'assistant' ? 'AI' : message.role === 'system' ? 'S' : 'You'}
       </div>
-      <div
-        className="message-bubble"
-        aria-live={status === 'thinking' || status === 'streaming' || status === 'imageGenerating' || status === 'error' ? 'polite' : undefined}
-      >
-        <div className="message-meta">
-          <span>{roleLabel(message.role)}</span>
-          <span>{timestampLabel(message)}</span>
+      <div className="message-stack">
+        <ThinkingTrace message={message} status={status} />
+        <div
+          className="message-bubble"
+          aria-live={status === 'thinking' || status === 'streaming' || status === 'imageGenerating' || status === 'error' ? 'polite' : undefined}
+        >
+          <div className="message-meta">
+            <span>{roleLabel(message.role)}</span>
+            <span>{timestampLabel(message)}</span>
+          </div>
+          <MessageContent message={message} />
+          <MessageActions
+            role={message.role}
+            content={copiedContent}
+            canCopy={canCopyMessage(message)}
+            canSpeak={canSpeak}
+            speechState={speechState}
+            speechError={speechError?.messageId === message.id ? speechError.message : null}
+            canReusePrompt={canReusePrompt(message)}
+            copyLabel={imageMetadata ? 'Copy image prompt' : undefined}
+            copiedLabel={imageMetadata ? 'Image prompt copied' : undefined}
+            onSpeak={() => onSpeakMessage(message.id, message.content)}
+            onReusePrompt={onReusePrompt}
+          />
         </div>
-        <MessageContent message={message} />
-        <MessageActions
-          role={message.role}
-          content={copiedContent}
-          canCopy={canCopyMessage(message)}
-          canSpeak={canSpeak}
-          speechState={speechState}
-          speechError={speechError?.messageId === message.id ? speechError.message : null}
-          canReusePrompt={canReusePrompt(message)}
-          copyLabel={imageMetadata ? 'Copy image prompt' : undefined}
-          copiedLabel={imageMetadata ? 'Image prompt copied' : undefined}
-          onSpeak={() => onSpeakMessage(message.id, message.content)}
-          onReusePrompt={onReusePrompt}
-        />
       </div>
     </div>
   );

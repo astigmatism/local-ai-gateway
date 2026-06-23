@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   sanitizeThinkingBlocks,
-  ThinkingBlockSuppressor
+  ThinkingBlockSuppressor,
+  ThinkingBlockExtractor
 } from '../server/src/services/thinkingBlocks.js';
 import { sanitizeThinkingBlocks as sanitizeClientThinkingBlocks } from '../client/src/lib/thinkingBlocks.js';
 
@@ -50,6 +51,17 @@ describe('thinking block sanitizer', () => {
 
     expect(visible.trim()).toBe('Final answer');
     expect(visible).not.toContain('hidden reasoning');
+  });
+
+
+  it('can extract thinking text separately from final content', () => {
+    const extractor = new ThinkingBlockExtractor();
+    const first = extractor.feed('<think>private reasoning</think>Visible');
+    const final = extractor.flush();
+
+    expect(`${first.contentDelta}${final.contentDelta}`).toBe('Visible');
+    expect(`${first.thinkingDelta}${final.thinkingDelta}`).toBe('private reasoning');
+    expect(first.hasThinkingBlock || final.hasThinkingBlock).toBe(true);
   });
 
   it('does not strip unrelated tags or words that only start with think', () => {

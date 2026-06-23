@@ -37,7 +37,7 @@ import type {
   VoiceOverviewResponse
 } from './types.js';
 import { audioMimeTypeToFileExtension } from './audioRecording.js';
-import { sanitizeThinkingBlocks, ThinkingBlockSuppressor, type ThinkingBlockFilterResult } from './thinkingBlocks.js';
+import { sanitizeThinkingBlocks, ThinkingBlockExtractor, type ThinkingBlockExtractionResult } from './thinkingBlocks.js';
 
 interface ApiErrorShape {
   error?: {
@@ -80,6 +80,7 @@ interface TranscribeAudioOptions {
 
 interface SendMessageStreamOptions {
   signal?: AbortSignal;
+  enableThinking?: boolean;
   onEvent?: (event: LlmStreamEvent) => void;
 }
 
@@ -238,17 +239,63 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 type MessageContentShape = {
   role: string;
   content: string;
+  metadata?: Record<string, unknown> | null;
+};
+
+const metadataRecord = (value: unknown): Record<string, unknown> | undefined => (isRecord(value) ? value : undefined);
+
+const uniqueThinkingContent = (...parts: Array<string | undefined>) => {
+  const seen = new Set<string>();
+  return parts
+    .map((part) => part?.trim() ?? '')
+    .filter((part) => part.length > 0)
+    .filter((part) => {
+      if (seen.has(part)) return false;
+      seen.add(part);
+      return true;
+    })
+    .join('\n\n');
+};
+
+const metadataThinkingContent = (metadata: Record<string, unknown> | undefined) =>
+  typeof metadata?.thinkingContent === 'string' ? metadata.thinkingContent : '';
+
+const mergeThinkingMetadata = (
+  metadata: Record<string, unknown> | undefined,
+  flags: { hasThinkingBlock: boolean; suppressedThinkingBlock: boolean },
+  thinkingContent = ''
+) => {
+  const trimmedThinkingContent = uniqueThinkingContent(metadataThinkingContent(metadata), thinkingContent);
+  if (!flags.hasThinkingBlock && !flags.suppressedThinkingBlock && !trimmedThinkingContent) return metadata;
+
+  return {
+    ...(metadata ?? {}),
+    hasRawThinkingTag: Boolean(metadata?.hasRawThinkingTag) || flags.hasThinkingBlock,
+    rawThinkingTagSuppressed: Boolean(metadata?.rawThinkingTagSuppressed) || flags.suppressedThinkingBlock,
+    ...(trimmedThinkingContent ? { thinkingContent: trimmedThinkingContent } : {})
+  };
 };
 
 const sanitizeAssistantMessage = <T extends MessageContentShape>(message: T): T => {
   if (message.role !== 'assistant') return message;
 
+  const currentMetadata = metadataRecord(message.metadata);
   const sanitized = sanitizeThinkingBlocks(message.content, { trim: true });
-  if (!sanitized.hasThinkingBlock && sanitized.content === message.content) return message;
+  const nextMetadata = mergeThinkingMetadata(
+    currentMetadata,
+    {
+      hasThinkingBlock: sanitized.hasThinkingBlock,
+      suppressedThinkingBlock: sanitized.suppressedThinkingBlock
+    },
+    sanitized.thinking
+  );
+
+  if (!sanitized.hasThinkingBlock && sanitized.content === message.content && nextMetadata === currentMetadata) return message;
 
   return {
     ...message,
-    content: sanitized.content
+    content: sanitized.content,
+    ...(nextMetadata ? { metadata: nextMetadata } : {})
   } as T;
 };
 
@@ -278,45 +325,44 @@ const sanitizeConversation = <T extends { messages: MessageContentShape[] }>(con
 
 const recordThinkingBlockResult = (
   current: { hasThinkingBlock: boolean; suppressedThinkingBlock: boolean },
-  result: ThinkingBlockFilterResult
+  result: ThinkingBlockExtractionResult
 ) => ({
   hasThinkingBlock: current.hasThinkingBlock || result.hasThinkingBlock,
   suppressedThinkingBlock: current.suppressedThinkingBlock || result.suppressedThinkingBlock
 });
 
-const mergeThinkingMetadata = (
-  metadata: Record<string, unknown> | undefined,
-  flags: { hasThinkingBlock: boolean; suppressedThinkingBlock: boolean }
-) => {
-  if (!flags.hasThinkingBlock && !flags.suppressedThinkingBlock) return metadata;
-
-  return {
-    ...(metadata ?? {}),
-    hasRawThinkingTag: Boolean(metadata?.hasRawThinkingTag) || flags.hasThinkingBlock,
-    rawThinkingTagSuppressed: Boolean(metadata?.rawThinkingTagSuppressed) || flags.suppressedThinkingBlock
-  };
-};
-
 const sanitizeDoneEvent = (
   event: LlmStreamDoneEvent,
   streamedContent: string,
-  flags: { hasThinkingBlock: boolean; suppressedThinkingBlock: boolean }
+  flags: { hasThinkingBlock: boolean; suppressedThinkingBlock: boolean },
+  streamedThinkingContent: string
 ): LlmStreamDoneEvent => {
+  const eventMetadata = metadataRecord(event.metadata);
+  const assistantMetadata = metadataRecord(event.assistantMessage.metadata);
   const finalSanitized = sanitizeThinkingBlocks(event.assistantMessage.content, { trim: true });
   const finalContent = finalSanitized.content || streamedContent.trim();
   const nextFlags = {
     hasThinkingBlock: flags.hasThinkingBlock || finalSanitized.hasThinkingBlock,
     suppressedThinkingBlock: flags.suppressedThinkingBlock || finalSanitized.suppressedThinkingBlock
   };
+  const combinedThinkingContent = uniqueThinkingContent(
+    streamedThinkingContent,
+    finalSanitized.thinking,
+    metadataThinkingContent(eventMetadata),
+    metadataThinkingContent(assistantMetadata)
+  );
+  const nextEventMetadata = mergeThinkingMetadata(eventMetadata, nextFlags, combinedThinkingContent);
+  const nextAssistantMetadata = mergeThinkingMetadata(assistantMetadata, nextFlags, combinedThinkingContent);
 
   return {
     ...event,
     assistantMessage: {
       ...event.assistantMessage,
-      content: finalContent
+      content: finalContent,
+      ...(nextAssistantMetadata ? { metadata: nextAssistantMetadata } : {})
     },
     conversation: sanitizeConversationSummary(event.conversation),
-    metadata: mergeThinkingMetadata(event.metadata, nextFlags)
+    ...(nextEventMetadata ? { metadata: nextEventMetadata } : {})
   };
 };
 
@@ -330,6 +376,8 @@ const isLlmStreamEvent = (value: unknown): value is LlmStreamEvent => {
       return value.provider === 'ollama' && value.endpoint === '/api/generate' && typeof value.model === 'string';
     case 'delta':
       return typeof value.delta === 'string' && typeof value.content === 'string';
+    case 'thinking_delta':
+      return typeof value.delta === 'string' && typeof value.thinking === 'string';
     case 'done':
       return isRecord(value.assistantMessage) && isRecord(value.conversation);
     case 'error':
@@ -367,9 +415,10 @@ const parseLlmChatStream = async (
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  const thinkingBlockSuppressor = new ThinkingBlockSuppressor();
+  const thinkingBlockExtractor = new ThinkingBlockExtractor();
   let buffer = '';
   let visibleContent = '';
+  let thinkingContent = '';
   let thinkingBlockFlags = { hasThinkingBlock: false, suppressedThinkingBlock: false };
   let doneEvent: LlmStreamDoneEvent | null = null;
   let errorEvent: LlmStreamErrorEvent | null = null as LlmStreamErrorEvent | null;
@@ -387,23 +436,44 @@ const parseLlmChatStream = async (
     });
   };
 
+  const emitThinkingDelta = (delta: string, generatedAt: string) => {
+    const thinkingDelta = thinkingContent.length === 0 ? delta.replace(/^\s+/, '') : delta;
+    if (thinkingDelta.length === 0) return;
+
+    thinkingContent += thinkingDelta;
+    onEvent?.({
+      type: 'thinking_delta',
+      delta: thinkingDelta,
+      thinking: thinkingContent,
+      generatedAt
+    });
+  };
+
+  const emitExtractedDeltas = (extracted: ThinkingBlockExtractionResult, generatedAt: string) => {
+    thinkingBlockFlags = recordThinkingBlockResult(thinkingBlockFlags, extracted);
+    emitThinkingDelta(extracted.thinkingDelta, generatedAt);
+    emitVisibleDelta(extracted.contentDelta, generatedAt);
+  };
+
   const handleLine = (line: string) => {
     const event = parseLlmStreamEventLine(line);
     if (!event) return;
 
     if (event.type === 'delta') {
-      const sanitized = thinkingBlockSuppressor.feed(event.delta);
-      thinkingBlockFlags = recordThinkingBlockResult(thinkingBlockFlags, sanitized);
-      emitVisibleDelta(sanitized.delta, event.generatedAt);
+      emitExtractedDeltas(thinkingBlockExtractor.feed(event.delta), event.generatedAt);
+      return;
+    }
+
+    if (event.type === 'thinking_delta') {
+      emitThinkingDelta(event.delta, event.generatedAt);
       return;
     }
 
     if (event.type === 'done') {
-      const flushed = thinkingBlockSuppressor.flush();
-      thinkingBlockFlags = recordThinkingBlockResult(thinkingBlockFlags, flushed);
-      emitVisibleDelta(flushed.delta, event.assistantMessage.createdAt);
+      const flushed = thinkingBlockExtractor.flush();
+      emitExtractedDeltas(flushed, event.assistantMessage.createdAt);
 
-      const sanitizedDoneEvent = sanitizeDoneEvent(event, visibleContent, thinkingBlockFlags);
+      const sanitizedDoneEvent = sanitizeDoneEvent(event, visibleContent, thinkingBlockFlags, thinkingContent);
       doneEvent = sanitizedDoneEvent;
       onEvent?.(sanitizedDoneEvent);
       return;
@@ -588,8 +658,11 @@ export const api = {
     return { conversation: sanitizeConversationSummary(response.conversation) };
   },
 
-  async sendMessage(conversationId: string, content: string) {
-    const response = await jsonRequest<SendMessageResponse>(`/api/conversations/${conversationId}/messages`, 'POST', { content });
+  async sendMessage(conversationId: string, content: string, enableThinking = false) {
+    const response = await jsonRequest<SendMessageResponse>(`/api/conversations/${conversationId}/messages`, 'POST', {
+      content,
+      enableThinking
+    });
     return {
       ...response,
       assistantMessage: sanitizeAssistantMessage(response.assistantMessage),
@@ -608,7 +681,7 @@ export const api = {
       method: 'POST',
       headers,
       credentials: 'include',
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, enableThinking: options.enableThinking === true }),
       signal: options.signal
     });
 
