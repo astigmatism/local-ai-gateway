@@ -5,6 +5,15 @@ import { logger } from '../config/logger.js';
 import { ApiError } from '../errors/apiError.js';
 import { resolveDefaultLlmModel } from './modelSettingsService.js';
 
+const ollamaModelDetailsSchema = z
+  .object({
+    capabilities: z.array(z.string()).optional(),
+    digest: z.string().optional()
+  })
+  .passthrough();
+
+type OllamaModelDetails = z.infer<typeof ollamaModelDetailsSchema>;
+
 const ollamaGenerateResponseSchema = z
   .object({
     model: z.string().optional(),
@@ -69,7 +78,6 @@ const localAiCapabilitiesResponseSchema = z
 
 type LocalAiImageGenerationCapability = z.infer<typeof localAiImageGenerationCapabilitySchema>;
 
-
 export interface OllamaGenerateStreamChunk extends Record<string, unknown> {
   model?: string;
   created_at?: string;
@@ -122,6 +130,18 @@ export interface LlmStreamMetadataEvent {
   generatedAt: string;
 }
 
+interface OllamaModelCapabilityCacheEntry {
+  capabilities: string[];
+  digest?: string;
+  cachedAt: number;
+}
+
+interface OllamaThinkingRequestDecision {
+  modelCapabilities?: string[];
+  supportsThinking: boolean | null;
+  thinkDisabled: boolean;
+}
+
 export interface LlmStreamDeltaEvent {
   type: 'delta';
   delta: string;
@@ -156,6 +176,10 @@ const localAiClient = axios.create({
 });
 
 const imageCapabilityCheckTimeoutMs = () => Math.min(config.imageGeneration.timeoutMs, 30000);
+const modelCapabilityCacheTtlMs = 5 * 60 * 1000;
+const modelDetailsTimeoutMs = () => Math.min(5_000, config.modelManagement.detailsTimeoutMs, config.llm.timeoutMs);
+
+const modelCapabilityCache = new Map<string, OllamaModelCapabilityCacheEntry>();
 
 const axiosErrorMessage = (error: unknown, timeoutMs = config.llm.timeoutMs) => {
   if (axios.isAxiosError(error)) {
@@ -210,7 +234,8 @@ const apiErrorFromOllamaStatus = (status: number, body: unknown) => {
 const metadataFromOllamaGenerate = (
   parsed: OllamaGenerateResponse,
   model: string,
-  hasThinkingField: boolean
+  hasThinkingField: boolean,
+  thinkingDecision: OllamaThinkingRequestDecision
 ): Record<string, unknown> => {
   const ollamaMetadata: Record<string, unknown> = { ...parsed };
   delete ollamaMetadata.response;
@@ -221,6 +246,9 @@ const metadataFromOllamaGenerate = (
     model,
     generatedAt: new Date().toISOString(),
     hasThinkingField,
+    thinkingCapabilityDetected: thinkingDecision.supportsThinking,
+    thinkDisabled: thinkingDecision.thinkDisabled,
+    ...(thinkingDecision.modelCapabilities ? { modelCapabilities: thinkingDecision.modelCapabilities } : {}),
     ollama: ollamaMetadata
   };
 };
@@ -251,6 +279,88 @@ const imageCapabilityUnavailableStatus = (capability: LocalAiImageGenerationCapa
   if (!capability.enabled) return 503;
   if (capability.supportsImageGeneration === false) return 422;
   return 503;
+};
+
+const normalizeCapabilityName = (capability: string) => capability.trim().toLowerCase();
+
+const hasThinkingCapability = (capabilities: string[]) =>
+  capabilities.some((capability) => normalizeCapabilityName(capability) === 'thinking');
+
+const readCachedModelCapabilities = (model: string) => {
+  const cached = modelCapabilityCache.get(model);
+  if (!cached || Date.now() - cached.cachedAt > modelCapabilityCacheTtlMs) return null;
+  return cached;
+};
+
+const fetchOllamaModelDetails = async (model: string): Promise<OllamaModelDetails | null> => {
+  const cached = readCachedModelCapabilities(model);
+  if (cached) {
+    return {
+      capabilities: cached.capabilities,
+      ...(cached.digest ? { digest: cached.digest } : {})
+    };
+  }
+
+  try {
+    const response = await client.post(
+      '/api/show',
+      { model },
+      {
+        timeout: modelDetailsTimeoutMs()
+      }
+    );
+    const parsed = ollamaModelDetailsSchema.parse(response.data);
+    const capabilities = parsed.capabilities ?? [];
+
+    modelCapabilityCache.set(model, {
+      capabilities,
+      ...(parsed.digest ? { digest: parsed.digest } : {}),
+      cachedAt: Date.now()
+    });
+
+    return parsed;
+  } catch (error) {
+    logger.warn(
+      {
+        errorMessage: axiosErrorMessage(error, modelDetailsTimeoutMs()),
+        llmBaseUrl: config.llm.baseUrl,
+        model
+      },
+      'Could not inspect Ollama model capabilities; sending generation request without think override'
+    );
+    return null;
+  }
+};
+
+const resolveThinkingRequestDecision = async (model: string): Promise<OllamaThinkingRequestDecision> => {
+  const details = await fetchOllamaModelDetails(model);
+  const capabilities = details?.capabilities;
+  if (!capabilities) {
+    return {
+      supportsThinking: null,
+      thinkDisabled: false
+    };
+  }
+
+  const supportsThinking = hasThinkingCapability(capabilities);
+  return {
+    modelCapabilities: capabilities,
+    supportsThinking,
+    thinkDisabled: supportsThinking
+  };
+};
+
+const buildOllamaGenerateRequestBody = async (model: string, prompt: string, stream: boolean) => {
+  const thinkingDecision = await resolveThinkingRequestDecision(model);
+  return {
+    body: {
+      model,
+      prompt,
+      stream,
+      ...(thinkingDecision.thinkDisabled ? { think: false } : {})
+    },
+    thinkingDecision
+  };
 };
 
 const assertLocalAiImageGenerationAvailable = async (signal?: AbortSignal) => {
@@ -332,15 +442,8 @@ export const generateWithLlm = async (
   const timeoutMs = options.timeoutMs ?? config.llm.timeoutMs;
 
   try {
-    const response = await client.post(
-      '/api/generate',
-      {
-        model,
-        prompt,
-        stream: false
-      },
-      { timeout: timeoutMs }
-    );
+    const { body, thinkingDecision } = await buildOllamaGenerateRequestBody(model, prompt, false);
+    const response = await client.post('/api/generate', body, { timeout: timeoutMs });
 
     const parsed = ollamaGenerateResponseSchema.parse(response.data);
     const content = parsed.response?.trim() ?? '';
@@ -353,7 +456,7 @@ export const generateWithLlm = async (
 
     return {
       content,
-      metadata: metadataFromOllamaGenerate(parsed, model, parsed.thinking !== undefined)
+      metadata: metadataFromOllamaGenerate(parsed, model, parsed.thinking !== undefined, thinkingDecision)
     };
   } catch (error) {
     if (error instanceof ApiError) {
@@ -508,17 +611,14 @@ export async function* generateWithLlmStream(
   let hasThinkingField = false;
 
   try {
+    const { body, thinkingDecision } = await buildOllamaGenerateRequestBody(model, prompt, true);
     const response = await fetch(`${config.llm.baseUrl}/api/generate`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/x-ndjson'
       },
-      body: JSON.stringify({
-        model,
-        prompt,
-        stream: true
-      }),
+      body: JSON.stringify(body),
       signal: controller.signal
     });
 
@@ -606,7 +706,7 @@ export async function* generateWithLlmStream(
     yield {
       type: 'done',
       content: finalContent,
-      metadata: metadataFromOllamaGenerate(finalChunk, model, hasThinkingField)
+      metadata: metadataFromOllamaGenerate(finalChunk, model, hasThinkingField, thinkingDecision)
     };
   } catch (error) {
     if (options.signal?.aborted) {

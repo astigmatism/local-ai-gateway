@@ -20,7 +20,7 @@ const loadLlmClient = async (envOverrides: Record<string, string> = {}) => {
   return import('../server/src/services/llmClient.js');
 };
 
-const mockAxiosForImageGeneration = () => {
+const mockAxiosClients = () => {
   const textClient = {
     post: vi.fn()
   };
@@ -51,6 +51,104 @@ afterEach(() => {
   vi.resetModules();
 });
 
+describe('generateWithLlm', () => {
+  it('disables Ollama thinking when the selected model reports the thinking capability', async () => {
+    const { textClient } = mockAxiosClients();
+    textClient.post.mockImplementation(async (url: string, body: unknown) => {
+      if (url === '/api/show') {
+        return {
+          data: {
+            capabilities: ['completion', 'tools', 'thinking'],
+            digest: 'thinking-model-digest'
+          }
+        };
+      }
+
+      if (url === '/api/generate') {
+        return {
+          data: {
+            response: 'backend-ok',
+            done: true,
+            done_reason: 'stop'
+          }
+        };
+      }
+
+      throw new Error(`Unexpected text client POST ${url} with ${JSON.stringify(body)}`);
+    });
+
+    const { generateWithLlm } = await loadLlmClient();
+    const result = await generateWithLlm('Reply with exactly backend-ok', { model: 'qwen3:14b' });
+
+    expect(result.content).toBe('backend-ok');
+    expect(result.metadata).toMatchObject({
+      provider: 'ollama',
+      model: 'qwen3:14b',
+      thinkingCapabilityDetected: true,
+      thinkDisabled: true,
+      modelCapabilities: ['completion', 'tools', 'thinking']
+    });
+    expect(textClient.post).toHaveBeenCalledWith('/api/show', { model: 'qwen3:14b' }, expect.objectContaining({ timeout: 5000 }));
+    expect(textClient.post).toHaveBeenCalledWith(
+      '/api/generate',
+      {
+        model: 'qwen3:14b',
+        prompt: 'Reply with exactly backend-ok',
+        stream: false,
+        think: false
+      },
+      expect.objectContaining({ timeout: 600000 })
+    );
+  });
+
+  it('does not send an Ollama think override when the selected model does not report thinking support', async () => {
+    const { textClient } = mockAxiosClients();
+    textClient.post.mockImplementation(async (url: string, body: unknown) => {
+      if (url === '/api/show') {
+        return {
+          data: {
+            capabilities: ['completion'],
+            digest: 'completion-model-digest'
+          }
+        };
+      }
+
+      if (url === '/api/generate') {
+        return {
+          data: {
+            response: 'plain-ok',
+            done: true,
+            done_reason: 'stop'
+          }
+        };
+      }
+
+      throw new Error(`Unexpected text client POST ${url} with ${JSON.stringify(body)}`);
+    });
+
+    const { generateWithLlm } = await loadLlmClient();
+    const result = await generateWithLlm('Reply with exactly plain-ok', { model: 'plain:latest' });
+
+    expect(result.content).toBe('plain-ok');
+    expect(result.metadata).toMatchObject({
+      provider: 'ollama',
+      model: 'plain:latest',
+      thinkingCapabilityDetected: false,
+      thinkDisabled: false,
+      modelCapabilities: ['completion']
+    });
+    expect(textClient.post).toHaveBeenCalledWith(
+      '/api/generate',
+      {
+        model: 'plain:latest',
+        prompt: 'Reply with exactly plain-ok',
+        stream: false
+      },
+      expect.objectContaining({ timeout: 600000 })
+    );
+  });
+});
+
 describe('generateWithLlmStream', () => {
   it('requests Ollama /api/generate with stream true and yields deltas before done', async () => {
     const encoder = new TextEncoder();
@@ -75,6 +173,13 @@ describe('generateWithLlmStream', () => {
         })
     );
     vi.stubGlobal('fetch', fetchMock);
+    const { textClient } = mockAxiosClients();
+    textClient.post.mockResolvedValueOnce({
+      data: {
+        capabilities: ['completion', 'thinking'],
+        digest: 'thinking-model-digest'
+      }
+    });
 
     const { generateWithLlmStream } = await loadLlmClient();
     const events: LlmStreamEvent[] = [];
@@ -107,10 +212,12 @@ describe('generateWithLlmStream', () => {
     );
 
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(textClient.post).toHaveBeenCalledWith('/api/show', { model: 'qwen3:14b' }, expect.objectContaining({ timeout: 5000 }));
     expect(JSON.parse(init.body as string)).toEqual({
       model: 'qwen3:14b',
       prompt: 'User: hello\nAssistant:',
-      stream: true
+      stream: true,
+      think: false
     });
   });
 
@@ -132,6 +239,8 @@ describe('generateWithLlmStream', () => {
           })
       )
     );
+    const { textClient } = mockAxiosClients();
+    textClient.post.mockResolvedValueOnce({ data: { capabilities: ['completion'] } });
 
     const { generateWithLlmStream } = await loadLlmClient();
     const consume = async () => {
@@ -146,7 +255,7 @@ describe('generateWithLlmStream', () => {
 
 describe('generateImageWithLlm', () => {
   it('does not call the image endpoint when local-ai-llm reports an unsupported model capability', async () => {
-    const { localAiClient } = mockAxiosForImageGeneration();
+    const { localAiClient } = mockAxiosClients();
     localAiClient.get.mockResolvedValue({
       data: {
         ok: true,
@@ -181,7 +290,7 @@ describe('generateImageWithLlm', () => {
   });
 
   it('checks local-ai-llm capabilities before sending the aligned image request shape', async () => {
-    const { localAiClient } = mockAxiosForImageGeneration();
+    const { localAiClient } = mockAxiosClients();
     localAiClient.get.mockResolvedValue({
       data: {
         ok: true,
