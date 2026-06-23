@@ -147,6 +147,62 @@ describe('generateWithLlm', () => {
       expect.objectContaining({ timeout: 600000 })
     );
   });
+
+  it('disables Ollama thinking for known reasoning-prone Qwen models even when metadata omits the thinking capability', async () => {
+    const { textClient } = mockAxiosClients();
+    textClient.post.mockImplementation(async (url: string, body: unknown) => {
+      if (url === '/api/show') {
+        return {
+          data: {
+            capabilities: ['completion'],
+            digest: 'hf-qwen-digest',
+            details: {
+              family: 'qwen35',
+              families: ['qwen35']
+            }
+          }
+        };
+      }
+
+      if (url === '/api/generate') {
+        return {
+          data: {
+            response: '<think>private reasoning</think>\n\nbackend-ok',
+            done: true,
+            done_reason: 'stop'
+          }
+        };
+      }
+
+      throw new Error(`Unexpected text client POST ${url} with ${JSON.stringify(body)}`);
+    });
+
+    const model = 'hf.co/gaston-parravicini/Qwen3.6-27B-Abliterated-MTP-GGUF:Q8_0';
+    const { generateWithLlm } = await loadLlmClient();
+    const result = await generateWithLlm('Reply with exactly backend-ok', { model });
+
+    expect(result.content).toBe('backend-ok');
+    expect(result.metadata).toMatchObject({
+      provider: 'ollama',
+      model,
+      thinkingCapabilityDetected: false,
+      thinkDisabled: true,
+      thinkDisabledReason: 'known-reasoning-model',
+      hasRawThinkingTag: true,
+      rawThinkingTagSuppressed: true,
+      modelCapabilities: ['completion']
+    });
+    expect(textClient.post).toHaveBeenCalledWith(
+      '/api/generate',
+      {
+        model,
+        prompt: 'Reply with exactly backend-ok',
+        stream: false,
+        think: false
+      },
+      expect.objectContaining({ timeout: 600000 })
+    );
+  });
 });
 
 describe('generateWithLlmStream', () => {
@@ -216,6 +272,71 @@ describe('generateWithLlmStream', () => {
     expect(JSON.parse(init.body as string)).toEqual({
       model: 'qwen3:14b',
       prompt: 'User: hello\nAssistant:',
+      stream: true,
+      think: false
+    });
+  });
+
+  it('suppresses literal think blocks that arrive split across streamed response chunks', async () => {
+    const encoder = new TextEncoder();
+    const payload = [
+      JSON.stringify({ model: 'hf-qwen', response: '<thi', done: false }),
+      JSON.stringify({ model: 'hf-qwen', response: 'nk>private streamed reasoning</thi', done: false }),
+      JSON.stringify({ model: 'hf-qwen', response: 'nk>\n\nI am Q8.', done: false }),
+      JSON.stringify({ model: 'hf-qwen', done: true, total_duration: 123, eval_count: 3 })
+    ].join('\n');
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(payload.slice(0, 58)));
+        controller.enqueue(encoder.encode(payload.slice(58) + '\n'));
+        controller.close();
+      }
+    });
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'application/x-ndjson' }
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const { textClient } = mockAxiosClients();
+    textClient.post.mockResolvedValueOnce({
+      data: {
+        capabilities: ['completion'],
+        digest: 'hf-qwen-digest',
+        details: { family: 'qwen35', families: ['qwen35'] }
+      }
+    });
+
+    const model = 'hf.co/gaston-parravicini/Qwen3.6-27B-Abliterated-MTP-GGUF:Q8_0';
+    const { generateWithLlmStream } = await loadLlmClient();
+    const events: LlmStreamEvent[] = [];
+    for await (const event of generateWithLlmStream('User: hi\nAssistant:', { model })) {
+      events.push(event);
+    }
+
+    expect(events.map((event) => event.type)).toEqual(['metadata', 'delta', 'done']);
+    expect(events[1]).toMatchObject({ type: 'delta', delta: 'I am Q8.', content: 'I am Q8.' });
+    expect(events[2]).toMatchObject({
+      type: 'done',
+      content: 'I am Q8.',
+      metadata: {
+        provider: 'ollama',
+        model,
+        thinkingCapabilityDetected: false,
+        thinkDisabled: true,
+        thinkDisabledReason: 'known-reasoning-model',
+        hasRawThinkingTag: true,
+        rawThinkingTagSuppressed: true
+      }
+    });
+    expect(JSON.stringify(events)).not.toContain('private streamed reasoning');
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toEqual({
+      model,
+      prompt: 'User: hi\nAssistant:',
       stream: true,
       think: false
     });

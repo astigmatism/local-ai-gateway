@@ -23,7 +23,14 @@ const roleLabel = (role: MessageRole) => {
   }
 };
 
-const sanitizeMessage = (content: string) => content.replace(/\r\n/g, '\n').trim();
+const stripThinkingBlocks = (value: string) =>
+  value
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    .replace(/<think>[\s\S]*$/gi, '')
+    .replace(/<thinking>[\s\S]*$/gi, '');
+
+const sanitizeMessage = (content: string) => stripThinkingBlocks(content.replace(/\r\n/g, '\n')).trim();
 
 export const buildConversationPrompt = (messages: PromptMessage[], options: PromptOptions): string => {
   const newestFirst = messages
@@ -35,6 +42,7 @@ export const buildConversationPrompt = (messages: PromptMessage[], options: Prom
     'You are the assistant in a private local AI gateway application.',
     `The configured local model is ${options.modelName}.`,
     'Answer the latest user message naturally and helpfully.',
+    'Do not include chain-of-thought, internal reasoning, or <think> blocks in your response.',
     'Use the recent conversation only as context. Do not invent system capabilities.',
     '',
     'Recent conversation:'

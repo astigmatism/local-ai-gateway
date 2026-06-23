@@ -31,4 +31,21 @@ describe('buildConversationPrompt', () => {
     expect(prompt.length).toBeLessThanOrEqual(1050);
     expect(prompt).toContain('Assistant:');
   });
+
+  it('strips prior assistant think blocks from prompt history', () => {
+    const prompt = buildConversationPrompt(
+      [
+        { role: 'user', content: 'What model are you?' },
+        { role: 'assistant', content: '<think>private reasoning that must not be replayed</think>\n\nI am Q8.' },
+        { role: 'user', content: 'Say it briefly.' }
+      ],
+      { maxMessages: 20, maxChars: 24000, modelName: 'Qwen3.6-27B-Abliterated-MTP-GGUF:Q8_0' }
+    );
+
+    expect(prompt).toContain('Do not include chain-of-thought, internal reasoning, or <think> blocks in your response.');
+    expect(prompt).toContain('Assistant: I am Q8.');
+    expect(prompt).not.toContain('private reasoning that must not be replayed');
+    expect(prompt).not.toContain('<think>private reasoning');
+    expect(prompt).not.toContain('</think>');
+  });
 });
