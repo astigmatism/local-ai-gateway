@@ -4,7 +4,10 @@ import {
   ThinkingBlockSuppressor,
   ThinkingBlockExtractor
 } from '../server/src/services/thinkingBlocks.js';
-import { sanitizeThinkingBlocks as sanitizeClientThinkingBlocks } from '../client/src/lib/thinkingBlocks.js';
+import {
+  sanitizeThinkingBlocks as sanitizeClientThinkingBlocks,
+  ThinkingBlockExtractor as ClientThinkingBlockExtractor
+} from '../client/src/lib/thinkingBlocks.js';
 
 describe('thinking block sanitizer', () => {
   it('strips complete think and thinking blocks before content is displayed or persisted', () => {
@@ -139,6 +142,149 @@ describe('thinking block sanitizer', () => {
     expect(`${first.contentDelta}${final.contentDelta}`).toBe('Visible');
     expect(`${first.thinkingDelta}${final.thinkingDelta}`).toBe('private reasoning');
     expect(first.hasThinkingBlock || final.hasThinkingBlock).toBe(true);
+  });
+
+
+  it('strips a fake assistant continuation and unterminated thinking block after valid answer text', () => {
+    const visibleAnswer = [
+      'That is a great question! The way Millennials and Gen Z express edginess is different.',
+      'Here is a lowdown on the differences:',
+      '### 1. **Millennial Swearing**',
+      'Millennials often leaned on ironic profanity, TV quotes, and early-internet phrasing.'
+    ].join('\n');
+    const leaked = [
+      visibleAnswer,
+      '',
+      '### Assistant:',
+      '<think>',
+      "Here's a thinking process:",
+      '1. **Analyze User Input:** The user asked "What\'s different between them?"'
+    ].join('\n');
+
+    const server = sanitizeThinkingBlocks(leaked, { trim: true, extractUntaggedReasoning: true });
+    const client = sanitizeClientThinkingBlocks(leaked, { trim: true, extractUntaggedReasoning: true });
+
+    expect(server.content).toBe(visibleAnswer);
+    expect(client).toMatchObject({
+      content: server.content,
+      hasThinkingBlock: server.hasThinkingBlock,
+      suppressedThinkingBlock: server.suppressedThinkingBlock,
+      hasUntaggedReasoning: server.hasUntaggedReasoning,
+      suppressedUntaggedReasoning: server.suppressedUntaggedReasoning
+    });
+    for (const result of [server, client]) {
+      expect(result.content).not.toContain('### Assistant:');
+      expect(result.content).not.toContain('<think>');
+      expect(result.content).not.toContain("Here's a thinking process");
+      expect(result.content).not.toContain('Analyze User Input');
+      expect(result.hasThinkingBlock || result.hasUntaggedReasoning).toBe(true);
+      expect(result.suppressedThinkingBlock || result.suppressedUntaggedReasoning).toBe(true);
+    }
+  });
+
+  it('strips fake assistant-response continuations followed by untagged reasoning preambles', () => {
+    const examples = [
+      [
+        'Visible answer.',
+        '',
+        'Assistant Response:',
+        'Analysis:',
+        'Analyze user input and identify key elements before drafting.'
+      ].join('\n'),
+      [
+        'Visible answer.',
+        '',
+        '### Assistant Response:',
+        'Reasoning:',
+        '1. **Analyze User Input:** Work through hidden steps.'
+      ].join('\n')
+    ];
+
+    for (const leaked of examples) {
+      const server = sanitizeThinkingBlocks(leaked, { trim: true, extractUntaggedReasoning: true });
+      const client = sanitizeClientThinkingBlocks(leaked, { trim: true, extractUntaggedReasoning: true });
+
+      expect(server.content).toBe('Visible answer.');
+      expect(client).toMatchObject({
+        content: server.content,
+        hasUntaggedReasoning: server.hasUntaggedReasoning,
+        suppressedUntaggedReasoning: server.suppressedUntaggedReasoning
+      });
+      expect(server.hasUntaggedReasoning).toBe(true);
+      expect(server.suppressedUntaggedReasoning).toBe(true);
+      expect(server.content).not.toContain('Assistant Response:');
+      expect(server.content).not.toContain('Analyze User Input');
+    }
+  });
+
+  it('keeps streamed fake assistant continuations hidden when marker and think tag split across chunks', () => {
+    type ExtractorConstructor = new (options?: { extractUntaggedReasoning?: boolean }) => {
+      feed(input: string): ReturnType<ThinkingBlockExtractor['feed']>;
+      flush(): ReturnType<ThinkingBlockExtractor['flush']>;
+    };
+    const run = (Extractor: ExtractorConstructor) => {
+      const extractor = new Extractor({ extractUntaggedReasoning: true });
+      let visible = '';
+      let thinking = '';
+      let hasThinkingBlock = false;
+      let suppressedThinkingBlock = false;
+      let hasUntaggedReasoning = false;
+      let suppressedUntaggedReasoning = false;
+
+      for (const chunk of [
+        'Visible answer paragraph.\n\n### Assist',
+        'ant:\n\n<thi',
+        "nk>\nHere's a thinking process:\n1. **Analyze User Input:** hidden steps"
+      ]) {
+        const result = extractor.feed(chunk);
+        visible += result.contentDelta;
+        thinking += result.thinkingDelta;
+        hasThinkingBlock = hasThinkingBlock || result.hasThinkingBlock;
+        suppressedThinkingBlock = suppressedThinkingBlock || result.suppressedThinkingBlock;
+        hasUntaggedReasoning = hasUntaggedReasoning || Boolean(result.hasUntaggedReasoning);
+        suppressedUntaggedReasoning = suppressedUntaggedReasoning || Boolean(result.suppressedUntaggedReasoning);
+      }
+
+      const final = extractor.flush();
+      visible += final.contentDelta;
+      thinking += final.thinkingDelta;
+      hasThinkingBlock = hasThinkingBlock || final.hasThinkingBlock;
+      suppressedThinkingBlock = suppressedThinkingBlock || final.suppressedThinkingBlock;
+      hasUntaggedReasoning = hasUntaggedReasoning || Boolean(final.hasUntaggedReasoning);
+      suppressedUntaggedReasoning = suppressedUntaggedReasoning || Boolean(final.suppressedUntaggedReasoning);
+
+      return { visible, thinking, hasThinkingBlock, suppressedThinkingBlock, hasUntaggedReasoning, suppressedUntaggedReasoning };
+    };
+
+    for (const result of [run(ThinkingBlockExtractor), run(ClientThinkingBlockExtractor)]) {
+      expect(result.visible).toBe('Visible answer paragraph.');
+      expect(result.visible).not.toContain('### Assistant:');
+      expect(result.visible).not.toContain('<think>');
+      expect(result.visible).not.toContain('Analyze User Input');
+      expect(result.thinking).toContain('Analyze User Input');
+      expect(result.hasThinkingBlock || result.hasUntaggedReasoning).toBe(true);
+      expect(result.suppressedThinkingBlock || result.suppressedUntaggedReasoning).toBe(true);
+    }
+  });
+
+  it('does not over-strip normal prose or benign transcript examples using assistant', () => {
+    const inline = 'A helpful assistant can explain trade-offs without revealing private reasoning.';
+    expect(sanitizeThinkingBlocks(inline, { trim: true, extractUntaggedReasoning: true })).toMatchObject({
+      content: inline,
+      hasThinkingBlock: false,
+      suppressedThinkingBlock: false,
+      hasUntaggedReasoning: false,
+      suppressedUntaggedReasoning: false
+    });
+
+    const transcript = ['Example transcript:', 'Assistant:', 'Hello! I can help with that.', 'User:', 'Thanks.'].join('\n');
+    expect(sanitizeThinkingBlocks(transcript, { trim: true, extractUntaggedReasoning: true })).toMatchObject({
+      content: transcript,
+      hasThinkingBlock: false,
+      suppressedThinkingBlock: false,
+      hasUntaggedReasoning: false,
+      suppressedUntaggedReasoning: false
+    });
   });
 
   it('does not strip unrelated tags or words that only start with think', () => {
