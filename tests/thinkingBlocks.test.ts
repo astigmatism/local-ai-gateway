@@ -182,6 +182,140 @@ describe('thinking block sanitizer', () => {
     }
   });
 
+
+
+  it('strips fake assistant continuations with complete thinking blocks while preserving visible text after them', () => {
+    const before = 'Valid visible answer part 1.';
+    const after = 'Valid visible answer part 2.';
+    const leaked = [
+      before,
+      '',
+      '### Assistant:',
+      '',
+      '<think>',
+      "Here's a thinking process:",
+      '1. **Analyze User Input:** Hidden self-dialogue.',
+      '</think>',
+      '',
+      after
+    ].join('\n');
+
+    const server = sanitizeThinkingBlocks(leaked, { trim: true, extractUntaggedReasoning: true });
+    const client = sanitizeClientThinkingBlocks(leaked, { trim: true, extractUntaggedReasoning: true });
+
+    for (const result of [server, client]) {
+      expect(result.content).toBe(`${before}\n\n${after}`);
+      expect(result.content).not.toContain('### Assistant:');
+      expect(result.content).not.toContain('thinking process');
+      expect(result.thinking).toContain('### Assistant:');
+      expect(result.thinking).toContain('Analyze User Input');
+      expect(result.hasThinkingBlock).toBe(true);
+      expect(result.suppressedThinkingBlock).toBe(true);
+    }
+  });
+
+  it('preserves final-answer content after fake assistant untagged reasoning', () => {
+    const before = 'Visible answer before the fake continuation.';
+    const after = 'Visible answer after hidden reasoning.';
+    const leaked = [
+      before,
+      '',
+      'Assistant Response:',
+      'Analysis:',
+      'Analyze user input and identify key elements before drafting.',
+      'Determine best practices, draft, refine, and check against constraints.',
+      '',
+      'Final answer:',
+      after
+    ].join('\n');
+
+    const server = sanitizeThinkingBlocks(leaked, { trim: true, extractUntaggedReasoning: true });
+    const client = sanitizeClientThinkingBlocks(leaked, { trim: true, extractUntaggedReasoning: true });
+
+    for (const result of [server, client]) {
+      expect(result.content).toBe(`${before}\n\n${after}`);
+      expect(result.content).not.toContain('Assistant Response:');
+      expect(result.content).not.toContain('Analyze user input');
+      expect(result.content).not.toContain('Final answer:');
+      expect(result.thinking).toContain('Assistant Response:');
+      expect(result.thinking).toContain('Analyze user input');
+      expect(result.hasUntaggedReasoning).toBe(true);
+      expect(result.suppressedUntaggedReasoning).toBe(true);
+    }
+  });
+
+  it('streams fake assistant complete thinking blocks without leaking the marker and resumes visible output', () => {
+    type ExtractorConstructor = new (options?: { extractUntaggedReasoning?: boolean }) => {
+      feed(input: string): ReturnType<ThinkingBlockExtractor['feed']>;
+      flush(): ReturnType<ThinkingBlockExtractor['flush']>;
+    };
+    const before = 'Visible answer before.';
+    const after = 'Visible answer after.';
+    const run = (Extractor: ExtractorConstructor) => {
+      const extractor = new Extractor({ extractUntaggedReasoning: true });
+      let visible = '';
+      let thinking = '';
+
+      for (const chunk of [
+        `${before}\n\n### Assist`,
+        'ant:\n<thi',
+        `nk>hidden reasoning</think>\n\n${after}`
+      ]) {
+        const result = extractor.feed(chunk);
+        visible += result.contentDelta;
+        thinking += result.thinkingDelta;
+      }
+
+      const final = extractor.flush();
+      visible += final.contentDelta;
+      thinking += final.thinkingDelta;
+      return { visible, thinking };
+    };
+
+    for (const result of [run(ThinkingBlockExtractor), run(ClientThinkingBlockExtractor)]) {
+      expect(result.visible).toBe(`${before}\n\n${after}`);
+      expect(result.visible).not.toContain('### Assistant:');
+      expect(result.visible).not.toContain('hidden reasoning');
+      expect(result.thinking).toContain('### Assistant:');
+      expect(result.thinking).toContain('hidden reasoning');
+    }
+  });
+
+  it('streams fake assistant untagged reasoning until a final-answer boundary and then resumes visible output', () => {
+    type ExtractorConstructor = new (options?: { extractUntaggedReasoning?: boolean }) => {
+      feed(input: string): ReturnType<ThinkingBlockExtractor['feed']>;
+      flush(): ReturnType<ThinkingBlockExtractor['flush']>;
+    };
+    const run = (Extractor: ExtractorConstructor) => {
+      const extractor = new Extractor({ extractUntaggedReasoning: true });
+      let visible = '';
+      let thinking = '';
+
+      for (const chunk of [
+        'Visible prefix.\n\n### Assistant Response:\nAnalysis:\nAnalyze user input and identify key elements.\n',
+        'Determine best practices, draft, refine, and check against constraints.\n\nFinal answer:\n',
+        'Visible suffix.'
+      ]) {
+        const result = extractor.feed(chunk);
+        visible += result.contentDelta;
+        thinking += result.thinkingDelta;
+      }
+
+      const final = extractor.flush();
+      visible += final.contentDelta;
+      thinking += final.thinkingDelta;
+      return { visible, thinking };
+    };
+
+    for (const result of [run(ThinkingBlockExtractor), run(ClientThinkingBlockExtractor)]) {
+      expect(result.visible).toBe('Visible prefix.\n\nVisible suffix.');
+      expect(result.visible).not.toContain('Assistant Response:');
+      expect(result.visible).not.toContain('Analyze user input');
+      expect(result.thinking).toContain('Assistant Response:');
+      expect(result.thinking).toContain('Analyze user input');
+    }
+  });
+
   it('strips fake assistant-response continuations followed by untagged reasoning preambles', () => {
     const examples = [
       [
@@ -293,5 +427,58 @@ describe('thinking block sanitizer', () => {
       hasThinkingBlock: false,
       suppressedThinkingBlock: false
     });
+  });
+
+  it('preserves benign markdown code examples that contain thinking-like tokens and transcript labels', () => {
+    const codeExample = [
+      'Here is a literal parser fixture:',
+      '```xml',
+      '<think>literal tag in documentation</think>',
+      'Assistant:',
+      'Analysis: this line is part of the code sample, not hidden reasoning.',
+      '```',
+      'The explanation continues here.'
+    ].join('\n');
+
+    const server = sanitizeThinkingBlocks(codeExample, { trim: true, extractUntaggedReasoning: true });
+    const client = sanitizeClientThinkingBlocks(codeExample, { trim: true, extractUntaggedReasoning: true });
+
+    for (const result of [server, client]) {
+      expect(result.content).toBe(codeExample);
+      expect(result.thinking).toBe('');
+      expect(result.hasThinkingBlock).toBe(false);
+      expect(result.hasUntaggedReasoning).toBe(false);
+    }
+
+    type ExtractorConstructor = new (options?: { extractUntaggedReasoning?: boolean }) => {
+      feed(input: string): ReturnType<ThinkingBlockExtractor['feed']>;
+      flush(): ReturnType<ThinkingBlockExtractor['flush']>;
+    };
+    const run = (Extractor: ExtractorConstructor) => {
+      const extractor = new Extractor({ extractUntaggedReasoning: true });
+      let visible = '';
+      let thinking = '';
+
+      for (const chunk of [
+        'Here is a literal parser fixture:\n``',
+        '`xml\n<thi',
+        'nk>literal tag in documentation</think>\nAssistant:\nAnalysis: this line is part of the code sample, not hidden reasoning.\n',
+        '```\nThe explanation continues here.'
+      ]) {
+        const result = extractor.feed(chunk);
+        visible += result.contentDelta;
+        thinking += result.thinkingDelta;
+      }
+
+      const final = extractor.flush();
+      visible += final.contentDelta;
+      thinking += final.thinkingDelta;
+      return { visible, thinking };
+    };
+
+    for (const result of [run(ThinkingBlockExtractor), run(ClientThinkingBlockExtractor)]) {
+      expect(result.visible).toBe(codeExample);
+      expect(result.thinking).toBe('');
+    }
   });
 });

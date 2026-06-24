@@ -44,3 +44,23 @@ describe('chat message overflow handling', () => {
     expect(styles).toMatch(/\.mobile-chat-panel \.markdown-table-scroll\s*\{[\s\S]*overflow-x:\s*auto;/);
   });
 });
+
+
+describe('chat reasoning visibility surfaces', () => {
+  it('sanitizes assistant display, copy, and speech content at the message component boundary', () => {
+    const source = readSource('client/src/components/MessageThread.tsx');
+
+    expect(source).toContain("import { sanitizeThinkingBlocks } from '../lib/thinkingBlocks.js';");
+    expect(source).toContain('const visibleMessageContent = (message: Message) =>');
+    expect(source).toContain('const copyContent = (message: Message) => generatedImageMetadata(message)?.image.prompt ?? visibleMessageContent(message);');
+    expect(source).toContain('onSpeak={() => onSpeakMessage(message.id, visibleMessageContent(message))}');
+    expect(source).toContain('<MarkdownMessageContent content={visibleContent} />');
+  });
+
+  it('does not render captured thinking metadata unless thinking display was explicitly enabled', () => {
+    const source = readSource('client/src/components/MessageThread.tsx');
+
+    expect(source).toContain("const messageThinkingEnabled = (message: Message) => messageMetadataRecord(message)?.thinkingEnabled === true;");
+    expect(source).toContain("const shouldRender = message.role === 'assistant' && messageThinkingEnabled(message) && (content.length > 0 || isActive);");
+  });
+});

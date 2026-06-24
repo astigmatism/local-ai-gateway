@@ -483,6 +483,60 @@ describe('generateWithLlmStream', () => {
     });
   });
 
+
+
+  it('removes fake assistant continuations around complete streamed thinking blocks and resumes visible output', async () => {
+    const encoder = new TextEncoder();
+    const payload = [
+      JSON.stringify({ model: 'plain:latest', response: 'Visible before.\n\n### Assist', done: false }),
+      JSON.stringify({ model: 'plain:latest', response: 'ant:\n<think>hidden streamed reasoning</think>\n\nVisible after.', done: false }),
+      JSON.stringify({ model: 'plain:latest', done: true, total_duration: 123, eval_count: 3 })
+    ].join('\n');
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(`${payload}\n`));
+        controller.close();
+      }
+    });
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'application/x-ndjson' }
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const { textClient } = mockAxiosClients();
+    textClient.post.mockResolvedValueOnce({ data: { capabilities: ['completion'], digest: 'plain-digest' } });
+
+    const { generateWithLlmStream } = await loadLlmClient();
+    const events: LlmStreamEvent[] = [];
+    for await (const event of generateWithLlmStream('User: hello\nAssistant:', { model: 'plain:latest' })) {
+      events.push(event);
+    }
+
+    expect(events.map((event) => event.type)).toEqual(['metadata', 'delta', 'delta', 'done']);
+    expect(events[1]).toMatchObject({ type: 'delta', delta: 'Visible before.', content: 'Visible before.' });
+    expect(events[2]).toMatchObject({
+      type: 'delta',
+      delta: '\n\nVisible after.',
+      content: 'Visible before.\n\nVisible after.'
+    });
+    expect(events[3]).toMatchObject({
+      type: 'done',
+      content: 'Visible before.\n\nVisible after.',
+      metadata: {
+        hasRawThinkingTag: true,
+        rawThinkingTagSuppressed: true,
+        hasUntaggedReasoning: true,
+        untaggedReasoningSuppressed: true,
+        thinkingContentSuppressed: true
+      }
+    });
+    expect(JSON.stringify(events.filter((event) => event.type === 'delta'))).not.toContain('### Assistant');
+    expect(JSON.stringify(events)).not.toContain('hidden streamed reasoning');
+  });
+
   it('separates literal think blocks that arrive split across streamed response chunks when thinking is enabled', async () => {
     const encoder = new TextEncoder();
     const payload = [

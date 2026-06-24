@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useTextToSpeechPlayback } from '../hooks/useTextToSpeechPlayback.js';
 import type { TextToSpeechMessageState } from '../hooks/useTextToSpeechPlayback.js';
+import { sanitizeThinkingBlocks } from '../lib/thinkingBlocks.js';
 import type { Conversation, GeneratedImageMessageMetadata, Message } from '../lib/types.js';
 import { MarkdownMessageContent } from './MarkdownMessageContent.js';
 import { MessageActions } from './MessageActions.js';
@@ -60,12 +61,17 @@ const timestampLabel = (message: Message) => {
   return formatTime(message.createdAt);
 };
 
-const copyContent = (message: Message) => generatedImageMetadata(message)?.image.prompt ?? message.content;
+const visibleMessageContent = (message: Message) =>
+  message.role === 'assistant'
+    ? sanitizeThinkingBlocks(message.content, { trim: true, extractUntaggedReasoning: true }).content
+    : message.content;
+
+const copyContent = (message: Message) => generatedImageMetadata(message)?.image.prompt ?? visibleMessageContent(message);
 
 const canCopyMessage = (message: Message) => {
   const status = deliveryStatus(message);
   const imageMetadata = generatedImageMetadata(message);
-  const textToCopy = imageMetadata?.image.prompt ?? message.content;
+  const textToCopy = imageMetadata?.image.prompt ?? visibleMessageContent(message);
 
   if (textToCopy.trim().length === 0) return false;
   if (status === 'thinking' || status === 'streaming' || status === 'imageGenerating') return false;
@@ -166,7 +172,7 @@ const messageThinkingEnabled = (message: Message) => messageMetadataRecord(messa
 const ThinkingTrace = ({ message, status }: { message: Message; status: DeliveryStatus | null }) => {
   const content = messageThinkingContent(message);
   const isActive = status === 'thinking' || status === 'streaming';
-  const shouldRender = message.role === 'assistant' && (content.length > 0 || (isActive && messageThinkingEnabled(message)));
+  const shouldRender = message.role === 'assistant' && messageThinkingEnabled(message) && (content.length > 0 || isActive);
 
   if (!shouldRender) return null;
 
@@ -188,6 +194,7 @@ const ThinkingTrace = ({ message, status }: { message: Message; status: Delivery
 const MessageContent = ({ message }: { message: Message }) => {
   const status = deliveryStatus(message);
   const imageMetadata = generatedImageMetadata(message);
+  const visibleContent = visibleMessageContent(message);
 
   if (status === 'imageGenerating') {
     return <PendingImageContent />;
@@ -207,7 +214,7 @@ const MessageContent = ({ message }: { message: Message }) => {
   }
 
   if (status === 'streaming') {
-    if (message.content.trim().length === 0) {
+    if (visibleContent.trim().length === 0) {
       return (
         <div className="message-content plain-message-content pending-message-content" aria-live="polite">
           <div className="typing-indicator" aria-hidden="true">
@@ -222,7 +229,7 @@ const MessageContent = ({ message }: { message: Message }) => {
 
     return (
       <div className="message-content markdown-content streaming-message-content" aria-live="polite">
-        <MarkdownMessageContent content={message.content} />
+        <MarkdownMessageContent content={visibleContent} />
         <span className="streaming-cursor" aria-hidden="true" />
       </div>
     );
@@ -239,7 +246,7 @@ const MessageContent = ({ message }: { message: Message }) => {
   if (message.role === 'assistant') {
     return (
       <div className="message-content markdown-content">
-        <MarkdownMessageContent content={message.content} />
+        <MarkdownMessageContent content={visibleContent} />
       </div>
     );
   }
@@ -292,7 +299,7 @@ const MessageBubble = ({
             canReusePrompt={canReusePrompt(message)}
             copyLabel={imageMetadata ? 'Copy image prompt' : undefined}
             copiedLabel={imageMetadata ? 'Image prompt copied' : undefined}
-            onSpeak={() => onSpeakMessage(message.id, message.content)}
+            onSpeak={() => onSpeakMessage(message.id, visibleMessageContent(message))}
             onReusePrompt={onReusePrompt}
           />
         </div>

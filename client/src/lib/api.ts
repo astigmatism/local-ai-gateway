@@ -369,17 +369,26 @@ const sanitizeDoneEvent = (
   const eventMetadata = metadataRecord(event.metadata);
   const assistantMetadata = metadataRecord(event.assistantMessage.metadata);
   const finalSanitized = sanitizeThinkingBlocks(event.assistantMessage.content, { trim: true, extractUntaggedReasoning: true });
-  const finalContent = finalSanitized.content || streamedContent.trim();
+  const streamedSanitized = sanitizeThinkingBlocks(streamedContent, { trim: true, extractUntaggedReasoning: true });
+  const finalContent = finalSanitized.content || streamedSanitized.content;
   const nextFlags: ThinkingSuppressionFlags = {
-    hasThinkingBlock: flags.hasThinkingBlock || finalSanitized.hasThinkingBlock,
-    suppressedThinkingBlock: flags.suppressedThinkingBlock || finalSanitized.suppressedThinkingBlock,
-    hasUntaggedReasoning: Boolean(flags.hasUntaggedReasoning || finalSanitized.hasUntaggedReasoning),
-    suppressedUntaggedReasoning: Boolean(flags.suppressedUntaggedReasoning || finalSanitized.suppressedUntaggedReasoning)
+    hasThinkingBlock: flags.hasThinkingBlock || finalSanitized.hasThinkingBlock || streamedSanitized.hasThinkingBlock,
+    suppressedThinkingBlock:
+      flags.suppressedThinkingBlock || finalSanitized.suppressedThinkingBlock || streamedSanitized.suppressedThinkingBlock,
+    hasUntaggedReasoning: Boolean(
+      flags.hasUntaggedReasoning || finalSanitized.hasUntaggedReasoning || streamedSanitized.hasUntaggedReasoning
+    ),
+    suppressedUntaggedReasoning: Boolean(
+      flags.suppressedUntaggedReasoning ||
+        finalSanitized.suppressedUntaggedReasoning ||
+        streamedSanitized.suppressedUntaggedReasoning
+    )
   };
   const combinedThinkingContent = exposeThinking
     ? uniqueThinkingContent(
         streamedThinkingContent,
         finalSanitized.thinking,
+        streamedSanitized.thinking,
         metadataThinkingContent(eventMetadata),
         metadataThinkingContent(assistantMetadata)
       )

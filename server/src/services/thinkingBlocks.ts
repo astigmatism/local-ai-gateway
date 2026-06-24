@@ -72,8 +72,9 @@ const escapeRegExp = (value: string) => value.replace(/[|\\{}()[\]^$+*?.]/g, '\\
 const normalizeWhitespaceForPattern = (value: string) => value.replace(/[\s_-]+/g, '[\\s_-]+');
 
 const unsafeContinuationLookaheadChars = 768;
+const unsafeContinuationReasoningBufferLimitChars = 64_000;
 const fakeRoleContinuationLabels = ['assistant:', 'assistant response:'];
-const fakeRoleContinuationPattern = /(^|\r?\n)([ \t>]*(?:#{1,6}\s*)?(?:assistant(?:\s+response)?)\s*:\s*)/gi;
+const fakeRoleContinuationPattern = /(^|\r?\n)([ \t>]*(?:#{1,6}[ \t]*)?(?:assistant(?:[ \t]+response)?)[ \t]*:[ \t]*)/gi;
 
 const thinkingOpenTagPattern = new RegExp(
   '<\\s*(?:' + thinkingTagNames.join('|') + ')\\b[^>]*>|' + thinkingOpenTokenMarkers.map(escapeRegExp).join('|'),
@@ -111,6 +112,99 @@ const finalMarkerLinePattern = new RegExp(
     ')\\s*(?:\\r?\\n|$)',
   'gi'
 );
+const markdownCodeFenceLinePattern = /^[ \t]{0,3}(`{3,}|~{3,})/;
+const markdownCodeFenceProtectedLessThan = '\uE000';
+const markdownCodeFenceProtectedColon = '\uE001';
+
+interface MarkdownCodeFenceProtectionState {
+  insideCodeFence: boolean;
+  fenceChar: string;
+  fenceLength: number;
+  pendingFenceLine: string;
+}
+
+const createMarkdownCodeFenceProtectionState = (): MarkdownCodeFenceProtectionState => ({
+  insideCodeFence: false,
+  fenceChar: '',
+  fenceLength: 0,
+  pendingFenceLine: ''
+});
+
+const protectMarkdownCodeLine = (value: string) =>
+  value.replace(/</g, markdownCodeFenceProtectedLessThan).replace(/:/g, markdownCodeFenceProtectedColon);
+
+const isPotentialMarkdownFenceLinePrefix = (value: string) => /^[ \t]{0,3}(?:`{1,2}|~{1,2})$/.test(value);
+const hasPotentialTrailingMarkdownFenceLine = (value: string) =>
+  isPotentialMarkdownFenceLinePrefix(value.slice(value.lastIndexOf('\n') + 1));
+
+const protectMarkdownCodeFenceContent = (value: string, state = createMarkdownCodeFenceProtectionState()) => {
+  if (
+    !state.insideCodeFence &&
+    state.pendingFenceLine.length === 0 &&
+    !value.includes('```') &&
+    !value.includes('~~~') &&
+    !hasPotentialTrailingMarkdownFenceLine(value)
+  ) {
+    return value;
+  }
+
+  const combined = state.pendingFenceLine + value;
+  state.pendingFenceLine = '';
+
+  const lines = combined.match(/[^\n]*\n|[^\n]+/g);
+  if (!lines) return combined;
+
+  const lastLine = lines.at(-1) ?? '';
+  if (!lastLine.endsWith('\n') && isPotentialMarkdownFenceLinePrefix(lastLine)) {
+    state.pendingFenceLine = lastLine;
+    lines.pop();
+  }
+
+  let { insideCodeFence, fenceChar, fenceLength } = state;
+
+  const protectedValue = lines
+    .map((line) => {
+      const fenceMatch = markdownCodeFenceLinePattern.exec(line);
+      if (fenceMatch) {
+        const fence = fenceMatch[1] ?? '';
+        const currentFenceChar = fence[0] ?? '';
+
+        if (!insideCodeFence) {
+          insideCodeFence = true;
+          fenceChar = currentFenceChar;
+          fenceLength = fence.length;
+          return line;
+        }
+
+        if (currentFenceChar === fenceChar && fence.length >= fenceLength) {
+          insideCodeFence = false;
+          fenceChar = '';
+          fenceLength = 0;
+          return line;
+        }
+      }
+
+      return insideCodeFence ? protectMarkdownCodeLine(line) : line;
+    })
+    .join('');
+
+  state.insideCodeFence = insideCodeFence;
+  state.fenceChar = fenceChar;
+  state.fenceLength = fenceLength;
+
+  return protectedValue;
+};
+
+const flushMarkdownCodeFenceProtection = (state: MarkdownCodeFenceProtectionState) => {
+  const pending = state.pendingFenceLine;
+  state.pendingFenceLine = '';
+  return state.insideCodeFence ? protectMarkdownCodeLine(pending) : pending;
+};
+
+const restoreMarkdownCodeFenceContent = (value: string) =>
+  value
+    .replace(new RegExp(markdownCodeFenceProtectedLessThan, 'g'), '<')
+    .replace(new RegExp(markdownCodeFenceProtectedColon, 'g'), ':');
 
 interface UntaggedReasoningSplit {
   content: string;
@@ -195,7 +289,7 @@ const findFakeRoleContinuation = (value: string, startIndex = 0): FakeRoleContin
 
 const trailingWhitespaceStartBefore = (value: string, index: number) => {
   let start = index;
-  while (start > 0 && /[\s]/.test(value[start - 1])) start -= 1;
+  while (start > 0 && /[\s]/.test(value[start - 1] ?? '')) start -= 1;
   return start;
 };
 
@@ -377,6 +471,34 @@ const fallbackSplitUntaggedReasoning = (value: string): UntaggedReasoningSplit |
   return { thinking, content };
 };
 
+const splitUnsafeContinuationReasoning = (value: string): UntaggedReasoningSplit | null => {
+  const marker = findFakeRoleContinuation(value, 0);
+  if (!marker) return splitUntaggedReasoning(value);
+
+  const afterMarker = value.slice(marker.markerEnd);
+  const split = splitUntaggedReasoning(afterMarker);
+  if (!split) return null;
+
+  return {
+    thinking: value.slice(0, marker.markerEnd) + split.thinking,
+    content: split.content
+  };
+};
+
+const findRoleIntroducedThinkingBoundary = (
+  value: string,
+  marker: FakeRoleContinuationMatch,
+  suppressedThinkingOpenBoundaries: number[]
+) => {
+  for (const boundary of suppressedThinkingOpenBoundaries) {
+    if (boundary < marker.markerEnd) continue;
+    if (/^\s*$/.test(value.slice(marker.markerEnd, boundary))) return boundary;
+    break;
+  }
+
+  return null;
+};
+
 export class ThinkingBlockExtractor {
   private pending = '';
 
@@ -392,6 +514,12 @@ export class ThinkingBlockExtractor {
 
   private hasEmittedContentValue = false;
 
+  private lastVisibleOutputChar = '';
+
+  private pendingVisibleContinuationSeparator = false;
+
+  private readonly markdownCodeFenceProtectionState = createMarkdownCodeFenceProtectionState();
+
   private leadingThinkingCandidate: boolean;
 
   private readonly extractUntaggedReasoning: boolean;
@@ -404,6 +532,8 @@ export class ThinkingBlockExtractor {
 
   private unsafeContinuationBuffer = '';
 
+  private unsafeContinuationReasoningBuffer = '';
+
   private suppressingUnsafeContinuation = false;
 
   constructor(options: ThinkingBlockExtractorOptions = {}) {
@@ -413,11 +543,12 @@ export class ThinkingBlockExtractor {
   }
 
   feed(input: string): ThinkingBlockExtractionResult {
-    let text = this.pending + input;
+    let text = this.pending + protectMarkdownCodeFenceContent(input, this.markdownCodeFenceProtectionState);
     this.pending = '';
     let contentDelta = '';
     let thinkingDelta = '';
     let thinkingStartedAfterContent = false;
+    const suppressedThinkingOpenBoundaries: number[] = [];
 
     const appendContent = (value: string) => {
       if (value.length === 0) return;
@@ -456,6 +587,7 @@ export class ThinkingBlockExtractor {
 
         if (openTag && (!closeTag || openTag.index <= closeTag.index)) {
           appendContent(text.slice(0, openTag.index));
+          suppressedThinkingOpenBoundaries.push(contentDelta.length);
           text = text.slice(openTag.index + openTag.text.length);
           this.hasThinkingBlockValue = true;
           this.suppressedThinkingBlockValue = true;
@@ -502,6 +634,7 @@ export class ThinkingBlockExtractor {
       }
 
       appendContent(text.slice(0, openTag.index));
+      suppressedThinkingOpenBoundaries.push(contentDelta.length);
       text = text.slice(openTag.index + openTag.text.length);
       this.hasThinkingBlockValue = true;
       this.suppressedThinkingBlockValue = true;
@@ -509,7 +642,10 @@ export class ThinkingBlockExtractor {
       thinkingStartedAfterContent = true;
     }
 
-    const continuation = this.filterUnsafeContinuation(contentDelta, { thinkingStartedAfterContent });
+    const continuation = this.filterUnsafeContinuation(contentDelta, {
+      thinkingStartedAfterContent,
+      suppressedThinkingOpenBoundaries
+    });
     const untagged = this.filterUntaggedReasoning(continuation.contentDelta);
     return this.snapshot(untagged.contentDelta, continuation.thinkingDelta + thinkingDelta + untagged.thinkingDelta);
   }
@@ -518,6 +654,8 @@ export class ThinkingBlockExtractor {
     let contentDelta = '';
     let thinkingDelta = '';
     let thinkingStartedAfterContent = false;
+
+    this.pending += flushMarkdownCodeFenceProtection(this.markdownCodeFenceProtectionState);
 
     if (this.insideThinkingBlock) {
       if (this.pending.length > 0) {
@@ -551,77 +689,208 @@ export class ThinkingBlockExtractor {
 
   private filterUnsafeContinuation(
     contentDelta: string,
-    options: { flush?: boolean; thinkingStartedAfterContent?: boolean } = {}
+    options: {
+      flush?: boolean;
+      thinkingStartedAfterContent?: boolean;
+      suppressedThinkingOpenBoundaries?: number[];
+    } = {}
   ): { contentDelta: string; thinkingDelta: string } {
     if (this.suppressingUnsafeContinuation) {
       if (contentDelta.length > 0) {
-        this.markUnsafeContinuationSuppressed();
-        return { contentDelta: '', thinkingDelta: contentDelta };
+        this.unsafeContinuationReasoningBuffer += contentDelta;
       }
+
+      const split = splitUnsafeContinuationReasoning(this.unsafeContinuationReasoningBuffer);
+      if (split) {
+        const thinkingDelta = split.thinking;
+        this.unsafeContinuationReasoningBuffer = '';
+        this.suppressingUnsafeContinuation = false;
+        this.unsafeContinuationBuffer += this.visibleContinuationFromCurrentOutput('', split.content);
+        const drained = this.drainUnsafeContinuationBuffer({
+          flush: options.flush === true,
+          thinkingStartedAfterContent: options.thinkingStartedAfterContent === true,
+          suppressedThinkingOpenBoundaries: []
+        });
+        return { contentDelta: drained.contentDelta, thinkingDelta: thinkingDelta + drained.thinkingDelta };
+      }
+
+      if (options.flush === true) {
+        const thinkingDelta = this.unsafeContinuationReasoningBuffer;
+        this.unsafeContinuationReasoningBuffer = '';
+        this.suppressingUnsafeContinuation = false;
+        if (thinkingDelta.length > 0) this.markUnsafeContinuationSuppressed();
+        return { contentDelta: '', thinkingDelta };
+      }
+
+      if (this.unsafeContinuationReasoningBuffer.length > unsafeContinuationReasoningBufferLimitChars) {
+        const drainLength = this.unsafeContinuationReasoningBuffer.length - unsafeContinuationReasoningBufferLimitChars;
+        const thinkingDelta = this.unsafeContinuationReasoningBuffer.slice(0, drainLength);
+        this.unsafeContinuationReasoningBuffer = this.unsafeContinuationReasoningBuffer.slice(drainLength);
+        this.markUnsafeContinuationSuppressed();
+        return { contentDelta: '', thinkingDelta };
+      }
+
       return { contentDelta: '', thinkingDelta: '' };
     }
 
+    const previousBufferLength = this.unsafeContinuationBuffer.length;
     if (contentDelta.length > 0) {
       this.unsafeContinuationBuffer += contentDelta;
     }
 
+    const suppressedThinkingOpenBoundaries = (options.suppressedThinkingOpenBoundaries ?? [])
+      .map((boundary) => previousBufferLength + boundary)
+      .filter((boundary) => boundary >= 0 && boundary <= this.unsafeContinuationBuffer.length)
+      .sort((left, right) => left - right);
+
     return this.drainUnsafeContinuationBuffer({
       flush: options.flush === true,
-      thinkingStartedAfterContent: options.thinkingStartedAfterContent === true
+      thinkingStartedAfterContent: options.thinkingStartedAfterContent === true,
+      suppressedThinkingOpenBoundaries
     });
   }
 
   private drainUnsafeContinuationBuffer(options: {
     flush: boolean;
     thinkingStartedAfterContent: boolean;
+    suppressedThinkingOpenBoundaries: number[];
   }): { contentDelta: string; thinkingDelta: string } {
     let contentDelta = '';
+    let thinkingDelta = '';
     let searchIndex = 0;
+    let suppressedThinkingOpenBoundaries = options.suppressedThinkingOpenBoundaries;
+
+    const shiftSuppressedThinkingOpenBoundaries = (removedChars: number) => {
+      suppressedThinkingOpenBoundaries = suppressedThinkingOpenBoundaries
+        .filter((boundary) => boundary >= removedChars)
+        .map((boundary) => boundary - removedChars);
+    };
 
     while (searchIndex < this.unsafeContinuationBuffer.length) {
       const marker = findFakeRoleContinuation(this.unsafeContinuationBuffer, searchIndex);
       if (!marker) break;
+
+      const roleIntroducedThinkingBoundary = findRoleIntroducedThinkingBoundary(
+        this.unsafeContinuationBuffer,
+        marker,
+        suppressedThinkingOpenBoundaries
+      );
+
+      if (roleIntroducedThinkingBoundary !== null) {
+        const suppressFrom = trailingWhitespaceStartBefore(this.unsafeContinuationBuffer, marker.markerStart);
+        contentDelta += this.visibleBufferedContentFromUnsafeBuffer(
+          contentDelta,
+          this.unsafeContinuationBuffer.slice(0, suppressFrom)
+        );
+        thinkingDelta += this.unsafeContinuationBuffer.slice(suppressFrom, roleIntroducedThinkingBoundary);
+        this.unsafeContinuationBuffer = this.visibleContinuationFromCurrentOutput(
+          contentDelta,
+          this.unsafeContinuationBuffer.slice(roleIntroducedThinkingBoundary)
+        );
+        shiftSuppressedThinkingOpenBoundaries(roleIntroducedThinkingBoundary);
+        this.markUnsafeContinuationSuppressed();
+        searchIndex = 0;
+        continue;
+      }
 
       const afterMarker = this.unsafeContinuationBuffer.slice(marker.markerEnd);
       const classification = classifyUnsafeContinuationAfterRoleMarker(afterMarker, options);
 
       if (classification === 'unsafe') {
         const suppressFrom = trailingWhitespaceStartBefore(this.unsafeContinuationBuffer, marker.markerStart);
-        contentDelta += this.unsafeContinuationBuffer.slice(0, suppressFrom);
-        const thinkingDelta = this.unsafeContinuationBuffer.slice(suppressFrom);
+        contentDelta += this.visibleBufferedContentFromUnsafeBuffer(
+          contentDelta,
+          this.unsafeContinuationBuffer.slice(0, suppressFrom)
+        );
+        const unsafeTail = this.unsafeContinuationBuffer.slice(suppressFrom);
+        const split = splitUnsafeContinuationReasoning(unsafeTail);
         this.unsafeContinuationBuffer = '';
-        this.suppressingUnsafeContinuation = true;
+        suppressedThinkingOpenBoundaries = [];
         this.markUnsafeContinuationSuppressed();
+
+        if (split) {
+          thinkingDelta += split.thinking;
+          this.unsafeContinuationBuffer = this.visibleContinuationFromCurrentOutput(contentDelta, split.content);
+          searchIndex = 0;
+          continue;
+        }
+
+        if (options.flush) {
+          thinkingDelta += unsafeTail;
+          return { contentDelta, thinkingDelta };
+        }
+
+        this.unsafeContinuationReasoningBuffer = unsafeTail;
+        this.suppressingUnsafeContinuation = true;
         return { contentDelta, thinkingDelta };
       }
 
       if (classification === 'pending') {
         const holdFrom = trailingWhitespaceStartBefore(this.unsafeContinuationBuffer, marker.markerStart);
-        contentDelta += this.unsafeContinuationBuffer.slice(0, holdFrom);
+        contentDelta += this.visibleBufferedContentFromUnsafeBuffer(
+          contentDelta,
+          this.unsafeContinuationBuffer.slice(0, holdFrom)
+        );
         this.unsafeContinuationBuffer = this.unsafeContinuationBuffer.slice(holdFrom);
-        return { contentDelta, thinkingDelta: '' };
+        shiftSuppressedThinkingOpenBoundaries(holdFrom);
+        return { contentDelta, thinkingDelta };
       }
 
       searchIndex = marker.markerEnd;
     }
 
     if (options.flush) {
-      contentDelta += this.unsafeContinuationBuffer;
+      contentDelta += this.visibleBufferedContentFromUnsafeBuffer(contentDelta, this.unsafeContinuationBuffer);
       this.unsafeContinuationBuffer = '';
-      return { contentDelta, thinkingDelta: '' };
+      return { contentDelta, thinkingDelta };
     }
 
     const potentialRoleStart = trailingPotentialFakeRoleContinuationStart(this.unsafeContinuationBuffer);
     if (potentialRoleStart !== -1) {
-      contentDelta += this.unsafeContinuationBuffer.slice(0, potentialRoleStart);
+      contentDelta += this.visibleBufferedContentFromUnsafeBuffer(
+        contentDelta,
+        this.unsafeContinuationBuffer.slice(0, potentialRoleStart)
+      );
       this.unsafeContinuationBuffer = this.unsafeContinuationBuffer.slice(potentialRoleStart);
-      return { contentDelta, thinkingDelta: '' };
+      shiftSuppressedThinkingOpenBoundaries(potentialRoleStart);
+      return { contentDelta, thinkingDelta };
     }
 
     const keepFrom = trailingWhitespaceStart(this.unsafeContinuationBuffer);
-    contentDelta += this.unsafeContinuationBuffer.slice(0, keepFrom);
+    contentDelta += this.visibleBufferedContentFromUnsafeBuffer(
+      contentDelta,
+      this.unsafeContinuationBuffer.slice(0, keepFrom)
+    );
     this.unsafeContinuationBuffer = this.unsafeContinuationBuffer.slice(keepFrom);
-    return { contentDelta, thinkingDelta: '' };
+    shiftSuppressedThinkingOpenBoundaries(keepFrom);
+    return { contentDelta, thinkingDelta };
+  }
+
+  private visibleContinuationFromCurrentOutput(currentContentDelta: string, continuation: string) {
+    if (continuation.length === 0) {
+      if (this.hasVisibleOutputBefore(currentContentDelta)) {
+        this.pendingVisibleContinuationSeparator = true;
+      }
+      return continuation;
+    }
+
+    const previousVisibleChar = currentContentDelta.length > 0
+      ? currentContentDelta.at(-1)
+      : this.lastVisibleOutputChar;
+
+    this.pendingVisibleContinuationSeparator = false;
+
+    if (!previousVisibleChar || /\s/.test(previousVisibleChar) || /^\s/.test(continuation)) return continuation;
+    return `\n\n${continuation}`;
+  }
+
+  private visibleBufferedContentFromUnsafeBuffer(currentContentDelta: string, value: string) {
+    if (value.length === 0 || !this.pendingVisibleContinuationSeparator) return value;
+    return this.visibleContinuationFromCurrentOutput(currentContentDelta, value);
+  }
+
+  private hasVisibleOutputBefore(currentContentDelta: string) {
+    return currentContentDelta.length > 0 || this.lastVisibleOutputChar.length > 0;
   }
 
   private markUnsafeContinuationSuppressed() {
@@ -690,10 +959,17 @@ export class ThinkingBlockExtractor {
   }
 
   private snapshot(contentDelta: string, thinkingDelta: string): ThinkingBlockExtractionResult {
+    const visibleContentDelta = restoreMarkdownCodeFenceContent(contentDelta);
+    const visibleThinkingDelta = restoreMarkdownCodeFenceContent(thinkingDelta);
+
+    if (visibleContentDelta.length > 0) {
+      this.lastVisibleOutputChar = visibleContentDelta.at(-1) ?? this.lastVisibleOutputChar;
+    }
+
     return {
-      delta: contentDelta,
-      contentDelta,
-      thinkingDelta,
+      delta: visibleContentDelta,
+      contentDelta: visibleContentDelta,
+      thinkingDelta: visibleThinkingDelta,
       hasThinkingBlock: this.hasThinkingBlockValue,
       suppressedThinkingBlock: this.suppressedThinkingBlockValue,
       hasUntaggedReasoning: this.hasUntaggedReasoningValue,
