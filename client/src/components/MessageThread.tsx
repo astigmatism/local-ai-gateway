@@ -159,28 +159,80 @@ const PendingImageContent = () => (
   </div>
 );
 
-const messageMetadataRecord = (message: Message) =>
-  message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata) ? message.metadata : null;
+const metadataRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+
+const messageMetadataRecord = (message: Message) => metadataRecord(message.metadata);
 
 const messageThinkingContent = (message: Message) => {
   const value = messageMetadataRecord(message)?.thinkingContent;
   return typeof value === 'string' ? value.trim() : '';
 };
 
+const formatThinkingDuration = (durationMs: number) => {
+  if (!Number.isFinite(durationMs) || durationMs < 0) return null;
+  const seconds = Math.max(1, Math.round(durationMs / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
+};
+
+const messageThinkingMarker = (message: Message) => {
+  const metadata = messageMetadataRecord(message);
+  const thinking = metadataRecord(metadata?.thinking);
+  const label = metadata?.thinkingLabel ?? thinking?.label;
+
+  if (typeof label === 'string' && label.trim().length > 0) {
+    return label.trim();
+  }
+
+  const durationMs = metadata?.thinkingDurationMs ?? thinking?.durationMs;
+  if (typeof durationMs === 'number') {
+    const duration = formatThinkingDuration(durationMs);
+    if (duration) return `Thought for ${duration}`;
+  }
+
+  if (
+    metadata?.thinkingContentDiscarded === true ||
+    metadata?.thinkingContentSuppressed === true ||
+    metadata?.hasThinkingField === true ||
+    metadata?.hasRawThinkingTag === true ||
+    metadata?.hasUntaggedReasoning === true ||
+    thinking?.discarded === true ||
+    thinking?.suppressed === true
+  ) {
+    return 'Thought';
+  }
+
+  return '';
+};
+
 const messageThinkingEnabled = (message: Message) => messageMetadataRecord(message)?.thinkingEnabled === true;
 
 const ThinkingTrace = ({ message, status }: { message: Message; status: DeliveryStatus | null }) => {
   const content = messageThinkingContent(message);
+  const marker = messageThinkingMarker(message);
   const isActive = status === 'thinking' || status === 'streaming';
-  const shouldRender = message.role === 'assistant' && messageThinkingEnabled(message) && (content.length > 0 || isActive);
+  const shouldRenderLive = message.role === 'assistant' && isActive && (messageThinkingEnabled(message) || content.length > 0);
+  const shouldRenderMarker = message.role === 'assistant' && !isActive && marker.length > 0;
 
-  if (!shouldRender) return null;
+  if (!shouldRenderLive && !shouldRenderMarker) return null;
+
+  if (!isActive) {
+    return (
+      <div className="thinking-trace thinking-marker" aria-label={marker}>
+        <span>{marker}</span>
+        <small>Reasoning discarded after generation</small>
+      </div>
+    );
+  }
 
   return (
-    <details className={`thinking-trace ${isActive ? 'active' : ''}`} open={isActive ? true : undefined}>
+    <details className="thinking-trace active" open>
       <summary>
-        <span>{isActive ? 'Thinking...' : 'Thinking'}</span>
-        <small>{content.length > 0 ? (isActive ? 'Reasoning is streaming separately' : 'View captured reasoning') : 'Waiting for reasoning'}</small>
+        <span>{marker || 'Thinking...'}</span>
+        <small>{content.length > 0 ? 'Reasoning is streaming separately' : 'Waiting for reasoning'}</small>
       </summary>
       {content.length > 0 ? (
         <div className="thinking-trace-content">{content}</div>

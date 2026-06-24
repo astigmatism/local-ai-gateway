@@ -375,6 +375,16 @@ export interface LlmStreamThinkingDeltaEvent {
   generatedAt: string;
 }
 
+export interface LlmStreamThinkingLifecycleEvent {
+  type: 'thinking_lifecycle';
+  phase: 'started' | 'completed';
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  label?: string;
+  generatedAt: string;
+}
+
 export interface LlmStreamMetadataEvent {
   type: 'metadata';
   provider: 'ollama';
@@ -402,6 +412,7 @@ export type LlmStreamEvent =
   | LlmStreamStartEvent
   | LlmStreamDeltaEvent
   | LlmStreamThinkingDeltaEvent
+  | LlmStreamThinkingLifecycleEvent
   | LlmStreamMetadataEvent
   | LlmStreamDoneEvent
   | LlmStreamErrorEvent;

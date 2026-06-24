@@ -658,6 +658,24 @@ textarea {
   background: rgba(143, 180, 255, 0.1);
 }
 
+.thinking-trace.thinking-marker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0.42rem 0.62rem;
+  border-style: solid;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.thinking-marker small {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
 .thinking-trace summary {
   display: flex;
   align-items: center;

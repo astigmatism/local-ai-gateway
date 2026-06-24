@@ -117,6 +117,16 @@ interface ConversationStreamThinkingDeltaEvent {
   generatedAt: string;
 }
 
+interface ConversationStreamThinkingLifecycleEvent {
+  type: 'thinking_lifecycle';
+  phase: 'started' | 'completed';
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  label?: string;
+  generatedAt: string;
+}
+
 interface ConversationStreamMetadataEvent {
   type: 'metadata';
   provider: 'ollama';
@@ -146,6 +156,7 @@ type ConversationStreamEvent =
   | ConversationStreamStartEvent
   | ConversationStreamDeltaEvent
   | ConversationStreamThinkingDeltaEvent
+  | ConversationStreamThinkingLifecycleEvent
   | ConversationStreamMetadataEvent
   | ConversationStreamDoneEvent
   | ConversationStreamErrorEvent;
@@ -283,31 +294,104 @@ type MessageContentShape = {
 const metadataRecord = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 
+const rawThinkingMetadataFieldNames = new Set([
+  'thinking',
+  'thinkingcontent',
+  'thinking_content',
+  'rawthinking',
+  'rawthinkingcontent',
+  'raw_thinking',
+  'raw_thinking_content',
+  'reasoning',
+  'reasoningcontent',
+  'reasoning_content',
+  'rawreasoning',
+  'rawreasoningcontent',
+  'raw_reasoning',
+  'raw_reasoning_content',
+  'chainofthought',
+  'chain_of_thought',
+  'thought',
+  'thoughts',
+  'analysis',
+  'analysiscontent',
+  'analysis_content'
+]);
+
+const normalizeMetadataFieldName = (fieldName: string) => fieldName.replace(/[-_\s]/g, '').toLowerCase();
+
+const isCompactThinkingMetadataValue = (value: unknown) => {
+  const record = metadataRecord(value);
+  return record?.discarded === true && typeof record.label === 'string';
+};
+
+const redactRawThinkingMetadata = (metadata: Record<string, unknown> | undefined): Record<string, unknown> | undefined => {
+  if (!metadata) return undefined;
+
+  let changed = false;
+  const entries = Object.entries(metadata).filter(([key, value]) => {
+    const normalized = normalizeMetadataFieldName(key);
+    const isRawThinkingField = rawThinkingMetadataFieldNames.has(normalized);
+    const keep = !isRawThinkingField || (normalized === 'thinking' && isCompactThinkingMetadataValue(value));
+    changed = changed || !keep;
+    return keep;
+  });
+
+  return changed ? Object.fromEntries(entries) : metadata;
+};
+
+const containsRawThinkingMetadata = (metadata: Record<string, unknown> | undefined) =>
+  Boolean(
+    metadata &&
+      Object.entries(metadata).some(([key, value]) => {
+        const normalized = normalizeMetadataFieldName(key);
+        if (!rawThinkingMetadataFieldNames.has(normalized)) return false;
+        return normalized !== 'thinking' || !isCompactThinkingMetadataValue(value);
+      })
+  );
+
+const compactThinkingMetadata = (metadata: Record<string, unknown> | undefined, hasDiscardedThinking: boolean) => {
+  const currentThinking = metadataRecord(metadata?.thinking);
+  if (currentThinking?.discarded === true && typeof currentThinking.label === 'string') return currentThinking;
+  if (!hasDiscardedThinking) return undefined;
+  return { label: 'Thought', discarded: true };
+};
+
 const mergeThinkingResponseMetadata = (
   metadata: unknown,
   sanitized: ReturnType<typeof sanitizeThinkingBlocks>
 ): Record<string, unknown> | undefined => {
-  const thinkingContent = sanitized.thinking.trim();
+  const extractedThinkingContent = sanitized.thinking.trim();
+  const originalMetadata = metadataRecord(metadata);
+  const current = redactRawThinkingMetadata(originalMetadata);
+  const hasDiscardedThinkingContent =
+    extractedThinkingContent.length > 0 ||
+    containsRawThinkingMetadata(originalMetadata) ||
+    current?.thinkingContentDiscarded === true ||
+    current?.thinkingContentSuppressed === true;
   const hasUntaggedReasoning = Boolean(sanitized.hasUntaggedReasoning);
   const suppressedUntaggedReasoning = Boolean(sanitized.suppressedUntaggedReasoning);
+  const thinkingMetadata = compactThinkingMetadata(current, hasDiscardedThinkingContent);
+
   if (
     !sanitized.hasThinkingBlock &&
     !sanitized.suppressedThinkingBlock &&
     !hasUntaggedReasoning &&
     !suppressedUntaggedReasoning &&
-    !thinkingContent
+    !hasDiscardedThinkingContent &&
+    current === originalMetadata
   ) {
-    return metadataRecord(metadata);
+    return current;
   }
 
-  const current = metadataRecord(metadata);
   return {
     ...(current ?? {}),
     hasRawThinkingTag: Boolean(current?.hasRawThinkingTag) || sanitized.hasThinkingBlock,
     rawThinkingTagSuppressed: Boolean(current?.rawThinkingTagSuppressed) || sanitized.suppressedThinkingBlock,
     hasUntaggedReasoning: Boolean(current?.hasUntaggedReasoning) || hasUntaggedReasoning,
     untaggedReasoningSuppressed: Boolean(current?.untaggedReasoningSuppressed) || suppressedUntaggedReasoning,
-    ...(thinkingContent && typeof current?.thinkingContent !== 'string' ? { thinkingContent } : {})
+    ...(hasDiscardedThinkingContent ? { thinkingContentDiscarded: true } : {}),
+    ...(thinkingMetadata ? { thinking: thinkingMetadata, thinkingLabel: thinkingMetadata.label } : {})
   };
 };
 
@@ -359,24 +443,34 @@ const mergeThinkingSuppressionMetadata = (
   metadata: Record<string, unknown> | undefined,
   sanitized: ReturnType<typeof sanitizeThinkingBlocks>
 ) => {
-  const thinkingContent = sanitized.thinking.trim();
+  const extractedThinkingContent = sanitized.thinking.trim();
+  const current = redactRawThinkingMetadata(metadata);
+  const hasDiscardedThinkingContent =
+    extractedThinkingContent.length > 0 ||
+    containsRawThinkingMetadata(metadata) ||
+    current?.thinkingContentDiscarded === true ||
+    current?.thinkingContentSuppressed === true;
   const hasUntaggedReasoning = Boolean(sanitized.hasUntaggedReasoning);
   const suppressedUntaggedReasoning = Boolean(sanitized.suppressedUntaggedReasoning);
+  const thinkingMetadata = compactThinkingMetadata(current, hasDiscardedThinkingContent);
+
   if (
     !sanitized.hasThinkingBlock &&
     !sanitized.suppressedThinkingBlock &&
     !hasUntaggedReasoning &&
     !suppressedUntaggedReasoning &&
-    !thinkingContent
-  ) return metadata;
+    !hasDiscardedThinkingContent &&
+    current === metadata
+  ) return current;
 
   return {
-    ...(metadata ?? {}),
-    hasRawThinkingTag: Boolean(metadata?.hasRawThinkingTag) || sanitized.hasThinkingBlock,
-    rawThinkingTagSuppressed: Boolean(metadata?.rawThinkingTagSuppressed) || sanitized.suppressedThinkingBlock,
-    hasUntaggedReasoning: Boolean(metadata?.hasUntaggedReasoning) || hasUntaggedReasoning,
-    untaggedReasoningSuppressed: Boolean(metadata?.untaggedReasoningSuppressed) || suppressedUntaggedReasoning,
-    ...(thinkingContent && typeof metadata?.thinkingContent !== 'string' ? { thinkingContent } : {})
+    ...(current ?? {}),
+    hasRawThinkingTag: Boolean(current?.hasRawThinkingTag) || sanitized.hasThinkingBlock,
+    rawThinkingTagSuppressed: Boolean(current?.rawThinkingTagSuppressed) || sanitized.suppressedThinkingBlock,
+    hasUntaggedReasoning: Boolean(current?.hasUntaggedReasoning) || hasUntaggedReasoning,
+    untaggedReasoningSuppressed: Boolean(current?.untaggedReasoningSuppressed) || suppressedUntaggedReasoning,
+    ...(hasDiscardedThinkingContent ? { thinkingContentDiscarded: true } : {}),
+    ...(thinkingMetadata ? { thinking: thinkingMetadata, thinkingLabel: thinkingMetadata.label } : {})
   };
 };
 
@@ -982,6 +1076,16 @@ conversationsRouter.post(
             thinking: event.thinking,
             generatedAt: event.generatedAt
           });
+          if (!keepStreaming) {
+            abortController.abort();
+            streamFinished = true;
+            return;
+          }
+          continue;
+        }
+
+        if (event.type === 'thinking_lifecycle') {
+          const keepStreaming = await writeNdjsonEvent(res, event);
           if (!keepStreaming) {
             abortController.abort();
             streamFinished = true;

@@ -990,7 +990,8 @@ export const App = () => {
     });
     optimisticThinkingMessage.metadata = {
       ...(optimisticThinkingMessage.metadata ?? {}),
-      thinkingEnabled: enableThinking
+      thinkingEnabled: true,
+      thinkingRequested: enableThinking
     };
     const optimisticShell = createOptimisticConversationShell({
       conversationId: optimisticConversationId,
@@ -1054,7 +1055,8 @@ export const App = () => {
                       model: event.model,
                       streaming: event.requestKind !== 'image',
                       requestKind: event.requestKind ?? 'chat',
-                      thinkingEnabled: enableThinking
+                      thinkingEnabled: true,
+                      thinkingRequested: enableThinking
                     }
                   };
                 }
@@ -1063,6 +1065,30 @@ export const App = () => {
                   ? { ...message, conversationId: event.conversationId }
                   : message;
               })
+            );
+            return;
+          }
+
+          if (event.type === 'thinking_lifecycle') {
+            setOptimisticMessages((current) =>
+              current.map((message) =>
+                message.id === assistantMessageTempId
+                  ? {
+                      ...message,
+                      metadata: {
+                        ...(message.metadata ?? {}),
+                        deliveryStatus: message.content.length > 0 && message.content !== 'Thinking…' ? 'streaming' : 'thinking',
+                        streaming: true,
+                        thinkingEnabled: true,
+                        thinkingPhase: event.phase,
+                        ...(event.startedAt ? { thinkingStartedAt: event.startedAt } : {}),
+                        ...(event.completedAt ? { thinkingCompletedAt: event.completedAt } : {}),
+                        ...(typeof event.durationMs === 'number' ? { thinkingDurationMs: event.durationMs } : {}),
+                        ...(event.label ? { thinkingLabel: event.label } : {})
+                      }
+                    }
+                  : message
+              )
             );
             return;
           }

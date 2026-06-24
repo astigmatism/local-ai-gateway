@@ -76,6 +76,92 @@ describe('thinking block sanitizer', () => {
     expect(visible).toBe('Final answer');
   });
 
+  it('treats near-miss opening tags as thinking when the close tag is exact', () => {
+    const result = sanitizeThinkingBlocks('<thin>private near-miss reasoning</think>Visible answer', { trim: true });
+
+    expect(result.content).toBe('Visible answer');
+    expect(result.thinking).toContain('private near-miss reasoning');
+    expect(result.hasThinkingBlock).toBe(true);
+    expect(result.suppressedThinkingBlock).toBe(true);
+  });
+
+  it('keeps split untagged reasoning starts out of visible streaming output', () => {
+    const extractor = new ThinkingBlockExtractor({ extractUntaggedReasoning: true });
+    let visible = '';
+    let thinking = '';
+
+    for (const chunk of ['He', "re's a thinking process:\n", 'Analyze User Input\n\nFinal answer:\nVisible answer']) {
+      const result = extractor.feed(chunk);
+      visible += result.contentDelta;
+      thinking += result.thinkingDelta;
+    }
+    const final = extractor.flush();
+    visible += final.contentDelta;
+    thinking += final.thinkingDelta;
+
+    expect(visible.trim()).toBe('Visible answer');
+    expect(thinking).toContain("Here's a thinking process");
+    expect(thinking).toContain('Analyze User Input');
+  });
+
+  it('separates untagged thinking that appears after visible answer text and then resumes final output', () => {
+    const input = [
+      'Visible answer before.',
+      '',
+      "Here's a thinking process:",
+      'Analyze User Input',
+      '',
+      'Final answer:',
+      'Visible answer after.'
+    ].join('\n');
+
+    const server = sanitizeThinkingBlocks(input, { trim: true, extractUntaggedReasoning: true });
+    const client = sanitizeClientThinkingBlocks(input, { trim: true, extractUntaggedReasoning: true });
+
+    for (const result of [server, client]) {
+      expect(result.content).toBe('Visible answer before.\n\nVisible answer after.');
+      expect(result.thinking).toContain("Here's a thinking process");
+      expect(result.thinking).toContain('Analyze User Input');
+      expect(result.content).not.toContain('thinking process');
+      expect(result.hasUntaggedReasoning).toBe(true);
+      expect(result.suppressedUntaggedReasoning).toBe(true);
+    }
+  });
+
+  it('keeps split mid-answer untagged reasoning out of visible streaming output', () => {
+    type ExtractorConstructor = new (options?: { extractUntaggedReasoning?: boolean }) => {
+      feed(input: string): ReturnType<ThinkingBlockExtractor['feed']>;
+      flush(): ReturnType<ThinkingBlockExtractor['flush']>;
+    };
+    const run = (Extractor: ExtractorConstructor) => {
+      const extractor = new Extractor({ extractUntaggedReasoning: true });
+      let visible = '';
+      let thinking = '';
+
+      for (const chunk of [
+        'Visible answer before.\n\nHe',
+        "re's a thinking process:\n",
+        'Analyze User Input\n\nFinal answer:\nVisible answer after.'
+      ]) {
+        const result = extractor.feed(chunk);
+        visible += result.contentDelta;
+        thinking += result.thinkingDelta;
+      }
+
+      const final = extractor.flush();
+      visible += final.contentDelta;
+      thinking += final.thinkingDelta;
+      return { visible, thinking };
+    };
+
+    for (const result of [run(ThinkingBlockExtractor), run(ClientThinkingBlockExtractor)]) {
+      expect(result.visible).toBe('Visible answer before.\n\nVisible answer after.');
+      expect(result.thinking).toContain("Here's a thinking process");
+      expect(result.thinking).toContain('Analyze User Input');
+      expect(result.visible).not.toContain('thinking process');
+    }
+  });
+
   it('strips Qwen-style thought control tokens even when split across chunks', () => {
     const suppressor = new ThinkingBlockSuppressor();
     let visible = '';

@@ -30,6 +30,8 @@ type UntaggedReasoningClassification = 'reasoning' | 'possible' | 'not-reasoning
 type UnsafeContinuationClassification = 'unsafe' | 'pending' | 'safe';
 
 const thinkingTagNames = ['think', 'thinking'];
+const malformedThinkingOpenTagNames = ['thin'];
+const thinkingOpenTagNames = [...thinkingTagNames, ...malformedThinkingOpenTagNames];
 const thinkingOpenTokenMarkers = ['<|begin_of_thought|>', '<|start_of_thought|>', '<|begin▁of▁thought|>'];
 const thinkingCloseTokenMarkers = ['<|end_of_thought|>', '<|stop_of_thought|>', '<|end▁of▁thought|>'];
 const reasoningHeadingNames = [
@@ -43,7 +45,18 @@ const reasoningHeadingNames = [
   'internal analysis',
   'internal reasoning',
   'model analysis',
-  'assistant analysis'
+  'assistant analysis',
+  'thinking process',
+  'reasoning process',
+  'analysis process',
+  'analyze user input',
+  'analyse user input',
+  'identify key context',
+  'draft response',
+  'draft answer',
+  'self-correction',
+  'self correction',
+  'output generation'
 ];
 const finalMarkerNames = [
   'final',
@@ -60,12 +73,55 @@ const finalMarkerNames = [
 ];
 const leakedReasoningPhrasePatterns = [
   /analy[sz]e\s+(?:the\s+)?user\s+input/i,
-  /identify\s+key\s+elements/i,
+  /identify\s+key\s+(?:elements|context)/i,
   /determine\s+best\s+practices/i,
   /check\s+against\s+constraints/i,
   /final\s+output\s+generation/i,
   /draft\s+(?:the\s+)?(?:response|answer|output)/i,
-  /refine\s+(?:the\s+)?(?:response|answer|output|draft)/i
+  /refine\s+(?:the\s+)?(?:response|answer|output|draft)/i,
+  /here(?:'s|\s+is)\s+(?:(?:a|the|my)\s+)?(?:thinking|reasoning|thought|analysis)\s+process/i,
+  /self[-\s]?correction/i,
+  /output\s+generation/i
+];
+
+const reasoningStartPatterns = [
+  /^here(?:'s|\s+is)\s+(?:(?:a|the|my)\s+)?(?:thinking|reasoning|thought|analysis)\s+process\s*:?/i,
+  /^(?:\d+[).]\s*)?(?:\*+\s*)?analy[sz]e\s+(?:the\s+)?user\s+input\b/i,
+  /^(?:\d+[).]\s*)?(?:\*+\s*)?identify\s+key\s+(?:elements|context)\b/i,
+  /^(?:\d+[).]\s*)?(?:\*+\s*)?determine\s+best\s+practices\b/i,
+  /^(?:\d+[).]\s*)?(?:\*+\s*)?check\s+against\s+constraints\b/i,
+  /^(?:\d+[).]\s*)?(?:\*+\s*)?draft\s+(?:the\s+)?(?:response|answer|output)\b/i,
+  /^(?:\d+[).]\s*)?(?:\*+\s*)?refine\s+(?:the\s+)?(?:response|answer|output|draft)\b/i,
+  /^(?:\d+[).]\s*)?(?:\*+\s*)?self[-\s]?correction\b/i,
+  /^(?:\d+[).]\s*)?(?:\*+\s*)?output\s+generation\b/i
+];
+
+const reasoningStartPrefixPhrases = [
+  "here's a thinking process",
+  'here is a thinking process',
+  "here's a reasoning process",
+  'here is a reasoning process',
+  "here's a thought process",
+  'here is a thought process',
+  "here's an analysis process",
+  'here is an analysis process',
+  'analyze user input',
+  'analyze the user input',
+  'analyse user input',
+  'analyse the user input',
+  'identify key elements',
+  'identify key context',
+  'determine best practices',
+  'check against constraints',
+  'draft response',
+  'draft the response',
+  'draft answer',
+  'draft output',
+  'refine response',
+  'refine the response',
+  'self-correction',
+  'self correction',
+  'output generation'
 ];
 
 const escapeRegExp = (value: string) => value.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&');
@@ -77,11 +133,11 @@ const fakeRoleContinuationLabels = ['assistant:', 'assistant response:'];
 const fakeRoleContinuationPattern = /(^|\r?\n)([ \t>]*(?:#{1,6}[ \t]*)?(?:assistant(?:[ \t]+response)?)[ \t]*:[ \t]*)/gi;
 
 const thinkingOpenTagPattern = new RegExp(
-  '<\\s*(?:' + thinkingTagNames.join('|') + ')\\b[^>]*>|' + thinkingOpenTokenMarkers.map(escapeRegExp).join('|'),
+  '<\\s*(?:' + thinkingOpenTagNames.join('|') + ')\\b[^>]*>|' + thinkingOpenTokenMarkers.map(escapeRegExp).join('|'),
   'i'
 );
 const anchoredThinkingOpenTagPattern = new RegExp(
-  '^(?:<\\s*(?:' + thinkingTagNames.join('|') + ')\\b[^>]*>|' + thinkingOpenTokenMarkers.map(escapeRegExp).join('|') + ')',
+  '^(?:<\\s*(?:' + thinkingOpenTagNames.join('|') + ')\\b[^>]*>|' + thinkingOpenTokenMarkers.map(escapeRegExp).join('|') + ')',
   'i'
 );
 const thinkingCloseTagPattern = new RegExp(
@@ -231,7 +287,7 @@ const isPotentialOpenTagPrefix = (fragment: string) => {
   if (tagPrefix.startsWith('/')) return false;
   if (tagPrefix.length === 0) return true;
 
-  return thinkingTagNames.some(
+  return thinkingOpenTagNames.some(
     (tagName) => tagName.startsWith(tagPrefix) || tagPrefix.startsWith(tagName + ' ') || tagPrefix === tagName
   );
 };
@@ -328,6 +384,26 @@ const normalizeUnsafeContinuationReasoningLine = (value: string) =>
     .trim()
     .toLowerCase();
 
+const looksLikeReasoningStart = (value: string) => {
+  const preamble = value.trimStart().slice(0, 1600);
+  return reasoningStartPatterns.some((pattern) => pattern.test(preamble));
+};
+
+const normalizeReasoningStartPrefixCandidate = (value: string) =>
+  firstMeaningfulLine(value)
+    .replace(/^\d+[).]\s*/, '')
+    .replace(/^\*+\s*/, '')
+    .replace(/\*+\s*:?\s*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+const isPotentialReasoningStartPrefix = (value: string) => {
+  const normalized = normalizeReasoningStartPrefixCandidate(value);
+  if (normalized.length === 0) return false;
+  return reasoningStartPrefixPhrases.some((phrase) => phrase.startsWith(normalized));
+};
+
 const unsafeContinuationReasoningPrefixPhrases = [
   "here's a thinking process:",
   'here is a thinking process:',
@@ -344,18 +420,24 @@ const unsafeContinuationReasoningPrefixPhrases = [
   'analyse user input',
   'analyse the user input',
   'identify key elements',
+  'identify key context',
   'determine best practices',
   'check against constraints',
   'draft the response',
   'draft response',
+  'draft answer',
+  'draft output',
   'refine the response',
-  'refine response'
+  'refine response',
+  'self-correction',
+  'self correction',
+  'output generation'
 ];
 
 const unsafeContinuationNumberedReasoningPattern =
-  /^\d+[).]\s*(?:\*+\s*)?(?:analy[sz]e\s+(?:the\s+)?user\s+input|identify\s+key\s+elements|determine\s+best\s+practices|check\s+against\s+constraints|draft\b|refine\b)/i;
+  /^\d+[).]\s*(?:\*+\s*)?(?:analy[sz]e\s+(?:the\s+)?user\s+input|identify\s+key\s+(?:elements|context)|determine\s+best\s+practices|check\s+against\s+constraints|draft\b|refine\b|self[-\s]?correction|output\s+generation)/i;
 const unsafeContinuationDirectReasoningPattern =
-  /^(?:\*+\s*)?(?:analy[sz]e\s+(?:the\s+)?user\s+input|identify\s+key\s+elements|determine\s+best\s+practices|check\s+against\s+constraints)/i;
+  /^(?:\*+\s*)?(?:analy[sz]e\s+(?:the\s+)?user\s+input|identify\s+key\s+(?:elements|context)|determine\s+best\s+practices|check\s+against\s+constraints|draft\s+(?:the\s+)?(?:response|answer|output)|self[-\s]?correction|output\s+generation)/i;
 const unsafeContinuationThinkingProcessPattern =
   /^here(?:'s|\s+is)\s+(?:(?:a|the|my)\s+)?(?:thinking|reasoning|thought|analysis)\s+process\s*:/i;
 const unsafeContinuationMyReasoningPattern = /^here(?:'s|\s+is)\s+my\s+(?:reasoning|analysis)\s*:/i;
@@ -364,11 +446,24 @@ const looksLikeUnsafeContinuationReasoningPreamble = (value: string) => {
   const preamble = value.trimStart().slice(0, 1600);
   if (preamble.length === 0) return false;
   if (completeReasoningHeadingPattern.test(preamble)) return true;
+  if (looksLikeReasoningStart(preamble)) return true;
   if (unsafeContinuationThinkingProcessPattern.test(preamble)) return true;
   if (unsafeContinuationMyReasoningPattern.test(preamble)) return true;
   if (unsafeContinuationNumberedReasoningPattern.test(preamble)) return true;
   if (unsafeContinuationDirectReasoningPattern.test(preamble)) return true;
   return leakedReasoningPhraseScore(preamble) >= 2;
+};
+
+const looksLikeUnsafeContinuationReasoningBoundary = (value: string) => {
+  const preamble = value.trimStart().slice(0, 1600);
+  if (preamble.length === 0) return false;
+  if (completeReasoningHeadingPattern.test(preamble)) return true;
+  if (looksLikeReasoningStart(preamble)) return true;
+  if (unsafeContinuationThinkingProcessPattern.test(preamble)) return true;
+  if (unsafeContinuationMyReasoningPattern.test(preamble)) return true;
+  if (unsafeContinuationNumberedReasoningPattern.test(preamble)) return true;
+  if (unsafeContinuationDirectReasoningPattern.test(preamble)) return true;
+  return false;
 };
 
 const isPotentialUnsafeContinuationReasoningPrefix = (value: string) => {
@@ -402,6 +497,53 @@ const classifyUnsafeContinuationAfterRoleMarker = (
   return 'safe';
 };
 
+const classifyUnsafeContinuationAtReasoningBoundary = (
+  afterBoundary: string,
+  options: { flush: boolean }
+): UnsafeContinuationClassification => {
+  const leadingWhitespace = afterBoundary.match(/^\s*/)?.[0] ?? '';
+  const remainder = afterBoundary.slice(leadingWhitespace.length);
+
+  if (remainder.length === 0) return options.flush ? 'safe' : 'pending';
+  if (anchoredThinkingOpenTagPattern.test(remainder)) return 'unsafe';
+  if (isPotentialOpenTagPrefix(remainder)) return options.flush ? 'unsafe' : 'pending';
+  if (looksLikeUnsafeContinuationReasoningBoundary(remainder)) return 'unsafe';
+  if (isPotentialUnsafeContinuationReasoningPrefix(remainder)) return options.flush ? 'unsafe' : 'pending';
+
+  return 'safe';
+};
+
+interface UnsafeReasoningContinuationMatch {
+  markerStart: number;
+  suppressFrom: number;
+  classification: UnsafeContinuationClassification;
+}
+
+const findUnsafeReasoningContinuation = (
+  value: string,
+  options: { flush: boolean }
+): UnsafeReasoningContinuationMatch | null => {
+  const candidateStarts = [0];
+  for (let index = value.indexOf('\n'); index !== -1; index = value.indexOf('\n', index + 1)) {
+    candidateStarts.push(index + 1);
+  }
+
+  for (const markerStart of candidateStarts) {
+    if (markerStart > value.length) continue;
+    const afterBoundary = value.slice(markerStart);
+    const classification = classifyUnsafeContinuationAtReasoningBoundary(afterBoundary, options);
+    if (classification === 'safe') continue;
+
+    return {
+      markerStart,
+      suppressFrom: trailingWhitespaceStartBefore(value, markerStart),
+      classification
+    };
+  }
+
+  return null;
+};
+
 const leakedReasoningPhraseScore = (value: string) =>
   leakedReasoningPhrasePatterns.reduce((score, pattern) => score + (pattern.test(value) ? 1 : 0), 0);
 
@@ -418,6 +560,7 @@ const looksLikeReasoningPreamble = (value: string) => {
   const preamble = value.trimStart().slice(0, 1600);
   if (preamble.length === 0) return false;
   if (reasoningHeadingPattern.test(preamble)) return true;
+  if (looksLikeReasoningStart(preamble)) return true;
   return leakedReasoningPhraseScore(preamble) >= 2;
 };
 
@@ -425,8 +568,8 @@ const classifyUntaggedReasoningBuffer = (value: string): UntaggedReasoningClassi
   const preamble = value.trimStart().slice(0, 1600);
   if (preamble.length === 0) return 'possible';
   if (looksLikeReasoningPreamble(preamble)) return 'reasoning';
-  if (isPotentialReasoningHeadingPrefix(preamble)) return 'possible';
-  if (/^\d+[).]\s*(?:analy[sz]e|identify|determine|draft|refine|check)\b/i.test(preamble)) return 'possible';
+  if (isPotentialReasoningHeadingPrefix(preamble) || isPotentialReasoningStartPrefix(preamble)) return 'possible';
+  if (/^\d+[).]\s*(?:analy[sz]e|identify|determine|draft|refine|check|self[-\s]?correction|output\s+generation)\b/i.test(preamble)) return 'possible';
   return 'not-reasoning';
 };
 
@@ -837,6 +980,50 @@ export class ThinkingBlockExtractor {
       }
 
       searchIndex = marker.markerEnd;
+    }
+
+    const reasoningContinuation = findUnsafeReasoningContinuation(this.unsafeContinuationBuffer, {
+      flush: options.flush
+    });
+
+    if (reasoningContinuation) {
+      contentDelta += this.visibleBufferedContentFromUnsafeBuffer(
+        contentDelta,
+        this.unsafeContinuationBuffer.slice(0, reasoningContinuation.suppressFrom)
+      );
+
+      const unsafeTail = this.unsafeContinuationBuffer.slice(reasoningContinuation.suppressFrom);
+      this.unsafeContinuationBuffer = '';
+      suppressedThinkingOpenBoundaries = [];
+
+      if (reasoningContinuation.classification === 'unsafe') {
+        const split = splitUntaggedReasoning(unsafeTail);
+        this.markUnsafeContinuationSuppressed();
+
+        if (split) {
+          thinkingDelta += split.thinking;
+          this.unsafeContinuationBuffer = this.visibleContinuationFromCurrentOutput(contentDelta, split.content);
+          const drained = this.drainUnsafeContinuationBuffer({
+            flush: options.flush,
+            thinkingStartedAfterContent: options.thinkingStartedAfterContent,
+            suppressedThinkingOpenBoundaries: []
+          });
+          return { contentDelta: contentDelta + drained.contentDelta, thinkingDelta: thinkingDelta + drained.thinkingDelta };
+        }
+
+        if (options.flush) {
+          thinkingDelta += unsafeTail;
+          return { contentDelta, thinkingDelta };
+        }
+
+        this.unsafeContinuationReasoningBuffer = unsafeTail;
+        this.suppressingUnsafeContinuation = true;
+        return { contentDelta, thinkingDelta };
+      }
+
+      this.unsafeContinuationBuffer = unsafeTail;
+      shiftSuppressedThinkingOpenBoundaries(reasoningContinuation.suppressFrom);
+      return { contentDelta, thinkingDelta };
     }
 
     if (options.flush) {

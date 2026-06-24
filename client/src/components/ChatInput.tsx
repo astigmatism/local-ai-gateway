@@ -118,7 +118,9 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(functio
           <span className="thinking-toggle-copy">
             <span className="thinking-toggle-title">Enable thinking</span>
             <span className="thinking-toggle-description">
-              {enableThinking ? 'Show model reasoning separately above the answer.' : 'Keep reasoning hidden from the answer bubble.'}
+              {enableThinking
+                ? 'Request reasoning; live thoughts stay separate and are discarded.'
+                : 'Separate and discard any leaked reasoning from the final answer.'}
             </span>
           </span>
         </label>

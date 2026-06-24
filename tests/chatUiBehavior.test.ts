@@ -57,10 +57,13 @@ describe('chat reasoning visibility surfaces', () => {
     expect(source).toContain('<MarkdownMessageContent content={visibleContent} />');
   });
 
-  it('does not render captured thinking metadata unless thinking display was explicitly enabled', () => {
+  it('shows live thinking separately and leaves only a compact marker after streaming', () => {
     const source = readSource('client/src/components/MessageThread.tsx');
 
     expect(source).toContain("const messageThinkingEnabled = (message: Message) => messageMetadataRecord(message)?.thinkingEnabled === true;");
-    expect(source).toContain("const shouldRender = message.role === 'assistant' && messageThinkingEnabled(message) && (content.length > 0 || isActive);");
+    expect(source).toContain('const marker = messageThinkingMarker(message);');
+    expect(source).toContain("const shouldRenderLive = message.role === 'assistant' && isActive && (messageThinkingEnabled(message) || content.length > 0);");
+    expect(source).toContain("const shouldRenderMarker = message.role === 'assistant' && !isActive && marker.length > 0;");
+    expect(source).toContain('Reasoning discarded after generation');
   });
 });

@@ -176,13 +176,36 @@ export interface LlmStreamThinkingDeltaEvent {
   generatedAt: string;
 }
 
+export interface LlmStreamThinkingLifecycleEvent {
+  type: 'thinking_lifecycle';
+  phase: 'started' | 'completed';
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  label?: string;
+  generatedAt: string;
+}
+
+interface ThinkingLifecycleMetadata {
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  label?: string;
+  discarded: true;
+}
+
 export interface LlmStreamDoneEvent {
   type: 'done';
   content: string;
   metadata: Record<string, unknown>;
 }
 
-export type LlmStreamEvent = LlmStreamMetadataEvent | LlmStreamDeltaEvent | LlmStreamThinkingDeltaEvent | LlmStreamDoneEvent;
+export type LlmStreamEvent =
+  | LlmStreamMetadataEvent
+  | LlmStreamDeltaEvent
+  | LlmStreamThinkingDeltaEvent
+  | LlmStreamThinkingLifecycleEvent
+  | LlmStreamDoneEvent;
 
 const client = axios.create({
   baseURL: config.llm.baseUrl,
@@ -246,8 +269,13 @@ const extractOllamaErrorMessage = (body: unknown) => {
 const structuredReasoningFieldNames = [
   'thinking',
   'thinking_content',
+  'raw_thinking',
+  'raw_thinking_content',
   'reasoning',
   'reasoning_content',
+  'raw_reasoning',
+  'raw_reasoning_content',
+  'chain_of_thought',
   'thought',
   'thoughts',
   'analysis',
@@ -282,6 +310,39 @@ const redactStructuredReasoningFields = (value: unknown, depth = 0): unknown => 
   );
 };
 
+const formatThinkingDuration = (durationMs: number) => {
+  const totalSeconds = Math.max(1, Math.round(durationMs / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+};
+
+const thinkingLifecycleMetadata = (
+  hasSeparatedThinking: boolean,
+  lifecycle?: Partial<ThinkingLifecycleMetadata> | null
+): ThinkingLifecycleMetadata | undefined => {
+  if (!hasSeparatedThinking) return undefined;
+
+  const durationMs = typeof lifecycle?.durationMs === 'number' && Number.isFinite(lifecycle.durationMs)
+    ? Math.max(0, Math.round(lifecycle.durationMs))
+    : undefined;
+  const label = typeof lifecycle?.label === 'string' && lifecycle.label.trim().length > 0
+    ? lifecycle.label.trim()
+    : durationMs !== undefined
+      ? `Thought for ${formatThinkingDuration(durationMs)}`
+      : 'Thought';
+
+  return {
+    ...(typeof lifecycle?.startedAt === 'string' ? { startedAt: lifecycle.startedAt } : {}),
+    ...(typeof lifecycle?.completedAt === 'string' ? { completedAt: lifecycle.completedAt } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    label,
+    discarded: true
+  };
+};
+
 const apiErrorFromOllamaStatus = (status: number, body: unknown) => {
   const message = extractOllamaErrorMessage(body) ?? `Ollama returned HTTP ${status}`;
   const statusCode = status >= 400 && status < 600 ? status : 502;
@@ -303,13 +364,20 @@ const metadataFromOllamaGenerate = (
   hasThinkingField: boolean,
   thinkingDecision: OllamaThinkingRequestDecision,
   thinkingBlockMetadata: ThinkingBlockMetadata = { hasThinkingBlock: false, suppressedThinkingBlock: false },
-  thinkingContent = '',
+  lifecycle?: Partial<ThinkingLifecycleMetadata> | null,
+  thinkingContentDiscarded = false,
   thinkingContentSuppressed = false
 ): Record<string, unknown> => {
   const ollamaMetadata = redactStructuredReasoningFields(parsed) as Record<string, unknown>;
   delete ollamaMetadata.response;
 
-  const trimmedThinkingContent = thinkingContent.trim();
+  const hasSeparatedThinking =
+    hasThinkingField ||
+    thinkingBlockMetadata.hasThinkingBlock ||
+    Boolean(thinkingBlockMetadata.hasUntaggedReasoning) ||
+    thinkingContentDiscarded ||
+    thinkingContentSuppressed;
+  const thinkingMetadata = thinkingLifecycleMetadata(hasSeparatedThinking, lifecycle);
 
   return {
     provider: 'ollama',
@@ -327,7 +395,9 @@ const metadataFromOllamaGenerate = (
     supportsThinkingControl: thinkingDecision.supportsThinkingControl,
     ...(thinkingDecision.thinkEnabledReason ? { thinkEnabledReason: thinkingDecision.thinkEnabledReason } : {}),
     ...(thinkingDecision.thinkDisabledReason ? { thinkDisabledReason: thinkingDecision.thinkDisabledReason } : {}),
-    ...(trimmedThinkingContent ? { thinkingContent: trimmedThinkingContent } : {}),
+    ...(thinkingMetadata ? { thinking: thinkingMetadata, thinkingLabel: thinkingMetadata.label } : {}),
+    ...(thinkingMetadata?.durationMs !== undefined ? { thinkingDurationMs: thinkingMetadata.durationMs } : {}),
+    ...(thinkingContentDiscarded ? { thinkingContentDiscarded: true } : {}),
     ...(thinkingContentSuppressed ? { thinkingContentSuppressed: true } : {}),
     ...(thinkingDecision.modelCapabilities ? { modelCapabilities: thinkingDecision.modelCapabilities } : {}),
     ollama: ollamaMetadata
@@ -636,6 +706,7 @@ export const generateWithLlm = async (
 ): Promise<LlmGenerateResult> => {
   const model = options.model ?? (await resolveDefaultLlmModel());
   const timeoutMs = options.timeoutMs ?? config.llm.timeoutMs;
+  const generationStartedAtMs = Date.now();
 
   try {
     const { body, thinkingDecision } = await buildOllamaGenerateRequestBody(model, prompt, false, options);
@@ -649,8 +720,11 @@ export const generateWithLlm = async (
     });
     const content = sanitized.content;
     const rawThinkingContent = mergeThinkingContent(structuredReasoningContentFromOllamaResponse(parsed), sanitized.thinking);
-    const thinkingContent = thinkingDecision.requestedThinking ? rawThinkingContent : '';
-    const thinkingContentSuppressed = !thinkingDecision.requestedThinking && rawThinkingContent.trim().length > 0;
+    const hasSeparatedThinkingContent = rawThinkingContent.trim().length > 0;
+    const thinkingContentSuppressed = !thinkingDecision.requestedThinking && hasSeparatedThinkingContent;
+    const lifecycle = hasSeparatedThinkingContent
+      ? { durationMs: Date.now() - generationStartedAtMs, completedAt: new Date().toISOString(), discarded: true as const }
+      : undefined;
 
     if (!content) {
       throw new ApiError(502, 'LLM returned an empty response.', 'LLM_EMPTY_RESPONSE', {
@@ -671,7 +745,8 @@ export const generateWithLlm = async (
           hasUntaggedReasoning: sanitized.hasUntaggedReasoning,
           suppressedUntaggedReasoning: sanitized.suppressedUntaggedReasoning
         },
-        thinkingContent,
+        lifecycle,
+        hasSeparatedThinkingContent,
         thinkingContentSuppressed
       )
     };
@@ -835,7 +910,6 @@ export async function* generateWithLlmStream(
 
   try {
     const { body, thinkingDecision } = await buildOllamaGenerateRequestBody(model, prompt, true, options);
-    const exposeThinking = thinkingDecision.requestedThinking;
     const thinkingBlockExtractor = new ThinkingBlockExtractor({
       assumeLeadingThinking: thinkingDecision.assumeLeadingThinking,
       extractUntaggedReasoning: true
@@ -871,6 +945,9 @@ export async function* generateWithLlmStream(
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let thinkingStartedAt: string | null = null;
+    let thinkingStartedAtMs: number | null = null;
+    let thinkingLifecycleCompleted: ThinkingLifecycleMetadata | null = null;
 
     const recordThinkingBlockResult = (result: ThinkingBlockExtractionResult) => {
       hasRawThinkingTag = hasRawThinkingTag || result.hasThinkingBlock;
@@ -879,21 +956,56 @@ export async function* generateWithLlmStream(
       suppressedUntaggedReasoning = suppressedUntaggedReasoning || Boolean(result.suppressedUntaggedReasoning);
     };
 
-    const appendThinkingDelta = function* (delta: string): Generator<LlmStreamThinkingDeltaEvent> {
+    const startThinkingLifecycle = function* (generatedAt: string): Generator<LlmStreamThinkingLifecycleEvent> {
+      if (thinkingStartedAt) return;
+
+      thinkingStartedAt = generatedAt;
+      thinkingStartedAtMs = Date.now();
+      yield {
+        type: 'thinking_lifecycle',
+        phase: 'started',
+        startedAt: thinkingStartedAt,
+        generatedAt
+      };
+    };
+
+    const completeThinkingLifecycle = function* (): Generator<LlmStreamThinkingLifecycleEvent> {
+      if (!thinkingStartedAt || thinkingLifecycleCompleted) return;
+
+      const completedAt = new Date().toISOString();
+      const durationMs = Math.max(0, Date.now() - (thinkingStartedAtMs ?? Date.now()));
+      const label = `Thought for ${formatThinkingDuration(durationMs)}`;
+      thinkingLifecycleCompleted = {
+        startedAt: thinkingStartedAt,
+        completedAt,
+        durationMs,
+        label,
+        discarded: true
+      };
+      yield {
+        type: 'thinking_lifecycle',
+        phase: 'completed',
+        startedAt: thinkingStartedAt,
+        completedAt,
+        durationMs,
+        label,
+        generatedAt: completedAt
+      };
+    };
+
+    const appendThinkingDelta = function* (delta: string): Generator<LlmStreamThinkingDeltaEvent | LlmStreamThinkingLifecycleEvent> {
       const thinkingDelta = thinkingContent.length === 0 ? delta.replace(/^\s+/, '') : delta;
       if (thinkingDelta.length === 0) return;
 
-      if (!exposeThinking) {
-        thinkingContentSuppressed = true;
-        return;
-      }
-
+      thinkingContentSuppressed = thinkingContentSuppressed || !thinkingDecision.requestedThinking;
+      const generatedAt = new Date().toISOString();
+      yield* startThinkingLifecycle(generatedAt);
       thinkingContent += thinkingDelta;
       yield {
         type: 'thinking_delta',
         delta: thinkingDelta,
         thinking: thinkingContent,
-        generatedAt: new Date().toISOString()
+        generatedAt
       };
     };
 
@@ -912,13 +1024,13 @@ export async function* generateWithLlmStream(
 
     const appendExtractedDeltas = function* (
       extracted: ThinkingBlockExtractionResult
-    ): Generator<LlmStreamDeltaEvent | LlmStreamThinkingDeltaEvent> {
+    ): Generator<LlmStreamDeltaEvent | LlmStreamThinkingDeltaEvent | LlmStreamThinkingLifecycleEvent> {
       recordThinkingBlockResult(extracted);
       yield* appendThinkingDelta(extracted.thinkingDelta);
       yield* appendVisibleDelta(extracted.contentDelta);
     };
 
-    const readLine = function* (line: string): Generator<LlmStreamDeltaEvent | LlmStreamThinkingDeltaEvent> {
+    const readLine = function* (line: string): Generator<LlmStreamDeltaEvent | LlmStreamThinkingDeltaEvent | LlmStreamThinkingLifecycleEvent> {
       const parsed = parseOllamaGenerateStreamLine(line);
       if (!parsed) return;
 
@@ -965,6 +1077,10 @@ export async function* generateWithLlmStream(
       yield event;
     }
 
+    for (const event of completeThinkingLifecycle()) {
+      yield event;
+    }
+
     if (!finalChunk) {
       throw new ApiError(502, 'LLM stream ended before Ollama sent a done chunk.', 'LLM_STREAM_INCOMPLETE', {
         model
@@ -992,7 +1108,8 @@ export async function* generateWithLlmStream(
           hasUntaggedReasoning,
           suppressedUntaggedReasoning
         },
-        thinkingContent,
+        thinkingLifecycleCompleted,
+        thinkingContent.trim().length > 0,
         thinkingContentSuppressed
       )
     };

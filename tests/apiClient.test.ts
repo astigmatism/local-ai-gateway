@@ -1099,13 +1099,20 @@ describe('api client chat streaming requests', () => {
       onEvent
     });
 
-    expect(onEvent.mock.calls.map((call) => call[0].type)).toEqual(['start', 'thinking_delta', 'delta', 'done']);
-    expect(onEvent.mock.calls[1]?.[0]).toMatchObject({
+    expect(onEvent.mock.calls.map((call) => call[0].type)).toEqual([
+      'start',
+      'thinking_lifecycle',
+      'thinking_delta',
+      'delta',
+      'thinking_lifecycle',
+      'done'
+    ]);
+    expect(onEvent.mock.calls.find((call) => call[0].type === 'thinking_delta')?.[0]).toMatchObject({
       type: 'thinking_delta',
       delta: 'private browser-side reasoning',
       thinking: 'private browser-side reasoning'
     });
-    expect(onEvent.mock.calls[2]?.[0]).toMatchObject({
+    expect(onEvent.mock.calls.find((call) => call[0].type === 'delta')?.[0]).toMatchObject({
       type: 'delta',
       delta: 'Visible answer',
       content: 'Visible answer'
@@ -1115,8 +1122,10 @@ describe('api client chat streaming requests', () => {
     expect(doneEvent.metadata).toMatchObject({
       hasRawThinkingTag: true,
       rawThinkingTagSuppressed: true,
-      thinkingContent: 'private browser-side reasoning\n\npersisted private reasoning'
+      thinkingContentDiscarded: true,
+      thinking: expect.objectContaining({ discarded: true })
     });
+    expect(doneEvent.metadata).not.toHaveProperty('thinkingContent');
     expect(JSON.stringify(onEvent.mock.calls.filter((call) => call[0].type === 'delta'))).not.toContain('private browser-side reasoning');
     expect(doneEvent.assistantMessage.content).not.toContain('persisted private reasoning');
   });
@@ -1201,8 +1210,15 @@ describe('api client chat streaming requests', () => {
 
     const doneEvent = await api.sendMessageStream('22222222-2222-4222-8222-222222222222', 'Hello', { onEvent });
 
-    expect(onEvent.mock.calls.map((call) => call[0].type)).toEqual(['start', 'delta', 'done']);
-    expect(onEvent.mock.calls[1]?.[0]).toMatchObject({
+    expect(onEvent.mock.calls.map((call) => call[0].type)).toEqual([
+      'start',
+      'thinking_lifecycle',
+      'thinking_delta',
+      'delta',
+      'thinking_lifecycle',
+      'done'
+    ]);
+    expect(onEvent.mock.calls.find((call) => call[0].type === 'delta')?.[0]).toMatchObject({
       type: 'delta',
       delta: 'Visible answer',
       content: 'Visible answer'
@@ -1210,10 +1226,12 @@ describe('api client chat streaming requests', () => {
     expect(doneEvent.assistantMessage.content).toBe('Visible answer');
     expect(doneEvent.metadata).toMatchObject({
       hasUntaggedReasoning: true,
-      untaggedReasoningSuppressed: true
+      untaggedReasoningSuppressed: true,
+      thinkingContentDiscarded: true,
+      thinking: expect.objectContaining({ discarded: true })
     });
     expect(doneEvent.metadata).not.toHaveProperty('thinkingContent');
-    expect(JSON.stringify(onEvent.mock.calls)).not.toContain('Determine best practices');
+    expect(JSON.stringify(onEvent.mock.calls.filter((call) => call[0].type === 'delta'))).not.toContain('Determine best practices');
   });
 
   it('turns chat stream error events into ApiClientError failures', async () => {

@@ -137,7 +137,9 @@ describe('generateWithLlm', () => {
       provider: 'ollama',
       model: 'qwen3.6:27b-q4_K_M',
       hasThinkingField: true,
-      thinkingContentSuppressed: true
+      thinkingContentDiscarded: true,
+      thinkingContentSuppressed: true,
+      thinking: expect.objectContaining({ discarded: true })
     });
     expect(result.metadata).not.toHaveProperty('thinkingContent');
     expect(JSON.stringify(result.metadata)).not.toContain('thinking process');
@@ -183,8 +185,10 @@ describe('generateWithLlm', () => {
       thinkEnabledReason: 'capability',
       hasRawThinkingTag: true,
       rawThinkingTagSuppressed: true,
-      thinkingContent: 'private reasoning'
+      thinkingContentDiscarded: true,
+      thinking: expect.objectContaining({ discarded: true })
     });
+    expect(result.metadata).not.toHaveProperty('thinkingContent');
     expect(textClient.post).toHaveBeenCalledWith(
       '/api/generate',
       {
@@ -286,7 +290,9 @@ describe('generateWithLlm', () => {
       thinkDisabledReason: 'known-reasoning-model',
       hasRawThinkingTag: true,
       rawThinkingTagSuppressed: true,
+      thinkingContentDiscarded: true,
       thinkingContentSuppressed: true,
+      thinking: expect.objectContaining({ discarded: true }),
       modelCapabilities: ['completion']
     });
     expect(result.metadata).not.toHaveProperty('thinkingContent');
@@ -341,22 +347,33 @@ describe('generateWithLlmStream', () => {
       events.push(event);
     }
 
-    expect(events.map((event) => event.type)).toEqual(['metadata', 'delta', 'done']);
-    expect(events[1]).toMatchObject({ type: 'delta', delta: 'Hello', content: 'Hello' });
-    expect(events[2]).toMatchObject({
+    expect(events.map((event) => event.type)).toEqual([
+      'metadata',
+      'delta',
+      'thinking_lifecycle',
+      'thinking_delta',
+      'delta',
+      'thinking_lifecycle',
+      'done'
+    ]);
+    const finalDeltaEvent = events.filter((event) => event.type === 'delta').at(-1);
+    expect(finalDeltaEvent).toMatchObject({ type: 'delta', delta: 'lo', content: 'Hello' });
+    const hiddenThinkingDoneEvent = events.find((event) => event.type === 'done');
+    if (!hiddenThinkingDoneEvent || hiddenThinkingDoneEvent.type !== 'done') {
+      throw new Error('Expected stream to finish with a done event.');
+    }
+    expect(hiddenThinkingDoneEvent).toMatchObject({
       type: 'done',
       content: 'Hello',
       metadata: {
         provider: 'ollama',
         model: 'qwen3:14b',
         hasThinkingField: true,
-        thinkingContentSuppressed: true
+        thinkingContentDiscarded: true,
+        thinkingContentSuppressed: true,
+        thinking: expect.objectContaining({ discarded: true })
       }
     });
-    const hiddenThinkingDoneEvent = events[2];
-    if (!hiddenThinkingDoneEvent || hiddenThinkingDoneEvent.type !== 'done') {
-      throw new Error('Expected stream to finish with a done event.');
-    }
     expect(hiddenThinkingDoneEvent.metadata).not.toHaveProperty('thinkingContent');
     expect(events.filter((event) => event.type === 'delta').map((event) => JSON.stringify(event)).join('')).not.toContain('hidden reasoning chunk');
     expect(fetchMock).toHaveBeenCalledWith(
@@ -410,19 +427,35 @@ describe('generateWithLlmStream', () => {
       events.push(event);
     }
 
-    expect(events.map((event) => event.type)).toEqual(['metadata', 'delta', 'done']);
-    expect(events[1]).toMatchObject({ type: 'delta', delta: 'Visible answer', content: 'Visible answer' });
-    expect(events[2]).toMatchObject({
+    expect(events.map((event) => event.type)).toEqual([
+      'metadata',
+      'thinking_lifecycle',
+      'thinking_delta',
+      'delta',
+      'thinking_lifecycle',
+      'done'
+    ]);
+    expect(events.find((event) => event.type === 'delta')).toMatchObject({
+      type: 'delta',
+      delta: 'Visible answer',
+      content: 'Visible answer'
+    });
+    const structuredThinkingDoneEvent = events.find((event) => event.type === 'done');
+    if (!structuredThinkingDoneEvent || structuredThinkingDoneEvent.type !== 'done') throw new Error('Expected done event.');
+    expect(structuredThinkingDoneEvent).toMatchObject({
       type: 'done',
       content: 'Visible answer',
       metadata: {
         provider: 'ollama',
         model: 'qwen3:14b',
         hasThinkingField: true,
-        thinkingContentSuppressed: true
+        thinkingContentDiscarded: true,
+        thinkingContentSuppressed: true,
+        thinking: expect.objectContaining({ discarded: true })
       }
     });
-    expect(JSON.stringify(events)).not.toContain('hidden reasoning chunk');
+    expect(structuredThinkingDoneEvent.metadata).not.toHaveProperty('thinkingContent');
+    expect(events.filter((event) => event.type === 'delta').map((event) => JSON.stringify(event)).join('')).not.toContain('hidden reasoning chunk');
   });
 
 
@@ -461,18 +494,34 @@ describe('generateWithLlmStream', () => {
       events.push(event);
     }
 
-    expect(events.map((event) => event.type)).toEqual(['metadata', 'delta', 'done']);
-    expect(events[1]).toMatchObject({ type: 'delta', delta: 'Visible answer.', content: 'Visible answer.' });
-    expect(events[2]).toMatchObject({
+    expect(events.map((event) => event.type)).toEqual([
+      'metadata',
+      'thinking_lifecycle',
+      'thinking_delta',
+      'delta',
+      'thinking_lifecycle',
+      'done'
+    ]);
+    expect(events.find((event) => event.type === 'delta')).toMatchObject({
+      type: 'delta',
+      delta: 'Visible answer.',
+      content: 'Visible answer.'
+    });
+    const untaggedDoneEvent = events.find((event) => event.type === 'done');
+    if (!untaggedDoneEvent || untaggedDoneEvent.type !== 'done') throw new Error('Expected done event.');
+    expect(untaggedDoneEvent).toMatchObject({
       type: 'done',
       content: 'Visible answer.',
       metadata: {
         model: 'plain:latest',
         hasUntaggedReasoning: true,
         untaggedReasoningSuppressed: true,
-        thinkingContentSuppressed: true
+        thinkingContentDiscarded: true,
+        thinkingContentSuppressed: true,
+        thinking: expect.objectContaining({ discarded: true })
       }
     });
+    expect(untaggedDoneEvent.metadata).not.toHaveProperty('thinkingContent');
     expect(JSON.stringify(events.filter((event) => event.type === 'delta'))).not.toContain('Analyze user input');
 
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
@@ -515,14 +564,25 @@ describe('generateWithLlmStream', () => {
       events.push(event);
     }
 
-    expect(events.map((event) => event.type)).toEqual(['metadata', 'delta', 'delta', 'done']);
-    expect(events[1]).toMatchObject({ type: 'delta', delta: 'Visible before.', content: 'Visible before.' });
-    expect(events[2]).toMatchObject({
+    expect(events.map((event) => event.type)).toEqual([
+      'metadata',
+      'delta',
+      'thinking_lifecycle',
+      'thinking_delta',
+      'delta',
+      'thinking_lifecycle',
+      'done'
+    ]);
+    const visibleDeltas = events.filter((event) => event.type === 'delta');
+    expect(visibleDeltas[0]).toMatchObject({ type: 'delta', delta: 'Visible before.', content: 'Visible before.' });
+    expect(visibleDeltas[1]).toMatchObject({
       type: 'delta',
       delta: '\n\nVisible after.',
       content: 'Visible before.\n\nVisible after.'
     });
-    expect(events[3]).toMatchObject({
+    const fakeAssistantDoneEvent = events.find((event) => event.type === 'done');
+    if (!fakeAssistantDoneEvent || fakeAssistantDoneEvent.type !== 'done') throw new Error('Expected done event.');
+    expect(fakeAssistantDoneEvent).toMatchObject({
       type: 'done',
       content: 'Visible before.\n\nVisible after.',
       metadata: {
@@ -530,11 +590,14 @@ describe('generateWithLlmStream', () => {
         rawThinkingTagSuppressed: true,
         hasUntaggedReasoning: true,
         untaggedReasoningSuppressed: true,
-        thinkingContentSuppressed: true
+        thinkingContentDiscarded: true,
+        thinkingContentSuppressed: true,
+        thinking: expect.objectContaining({ discarded: true })
       }
     });
+    expect(fakeAssistantDoneEvent.metadata).not.toHaveProperty('thinkingContent');
     expect(JSON.stringify(events.filter((event) => event.type === 'delta'))).not.toContain('### Assistant');
-    expect(JSON.stringify(events)).not.toContain('hidden streamed reasoning');
+    expect(JSON.stringify(events.filter((event) => event.type === 'delta'))).not.toContain('hidden streamed reasoning');
   });
 
   it('separates literal think blocks that arrive split across streamed response chunks when thinking is enabled', async () => {
@@ -576,14 +639,21 @@ describe('generateWithLlmStream', () => {
       events.push(event);
     }
 
-    expect(events.map((event) => event.type)).toEqual(['metadata', 'thinking_delta', 'delta', 'done']);
-    expect(events[1]).toMatchObject({
+    expect(events.map((event) => event.type)).toEqual([
+      'metadata',
+      'thinking_lifecycle',
+      'thinking_delta',
+      'delta',
+      'thinking_lifecycle',
+      'done'
+    ]);
+    expect(events.find((event) => event.type === 'thinking_delta')).toMatchObject({
       type: 'thinking_delta',
       delta: 'private streamed reasoning',
       thinking: 'private streamed reasoning'
     });
-    expect(events[2]).toMatchObject({ type: 'delta', delta: 'I am Q8.', content: 'I am Q8.' });
-    expect(events[3]).toMatchObject({
+    expect(events.find((event) => event.type === 'delta')).toMatchObject({ type: 'delta', delta: 'I am Q8.', content: 'I am Q8.' });
+    expect(events.find((event) => event.type === 'done')).toMatchObject({
       type: 'done',
       content: 'I am Q8.',
       metadata: {
@@ -595,9 +665,13 @@ describe('generateWithLlmStream', () => {
         thinkEnabledReason: 'known-reasoning-model',
         hasRawThinkingTag: true,
         rawThinkingTagSuppressed: true,
-        thinkingContent: 'private streamed reasoning'
+        thinkingContentDiscarded: true,
+        thinking: expect.objectContaining({ discarded: true })
       }
     });
+    const splitThinkingDoneEvent = events.find((event) => event.type === 'done');
+    if (!splitThinkingDoneEvent || splitThinkingDoneEvent.type !== 'done') throw new Error('Expected done event.');
+    expect(splitThinkingDoneEvent.metadata).not.toHaveProperty('thinkingContent');
     expect(events.filter((event) => event.type === 'delta').map((event) => JSON.stringify(event)).join('')).not.toContain('private streamed reasoning');
 
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
