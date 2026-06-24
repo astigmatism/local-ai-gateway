@@ -350,6 +350,26 @@ describe('api client text-to-speech requests', () => {
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).not.toContain('/api/settings/voice/models/tts/unload');
   });
 
+  it('strips hidden thinking blocks from client-side speech requests', async () => {
+    const { api } = await loadApi();
+    const audioBlob = new Blob(['RIFF'], { type: 'audio/wav' });
+    const fetchMock = vi.fn(async () =>
+      new Response(audioBlob, {
+        status: 200,
+        headers: { 'Content-Type': 'audio/wav' }
+      })
+    );
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.speakText('\n\n<think>private browser-side reasoning</think>\n\nVisible speech.');
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      text: 'Visible speech.'
+    });
+  });
+
 
 
   it('reads and updates the authenticated user TTS preference through Settings > Voice endpoints', async () => {

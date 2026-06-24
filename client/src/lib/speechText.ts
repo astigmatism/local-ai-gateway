@@ -1,5 +1,8 @@
+import { sanitizeThinkingBlocks } from './thinkingBlocks.js';
+
 export const normalizeTextForSpeech = (content: string) => {
-  const withoutFences = content.replace(/```[\w-]*\n?([\s\S]*?)```/g, (_match, code: string) => `\n${code.trim()}\n`);
+  const visibleContent = sanitizeThinkingBlocks(content, { trim: true, extractUntaggedReasoning: true }).content;
+  const withoutFences = visibleContent.replace(/```[\w-]*\n?([\s\S]*?)```/g, (_match, code: string) => `\n${code.trim()}\n`);
 
   return withoutFences
     .replace(/`([^`]+)`/g, '$1')

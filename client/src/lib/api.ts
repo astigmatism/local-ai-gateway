@@ -742,6 +742,8 @@ export const api = {
   },
 
   async speakText(text: string, options: SpeakTextOptions = {}) {
+    const visibleText = sanitizeThinkingBlocks(text, { trim: true, extractUntaggedReasoning: true }).content;
+
     return requestBlob('/api/speak', {
       method: 'POST',
       headers: {
@@ -750,7 +752,7 @@ export const api = {
       },
       body: JSON.stringify({
         provider: options.provider,
-        text,
+        text: visibleText,
         voice: options.voice,
         speed: options.speed,
         exaggeration: options.exaggeration,

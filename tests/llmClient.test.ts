@@ -101,6 +101,50 @@ describe('generateWithLlm', () => {
     );
   });
 
+  it('uses the clean response field and suppresses native Ollama thinking fields in non-streaming responses', async () => {
+    const { textClient } = mockAxiosClients();
+    textClient.post.mockImplementation(async (url: string, body: unknown) => {
+      if (url === '/api/show') {
+        return {
+          data: {
+            capabilities: ['completion', 'thinking'],
+            digest: 'thinking-model-digest'
+          }
+        };
+      }
+
+      if (url === '/api/generate') {
+        return {
+          data: {
+            response: '2 plus 2 equals 4.',
+            thinking: "Here's a thinking process:\n\n1. Analyze User Input...",
+            reasoning_content: 'duplicated hidden reasoning',
+            analysis: { steps: ['hidden analysis step'] },
+            done: true,
+            done_reason: 'stop'
+          }
+        };
+      }
+
+      throw new Error(`Unexpected text client POST ${url} with ${JSON.stringify(body)}`);
+    });
+
+    const { generateWithLlm } = await loadLlmClient();
+    const result = await generateWithLlm('What is 2 plus 2?', { model: 'qwen3.6:27b-q4_K_M' });
+
+    expect(result.content).toBe('2 plus 2 equals 4.');
+    expect(result.metadata).toMatchObject({
+      provider: 'ollama',
+      model: 'qwen3.6:27b-q4_K_M',
+      hasThinkingField: true,
+      thinkingContentSuppressed: true
+    });
+    expect(result.metadata).not.toHaveProperty('thinkingContent');
+    expect(JSON.stringify(result.metadata)).not.toContain('thinking process');
+    expect(JSON.stringify(result.metadata)).not.toContain('duplicated hidden reasoning');
+    expect(JSON.stringify(result.metadata)).not.toContain('hidden analysis step');
+  });
+
   it('enables Ollama thinking when requested for a thinking-capable Qwen model', async () => {
     const { textClient } = mockAxiosClients();
     textClient.post.mockImplementation(async (url: string, body: unknown) => {
@@ -219,7 +263,7 @@ describe('generateWithLlm', () => {
       if (url === '/api/generate') {
         return {
           data: {
-            response: '<think>private reasoning</think>\n\nbackend-ok',
+            response: '\n\n<think>private reasoning</think>\n\nbackend-ok',
             done: true,
             done_reason: 'stop'
           }
@@ -334,6 +378,51 @@ describe('generateWithLlmStream', () => {
       stream: true,
       think: false
     });
+  });
+
+  it('suppresses alternate structured reasoning fields in streamed Ollama chunks', async () => {
+    const encoder = new TextEncoder();
+    const payload = [
+      JSON.stringify({ model: 'qwen3:14b', reasoning_content: 'hidden reasoning chunk', done: false }),
+      JSON.stringify({ model: 'qwen3:14b', response: 'Visible answer', done: false }),
+      JSON.stringify({ model: 'qwen3:14b', done: true, total_duration: 123, eval_count: 2 })
+    ].join('\n');
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(`${payload}\n`));
+        controller.close();
+      }
+    });
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'application/x-ndjson' }
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const { textClient } = mockAxiosClients();
+    textClient.post.mockResolvedValueOnce({ data: { capabilities: ['completion', 'thinking'], digest: 'thinking-model-digest' } });
+
+    const { generateWithLlmStream } = await loadLlmClient();
+    const events: LlmStreamEvent[] = [];
+    for await (const event of generateWithLlmStream('User: hello\nAssistant:', { model: 'qwen3:14b' })) {
+      events.push(event);
+    }
+
+    expect(events.map((event) => event.type)).toEqual(['metadata', 'delta', 'done']);
+    expect(events[1]).toMatchObject({ type: 'delta', delta: 'Visible answer', content: 'Visible answer' });
+    expect(events[2]).toMatchObject({
+      type: 'done',
+      content: 'Visible answer',
+      metadata: {
+        provider: 'ollama',
+        model: 'qwen3:14b',
+        hasThinkingField: true,
+        thinkingContentSuppressed: true
+      }
+    });
+    expect(JSON.stringify(events)).not.toContain('hidden reasoning chunk');
   });
 
 

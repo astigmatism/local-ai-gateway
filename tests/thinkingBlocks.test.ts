@@ -27,6 +27,27 @@ describe('thinking block sanitizer', () => {
     });
   });
 
+  it('strips multiple think blocks while preserving normal answer text', () => {
+    const result = sanitizeThinkingBlocks(
+      '<think>first private block</think>\nFinal answer part one.\n<think>second private block</think>\nFinal answer part two.',
+      { trim: true }
+    );
+
+    expect(result.content).toBe('Final answer part one.\n\nFinal answer part two.');
+    expect(result.thinking).toContain('first private block');
+    expect(result.thinking).toContain('second private block');
+    expect(result.content).not.toContain('private block');
+  });
+
+  it('treats unterminated think blocks as internal content instead of visible output', () => {
+    const result = sanitizeThinkingBlocks('<think>\nReasoning that never closes...\nFinal answer is maybe here', { trim: true });
+
+    expect(result.content).toBe('');
+    expect(result.thinking).toContain('Reasoning that never closes');
+    expect(result.hasThinkingBlock).toBe(true);
+    expect(result.suppressedThinkingBlock).toBe(true);
+  });
+
   it('suppresses thinking blocks whose tags are split across streaming chunks', () => {
     const suppressor = new ThinkingBlockSuppressor();
     let visible = '';
@@ -38,6 +59,18 @@ describe('thinking block sanitizer', () => {
 
     expect(visible.trim()).toBe('Visible answer');
     expect(visible).not.toContain('private streamed reasoning');
+  });
+
+  it('suppresses think tags split across the exact user-observed streaming boundary shape', () => {
+    const suppressor = new ThinkingBlockSuppressor();
+    let visible = '';
+
+    for (const chunk of ['<thi', 'nk>reasoning', '</th', 'ink>Final answer']) {
+      visible += suppressor.feed(chunk).delta;
+    }
+    visible += suppressor.flush().delta;
+
+    expect(visible).toBe('Final answer');
   });
 
   it('strips Qwen-style thought control tokens even when split across chunks', () => {

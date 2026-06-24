@@ -5,6 +5,7 @@ import { logger } from '../config/logger.js';
 import { createRateLimiter } from '../auth/rateLimit.js';
 import { ApiError } from '../errors/apiError.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
+import { sanitizeThinkingBlocks } from '../services/thinkingBlocks.js';
 import { normalizeProviderModelForRuntime, normalizeProviderVoiceForRuntime } from '../services/ttsProviderDefaults.js';
 import { speakText, type TtsProviderId, type VoiceSpeechOptions } from '../services/voiceClient.js';
 import { getSelectedVoiceReferenceIdForTts } from '../services/voiceReferenceService.js';
@@ -89,7 +90,7 @@ const parseSpeakRequest = (body: unknown): ParsedSpeakRequest => {
     throw new ApiError(400, 'Text is required.', 'TTS_TEXT_REQUIRED');
   }
 
-  const text = parsed.text.trim();
+  const text = sanitizeThinkingBlocks(parsed.text, { trim: true, extractUntaggedReasoning: true }).content.trim();
   if (text.length === 0) {
     throw new ApiError(400, 'Text is required.', 'TTS_TEXT_REQUIRED');
   }

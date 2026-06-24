@@ -202,6 +202,33 @@ describe('speak route user TTS preference resolution', () => {
     }
   });
 
+  it('strips hidden thinking blocks before forwarding text to the selected TTS provider', async () => {
+    const { app, speakText } = await loadSpeakApp({
+      provider: 'kokoro',
+      chatterbox: { model: 'chatterbox-turbo', language: 'en', speed: 1 },
+      kokoro: { model: 'kokoro-test-model', voice: 'af_heart', language: 'a', speed: 1 }
+    });
+    const server = createServer(app);
+    const port = await listen(server);
+
+    try {
+      const { response } = await jsonFetch(port, {
+        text: '\n\n<think>private server-side reasoning</think>\n\nVisible TTS text.'
+      });
+
+      expect(response.status).toBe(200);
+      expect(speakText).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'Visible TTS text.'
+        })
+      );
+      const options = speakText.mock.calls[0]?.[0] as SpeakOptionsRecord;
+      expect(options.text).not.toContain('private server-side reasoning');
+    } finally {
+      await close(server);
+    }
+  });
+
   it('uses the configured Kokoro default model when the saved preference omits a model', async () => {
     const { app, speakText } = await loadSpeakApp(
       {

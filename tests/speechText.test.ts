@@ -18,4 +18,8 @@ const speed = 1.0;
   it('returns an empty string for whitespace-only content', () => {
     expect(normalizeTextForSpeech('  \n\t  ')).toBe('');
   });
+
+  it('removes hidden thinking blocks before preparing text for TTS', () => {
+    expect(normalizeTextForSpeech('\n\n<think>private reasoning</think>\n\n**Visible answer**')).toBe('Visible answer');
+  });
 });

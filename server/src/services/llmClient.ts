@@ -243,6 +243,45 @@ const extractOllamaErrorMessage = (body: unknown) => {
   return typeof body === 'string' && body.trim() ? body.slice(0, 500) : null;
 };
 
+const structuredReasoningFieldNames = [
+  'thinking',
+  'thinking_content',
+  'reasoning',
+  'reasoning_content',
+  'thought',
+  'thoughts',
+  'analysis',
+  'analysis_content'
+] as const;
+
+const normalizedStructuredReasoningFieldNames = new Set(
+  structuredReasoningFieldNames.map((fieldName) => fieldName.replace(/[-_\s]/g, '').toLowerCase())
+);
+
+const normalizeStructuredReasoningFieldName = (fieldName: string) => fieldName.replace(/[-_\s]/g, '').toLowerCase();
+
+const isStructuredReasoningFieldName = (fieldName: string) =>
+  normalizedStructuredReasoningFieldNames.has(normalizeStructuredReasoningFieldName(fieldName));
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const redactStructuredReasoningFields = (value: unknown, depth = 0): unknown => {
+  if (depth > 8) return value;
+
+  if (Array.isArray(value)) {
+    return value.map((item) => redactStructuredReasoningFields(item, depth + 1));
+  }
+
+  if (!isRecord(value)) return value;
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !isStructuredReasoningFieldName(key))
+      .map(([key, entry]) => [key, redactStructuredReasoningFields(entry, depth + 1)])
+  );
+};
+
 const apiErrorFromOllamaStatus = (status: number, body: unknown) => {
   const message = extractOllamaErrorMessage(body) ?? `Ollama returned HTTP ${status}`;
   const statusCode = status >= 400 && status < 600 ? status : 502;
@@ -267,9 +306,8 @@ const metadataFromOllamaGenerate = (
   thinkingContent = '',
   thinkingContentSuppressed = false
 ): Record<string, unknown> => {
-  const ollamaMetadata: Record<string, unknown> = { ...parsed };
+  const ollamaMetadata = redactStructuredReasoningFields(parsed) as Record<string, unknown>;
   delete ollamaMetadata.response;
-  delete ollamaMetadata.thinking;
 
   const trimmedThinkingContent = thinkingContent.trim();
 
@@ -319,10 +357,54 @@ const stringifyThinkingField = (value: unknown) => {
 };
 
 const mergeThinkingContent = (...parts: string[]) =>
-  parts
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0)
-    .join('\n\n');
+  Array.from(
+    new Set(
+      parts
+        .map((part) => part.trim())
+        .filter((part) => part.length > 0)
+    )
+  ).join('\n\n');
+
+const collectStructuredReasoningContent = (value: unknown, depth = 0): string[] => {
+  if (depth > 8) return [];
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectStructuredReasoningContent(item, depth + 1));
+  }
+
+  if (!isRecord(value)) return [];
+
+  return Object.entries(value).flatMap(([key, entry]) => {
+    if (isStructuredReasoningFieldName(key)) return [stringifyThinkingField(entry)];
+    return collectStructuredReasoningContent(entry, depth + 1);
+  });
+};
+
+const structuredReasoningContentFromOllamaResponse = (parsed: OllamaGenerateResponse) =>
+  mergeThinkingContent(...collectStructuredReasoningContent(parsed));
+
+const hasStructuredReasoningField = (value: unknown, depth = 0): boolean => {
+  if (depth > 8) return false;
+  if (Array.isArray(value)) return value.some((item) => hasStructuredReasoningField(item, depth + 1));
+  if (!isRecord(value)) return false;
+
+  return Object.entries(value).some(
+    ([key, entry]) =>
+      (isStructuredReasoningFieldName(key) && entry !== undefined) || hasStructuredReasoningField(entry, depth + 1)
+  );
+};
+
+const visibleContentFromOllamaResponse = (parsed: OllamaGenerateResponse) => {
+  if (typeof parsed.response === 'string') return parsed.response;
+
+  const record = parsed as Record<string, unknown>;
+  if (typeof record.content === 'string') return record.content;
+
+  const message = record.message;
+  if (isRecord(message) && typeof message.content === 'string') return message.content;
+
+  return '';
+};
 
 const imageCapabilityUnavailableMessage = (capability: LocalAiImageGenerationCapability) =>
   capability.reason ??
@@ -560,13 +642,13 @@ export const generateWithLlm = async (
     const response = await client.post('/api/generate', body, { timeout: timeoutMs });
 
     const parsed = ollamaGenerateResponseSchema.parse(response.data);
-    const sanitized = sanitizeThinkingBlocks(parsed.response ?? '', {
+    const sanitized = sanitizeThinkingBlocks(visibleContentFromOllamaResponse(parsed), {
       trim: true,
       assumeLeadingThinking: thinkingDecision.assumeLeadingThinking,
       extractUntaggedReasoning: true
     });
     const content = sanitized.content;
-    const rawThinkingContent = mergeThinkingContent(stringifyThinkingField(parsed.thinking), sanitized.thinking);
+    const rawThinkingContent = mergeThinkingContent(structuredReasoningContentFromOllamaResponse(parsed), sanitized.thinking);
     const thinkingContent = thinkingDecision.requestedThinking ? rawThinkingContent : '';
     const thinkingContentSuppressed = !thinkingDecision.requestedThinking && rawThinkingContent.trim().length > 0;
 
@@ -581,7 +663,7 @@ export const generateWithLlm = async (
       metadata: metadataFromOllamaGenerate(
         parsed,
         model,
-        parsed.thinking !== undefined,
+        hasStructuredReasoningField(parsed),
         thinkingDecision,
         {
           hasThinkingBlock: sanitized.hasThinkingBlock,
@@ -840,12 +922,13 @@ export async function* generateWithLlmStream(
       const parsed = parseOllamaGenerateStreamLine(line);
       if (!parsed) return;
 
-      if (parsed.thinking !== undefined) {
+      const structuredReasoningDelta = structuredReasoningContentFromOllamaResponse(parsed);
+      if (hasStructuredReasoningField(parsed)) {
         hasThinkingField = true;
-        yield* appendThinkingDelta(stringifyThinkingField(parsed.thinking));
+        yield* appendThinkingDelta(structuredReasoningDelta);
       }
 
-      const delta = typeof parsed.response === 'string' ? parsed.response : '';
+      const delta = visibleContentFromOllamaResponse(parsed);
       if (delta.length > 0) {
         yield* appendExtractedDeltas(thinkingBlockExtractor.feed(delta));
       }
